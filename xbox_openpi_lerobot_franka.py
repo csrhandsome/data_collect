@@ -144,6 +144,21 @@ def _create_dataset(
     )
 
 
+def _prepare_episode_for_save(dataset: LeRobotDataset) -> None:
+    """Align scalar-like features with HF encoding (shape (1,) -> scalar list)."""
+    if dataset.episode_buffer is None:
+        return
+    gripper_values = dataset.episode_buffer.get("gripper_position")
+    if not isinstance(gripper_values, list):
+        return
+    if not gripper_values:
+        return
+    dataset.episode_buffer["gripper_position"] = [
+        float(v.reshape(-1)[0]) if isinstance(v, np.ndarray) else float(v)
+        for v in gripper_values
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Collect Franka data into LeRobot (DROID-style keys)"
@@ -359,6 +374,7 @@ def main() -> None:
                         print(
                             "\n[Control] X/O pressed, saving episode and resetting..."
                         )
+                        _prepare_episode_for_save(dataset)
                         dataset.save_episode()
                         print(f"[Recording] Saved episode with {frame_count} frames")
                         frame_count = 0
@@ -532,6 +548,7 @@ def main() -> None:
         if enable_logging and dataset is not None:
             try:
                 if frame_count > 0:
+                    _prepare_episode_for_save(dataset)
                     dataset.save_episode()
                     print(f"\n[Recording] Saved episode with {frame_count} frames")
             finally:
