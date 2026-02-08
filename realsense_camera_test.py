@@ -9,6 +9,7 @@ Usage:
     python realsense_camera_test.py --camera-serial 825412070487
     python realsense_camera_test.py --camera-serial 825412070487 --show-depth
     python realsense_camera_test.py  # Use default camera
+    uv run realsense_camera_test.py --external-serial 825412070487 --wrist-serial 825412070292
 
 Press 'q' to quit.
 """
@@ -21,9 +22,7 @@ from realsense_connector import RealSenseConnector
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="RealSense Camera RGB Viewer"
-    )
+    parser = argparse.ArgumentParser(description="RealSense Camera RGB Viewer")
     parser.add_argument(
         "--camera-serial",
         type=str,
@@ -138,7 +137,7 @@ def main():
 
             # Check for quit
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
+            if key == ord("q"):
                 print("\n'q' pressed, exiting...")
                 break
 
@@ -149,6 +148,7 @@ def main():
     except Exception as e:
         print(f"\nError: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         camera.close()

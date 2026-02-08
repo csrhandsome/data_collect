@@ -152,12 +152,14 @@ def list_realsense_devices() -> list[dict]:
 def main():
     """测试双相机系统"""
     import argparse
+    import cv2
 
     parser = argparse.ArgumentParser(description="测试双 RealSense 相机")
     parser.add_argument("--external-serial", type=str, default=None, help="外部相机序列号")
     parser.add_argument("--wrist-serial", type=str, default=None, help="腕部相机序列号")
     parser.add_argument("--list-devices", action="store_true", help="列出所有相机设备")
-    parser.add_argument("--frames", type=int, default=30, help="采集帧数")
+    parser.add_argument("--frames", type=int, default=None, help="采集帧数（不指定则持续显示）")
+    parser.add_argument("--no-display", action="store_true", help="不显示图像窗口")
     args = parser.parse_args()
 
     if args.list_devices:
@@ -169,6 +171,21 @@ def main():
             print(f"  [{i}] {dev['name']} (序列号: {dev['serial']})")
         return
 
+    # 自动分配相机序列号
+    if args.external_serial is None or args.wrist_serial is None:
+        devices = list_realsense_devices()
+        if len(devices) < 2:
+            print(f"[错误] 需要至少 2 个 RealSense 相机，但只找到 {len(devices)} 个")
+            return
+
+        if args.external_serial is None:
+            args.external_serial = devices[0]["serial"]
+            print(f"[自动选择] 外部相机: {devices[0]['name']} ({args.external_serial})")
+
+        if args.wrist_serial is None:
+            args.wrist_serial = devices[1]["serial"]
+            print(f"[自动选择] 腕部相机: {devices[1]['name']} ({args.wrist_serial})")
+
     # 创建双相机管理器
     manager = DualCameraManager(
         external_serial=args.external_serial,
@@ -176,19 +193,50 @@ def main():
     )
 
     with manager:
-        print(f"\n开始采集 {args.frames} 帧...")
-        for i in range(args.frames):
+        if not args.no_display:
+            cv2.namedWindow("External Camera", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("Wrist Camera", cv2.WINDOW_NORMAL)
+            print("\n按 'q' 或 ESC 退出，按 's' 保存当前帧")
+
+        frame_count = 0
+        max_frames = args.frames if args.frames else float('inf')
+
+        print(f"\n开始采集{'持续' if args.frames is None else f'{args.frames} 帧'}...")
+
+        while frame_count < max_frames:
             external_ok, wrist_ok = manager.update(timeout_ms=1000)
 
             if external_ok and wrist_ok:
                 external_img, wrist_img = manager.get_images()
 
                 if external_img is not None and wrist_img is not None:
-                    print(f"[{i:3d}] ✓ External: {external_img.shape}, Wrist: {wrist_img.shape}")
+                    print(f"[{frame_count:3d}] ✓ External: {external_img.shape}, Wrist: {wrist_img.shape}")
+
+                    if not args.no_display:
+                        # 转换 RGB 到 BGR 用于 OpenCV 显示
+                        external_bgr = cv2.cvtColor(external_img, cv2.COLOR_RGB2BGR)
+                        wrist_bgr = cv2.cvtColor(wrist_img, cv2.COLOR_RGB2BGR)
+
+                        cv2.imshow("External Camera", external_bgr)
+                        cv2.imshow("Wrist Camera", wrist_bgr)
+
+                        key = cv2.waitKey(1) & 0xFF
+                        if key == ord('q') or key == 27:  # 'q' 或 ESC
+                            print("\n用户退出")
+                            break
+                        elif key == ord('s'):  # 保存图像
+                            cv2.imwrite(f"external_{frame_count:04d}.png", external_bgr)
+                            cv2.imwrite(f"wrist_{frame_count:04d}.png", wrist_bgr)
+                            print(f"  已保存: external_{frame_count:04d}.png, wrist_{frame_count:04d}.png")
                 else:
-                    print(f"[{i:3d}] ✗ 图像为 None")
+                    print(f"[{frame_count:3d}] ✗ 图像为 None")
             else:
-                print(f"[{i:3d}] ✗ External: {external_ok}, Wrist: {wrist_ok}")
+                print(f"[{frame_count:3d}] ✗ External: {external_ok}, Wrist: {wrist_ok}")
+
+            frame_count += 1
+
+        if not args.no_display:
+            cv2.destroyAllWindows()
 
     print("\n测试完成")
 

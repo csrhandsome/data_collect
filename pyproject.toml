@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "lerobot @ git+https://github.com/huggingface/lerobot@0cf864870cf29f4738d3ade893e6fd13fbd7cdb5",
+    "opencv-python>=4.13.0.92",
     "panda-python>=0.8.1",
     "pygame>=2.6.1",
     "pyrealsense2>=2.56.5.9235",

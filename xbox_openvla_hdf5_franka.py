@@ -245,8 +245,30 @@ def _xbox_control(
 ) -> None:
     """Gamepad control loop using pygame input."""
     from panda_py import controllers
-    from transforms3d.euler import euler2mat, quat2euler
-    from transforms3d.quaternions import mat2quat, qinverse, qmult
+    from scipy.spatial.transform import Rotation as R
+
+    # 四元数辅助函数 - 统一使用 [x,y,z,w] 格式（panda_py 约定）
+    def quat_multiply(q1, q2):
+        """四元数乘法，输入输出都是 [x,y,z,w] 格式"""
+        r1 = R.from_quat(q1)  # scipy 使用 [x,y,z,w]
+        r2 = R.from_quat(q2)
+        result = (r1 * r2).as_quat()  # 返回 [x,y,z,w]
+        return result
+
+    def euler_to_quat(roll, pitch, yaw):
+        """欧拉角转四元数，返回 [x,y,z,w] 格式"""
+        r = R.from_euler('xyz', [roll, pitch, yaw])
+        return r.as_quat()  # 返回 [x,y,z,w]
+
+    def quat_inverse(q):
+        """四元数求逆，输入输出都是 [x,y,z,w] 格式"""
+        r = R.from_quat(q)
+        return r.inv().as_quat()
+
+    def quat_to_euler(q):
+        """四元数转欧拉角，输入 [x,y,z,w] 格式"""
+        r = R.from_quat(q)
+        return r.as_euler('xyz')
 
     running = [True]
 
@@ -433,13 +455,11 @@ def _xbox_control(
                         gripper_state = 0.0
 
                     target_position = arm.panda.get_position().astype(np.float64)
-                    target_orientation = arm.panda.get_orientation().astype(np.float64)
+                    target_orientation = arm.panda.get_orientation().astype(np.float64)  # [x,y,z,w]
 
                     gripper_drift_delta[:3] = target_position - pos_before
-                    delta_quat_gripper = qmult(target_orientation, qinverse(ori_before))
-                    gripper_drift_delta[3:] = quat2euler(
-                        delta_quat_gripper, axes="sxyz"
-                    )
+                    delta_quat_gripper = quat_multiply(target_orientation, quat_inverse(ori_before))  # [x,y,z,w]
+                    gripper_drift_delta[3:] = quat_to_euler(delta_quat_gripper)  # 转为欧拉角
 
                     arm.panda.start_controller(ctrl)
                     last_gripper_cmd = gripper_cmd
@@ -492,14 +512,14 @@ def _xbox_control(
 
                     target_orientation_new = target_orientation
                     if np.any(delta[3:] != 0):
-                        delta_rot = euler2mat(delta[3], delta[4], delta[5])
-                        delta_quat = mat2quat(delta_rot)
-                        target_orientation_new = qmult(target_orientation, delta_quat)
+                        # 欧拉角增量转为四元数，使用 [x,y,z,w] 格式
+                        delta_quat = euler_to_quat(delta[3], delta[4], delta[5])  # [x,y,z,w]
+                        target_orientation_new = quat_multiply(target_orientation, delta_quat)  # [x,y,z,w]
 
                     target_position = target_position_new
                     target_orientation = target_orientation_new
 
-                    ctrl.set_control(target_position, target_orientation)
+                    ctrl.set_control(target_position, target_orientation)  # 传入 [x,y,z,w] 格式
 
                 if (
                     h5_file is not None
