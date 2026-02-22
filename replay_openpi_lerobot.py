@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+import datasets as _hf_datasets
 
 from robotic_arm_controller import RoboticArmControler
 
@@ -46,18 +46,22 @@ def _find_latest_repo_id(data_root: Path, *, prefix: str | None = None) -> str:
     return str(latest_dir.relative_to(_default_data_root()))
 
 
-def _load_dataset(repo_id: str, root: str | None) -> LeRobotDataset:
+def _load_dataset(repo_id: str, root: str | None) -> tuple[_hf_datasets.Dataset, Path]:
     root_path = Path(root) if root else _default_dataset_root(repo_id)
-    return LeRobotDataset(repo_id=repo_id, root=root_path)
+    parquet_files = sorted(root_path.glob("data/**/*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(f"No parquet files found under: {root_path / 'data'}")
+    ds = _hf_datasets.Dataset.from_parquet([str(p) for p in parquet_files])
+    return ds, root_path
 
 
-def _get_episode_indices(ds: LeRobotDataset, episode_index: int) -> np.ndarray:
-    ep_all = np.asarray(ds.hf_dataset["episode_index"], dtype=np.int64)
+def _get_episode_indices(ds: _hf_datasets.Dataset, episode_index: int) -> np.ndarray:
+    ep_all = np.asarray(ds["episode_index"], dtype=np.int64)
     return np.flatnonzero(ep_all == int(episode_index))
 
 
-def _list_episodes(ds: LeRobotDataset) -> list[int]:
-    return sorted(ds.hf_dataset.unique("episode_index"))
+def _list_episodes(ds: _hf_datasets.Dataset) -> list[int]:
+    return sorted(set(ds["episode_index"]))
 
 
 def show_image(frame: np.ndarray, *, win_name: str, scale: float = 1.0) -> None:
@@ -217,7 +221,7 @@ def main() -> None:
         repo_id = _find_latest_repo_id(openpi_root, prefix="franka_droid_lerobot_")
         print(f"Auto-selected latest dataset: {repo_id}")
 
-    ds = _load_dataset(repo_id, args.root)
+    ds, ds_root = _load_dataset(repo_id, args.root)
     episodes = _list_episodes(ds)
     if not episodes:
         print("No episodes found in dataset.")
@@ -241,12 +245,15 @@ def main() -> None:
         print("Empty frame range after applying start/end.")
         sys.exit(1)
 
-    fps = float(ds.fps)
+    # Read fps from meta/info.json
+    import json
+    _info = json.loads((ds_root / "meta" / "info.json").read_text())
+    fps = float(_info.get("fps", 15.0))
     print("=" * 70)
     print("LeRobot replay")
     print("=" * 70)
     print(f"Dataset: {repo_id}")
-    print(f"Root: {ds.root}")
+    print(f"Root: {ds_root}")
     print(f"Episode: {episode_index}")
     print(f"Frames: {len(ep_indices)} (start={start}, end={end})")
     print(f"FPS: {fps:.2f}")
@@ -261,6 +268,7 @@ def main() -> None:
             arm.move_to_start()
         action_freq = float(fps * args.speed)
         control_freq = max(action_freq * 10.0, 200.0)
+        MAX_JOINT_DELTA = 0.2  # rad/step, matches DROID
         arm.start_velocity_streaming(
             control_frequency=control_freq, time_step=1.0 / action_freq
         )
@@ -277,7 +285,8 @@ def main() -> None:
                             break
                         item = ds[int(frame_idx)]
                         action = np.asarray(item["actions"], dtype=np.float32)
-                        joint_vel = action[:7] * float(args.velocity_scale)
+                        # action[:7] is normalized [-1,1]; convert to rad/s for apply_joint_velocity
+                        joint_vel = action[:7] * MAX_JOINT_DELTA * action_freq * float(args.velocity_scale)
                         gripper_cmd = float(action[7])
                         gripper_open = gripper_cmd > float(args.gripper_threshold)
 
@@ -303,14 +312,14 @@ def main() -> None:
                             fr_idx = _as_int(item.get("frame_index"))
                             ext = _decode_image(
                                 item.get("exterior_image_1_left"),
-                                root=ds.root,
+                                root=ds_root,
                                 image_key="exterior_image_1_left",
                                 episode_index=ep_idx,
                                 frame_index=fr_idx,
                             )
                             wrist = _decode_image(
                                 item.get("wrist_image_left"),
-                                root=ds.root,
+                                root=ds_root,
                                 image_key="wrist_image_left",
                                 episode_index=ep_idx,
                                 frame_index=fr_idx,
@@ -327,14 +336,14 @@ def main() -> None:
                         fr_idx = _as_int(item.get("frame_index"))
                         ext = _decode_image(
                             item.get("exterior_image_1_left"),
-                            root=ds.root,
+                            root=ds_root,
                             image_key="exterior_image_1_left",
                             episode_index=ep_idx,
                             frame_index=fr_idx,
                         )
                         wrist = _decode_image(
                             item.get("wrist_image_left"),
-                            root=ds.root,
+                            root=ds_root,
                             image_key="wrist_image_left",
                             episode_index=ep_idx,
                             frame_index=fr_idx,

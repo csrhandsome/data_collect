@@ -74,7 +74,9 @@ def check_data_completeness(dataset_path: Path, info: Dict[str, Any]) -> Dict[st
     return results
 
 
-def check_image_quality(dataset_path: Path, info: Dict[str, Any], sample_size: int = 5) -> Dict[str, Any]:
+def check_image_quality(
+    dataset_path: Path, info: Dict[str, Any], sample_size: int = 5
+) -> Dict[str, Any]:
     """检查图像质量（采样检查）"""
     print("\n" + "=" * 60)
     print("2. 图像质量检查")
@@ -87,7 +89,9 @@ def check_image_quality(dataset_path: Path, info: Dict[str, Any], sample_size: i
     }
 
     # 获取图像特征
-    image_features = {k: v for k, v in info["features"].items() if v["dtype"] == "image"}
+    image_features = {
+        k: v for k, v in info["features"].items() if v["dtype"] == "image"
+    }
     results["image_keys"] = list(image_features.keys())
 
     if not image_features:
@@ -103,7 +107,9 @@ def check_image_quality(dataset_path: Path, info: Dict[str, Any], sample_size: i
     # 随机采样检查
     data_dir = dataset_path / "data" / "chunk-000"
     episode_files = sorted(data_dir.glob("episode_*.parquet"))
-    sample_episodes = np.random.choice(len(episode_files), min(sample_size, len(episode_files)), replace=False)
+    sample_episodes = np.random.choice(
+        len(episode_files), min(sample_size, len(episode_files)), replace=False
+    )
 
     print(f"\n  随机采样 {len(sample_episodes)} 个 episodes 进行检查...")
 
@@ -115,7 +121,9 @@ def check_image_quality(dataset_path: Path, info: Dict[str, Any], sample_size: i
             # 检查每个图像特征
             for img_key in results["image_keys"]:
                 if img_key not in df.columns:
-                    results["issues"].append(f"Episode {ep_idx}: 缺少图像特征 {img_key}")
+                    results["issues"].append(
+                        f"Episode {ep_idx}: 缺少图像特征 {img_key}"
+                    )
                     continue
 
                 # 检查第一帧图像
@@ -127,13 +135,17 @@ def check_image_quality(dataset_path: Path, info: Dict[str, Any], sample_size: i
                         # 这是 LeRobot 的图像引用格式，跳过检查
                         continue
                     else:
-                        results["issues"].append(f"Episode {ep_idx}: {img_key} 是未知的 dict 格式")
+                        results["issues"].append(
+                            f"Episode {ep_idx}: {img_key} 是未知的 dict 格式"
+                        )
                         continue
 
                 if img is None:
                     results["issues"].append(f"Episode {ep_idx}: {img_key} 为 None")
                 elif not isinstance(img, np.ndarray):
-                    results["issues"].append(f"Episode {ep_idx}: {img_key} 类型错误 ({type(img)})")
+                    results["issues"].append(
+                        f"Episode {ep_idx}: {img_key} 类型错误 ({type(img)})"
+                    )
                 elif img.shape != results["expected_shape"]:
                     results["issues"].append(
                         f"Episode {ep_idx}: {img_key} 形状错误 "
@@ -215,10 +227,12 @@ def check_action_data(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any
     print(f"    维度 | 均值      | 标准差    | 最小值    | 最大值")
     print(f"    " + "-" * 60)
     for i in range(results["action_dim"]):
-        print(f"    {i:4d} | {results['action_stats']['mean'][i]:9.4f} | "
-              f"{results['action_stats']['std'][i]:9.4f} | "
-              f"{results['action_stats']['min'][i]:9.4f} | "
-              f"{results['action_stats']['max'][i]:9.4f}")
+        print(
+            f"    {i:4d} | {results['action_stats']['mean'][i]:9.4f} | "
+            f"{results['action_stats']['std'][i]:9.4f} | "
+            f"{results['action_stats']['min'][i]:9.4f} | "
+            f"{results['action_stats']['max'][i]:9.4f}"
+        )
 
     # 检查异常值（超过 3 个标准差）
     for i in range(results["action_dim"]):
@@ -266,7 +280,12 @@ def check_timestamps(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any]
             if "timestamp" not in df.columns or len(df) < 2:
                 continue
 
-            timestamps = np.array([t[0] if isinstance(t, np.ndarray) else t for t in df["timestamp"].values])
+            timestamps = np.array(
+                [
+                    t[0] if isinstance(t, np.ndarray) else t
+                    for t in df["timestamp"].values
+                ]
+            )
 
             # 计算时间间隔
             time_diffs = np.diff(timestamps)
@@ -278,7 +297,9 @@ def check_timestamps(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any]
                 results["actual_fps"].append(actual_fps)
 
                 # 检查帧率偏差
-                fps_error = abs(actual_fps - results["expected_fps"]) / results["expected_fps"]
+                fps_error = (
+                    abs(actual_fps - results["expected_fps"]) / results["expected_fps"]
+                )
                 if fps_error > 0.1:  # 超过 10% 偏差
                     results["issues"].append(
                         f"{ep_file.name}: 帧率偏差 {fps_error*100:.1f}% "
@@ -289,11 +310,13 @@ def check_timestamps(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any]
             expected_diff = 1.0 / results["expected_fps"]
             large_gaps = time_diffs > expected_diff * 2  # 超过 2 倍的间隔
             if large_gaps.sum() > 0:
-                results["timestamp_gaps"].append({
-                    "episode": ep_file.name,
-                    "num_gaps": int(large_gaps.sum()),
-                    "max_gap": float(time_diffs.max()),
-                })
+                results["timestamp_gaps"].append(
+                    {
+                        "episode": ep_file.name,
+                        "num_gaps": int(large_gaps.sum()),
+                        "max_gap": float(time_diffs.max()),
+                    }
+                )
 
         except Exception as e:
             results["issues"].append(f"{ep_file.name}: 处理失败 - {e}")
@@ -314,8 +337,10 @@ def check_timestamps(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any]
     if results["timestamp_gaps"]:
         print(f"\n  ⚠ 发现 {len(results['timestamp_gaps'])} 个 episodes 有时间戳跳跃:")
         for gap_info in results["timestamp_gaps"][:5]:
-            print(f"    - {gap_info['episode']}: {gap_info['num_gaps']} 个跳跃, "
-                  f"最大间隔 {gap_info['max_gap']:.3f}s")
+            print(
+                f"    - {gap_info['episode']}: {gap_info['num_gaps']} 个跳跃, "
+                f"最大间隔 {gap_info['max_gap']:.3f}s"
+            )
         if len(results["timestamp_gaps"]) > 5:
             print(f"    ... 还有 {len(results['timestamp_gaps']) - 5} 个")
 
@@ -329,7 +354,9 @@ def check_timestamps(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any]
     return results
 
 
-def analyze_episode_statistics(dataset_path: Path, episodes: List[Dict[str, Any]]) -> Dict[str, Any]:
+def analyze_episode_statistics(
+    dataset_path: Path, episodes: List[Dict[str, Any]]
+) -> Dict[str, Any]:
     """分析 episode 统计信息"""
     print("\n" + "=" * 60)
     print("5. Episode 统计分析")
@@ -360,12 +387,16 @@ def analyze_episode_statistics(dataset_path: Path, episodes: List[Dict[str, Any]
     # 任务统计
     print(f"\n  任务分布:")
     for task, count in results["tasks"].items():
-        print(f"    - {task}: {count} episodes ({100*count/results['num_episodes']:.1f}%)")
+        print(
+            f"    - {task}: {count} episodes ({100*count/results['num_episodes']:.1f}%)"
+        )
 
     return results
 
 
-def generate_visualizations(dataset_path: Path, results: Dict[str, Any], output_dir: Path):
+def generate_visualizations(
+    dataset_path: Path, results: Dict[str, Any], output_dir: Path
+):
     """生成可视化图表"""
     print("\n" + "=" * 60)
     print("6. 生成可视化图表")
@@ -376,7 +407,9 @@ def generate_visualizations(dataset_path: Path, results: Dict[str, Any], output_
     # 1. Episode 长度分布
     if "episode_stats" in results and results["episode_stats"]["episode_lengths"]:
         plt.figure(figsize=(10, 6))
-        plt.hist(results["episode_stats"]["episode_lengths"], bins=20, edgecolor="black")
+        plt.hist(
+            results["episode_stats"]["episode_lengths"], bins=20, edgecolor="black"
+        )
         plt.xlabel("Episode Length (frames)")
         plt.ylabel("Count")
         plt.title("Episode Length Distribution")
@@ -421,9 +454,17 @@ def generate_visualizations(dataset_path: Path, results: Dict[str, Any], output_
         fps_data = results["timestamp_data"]["actual_fps"]
         if len(set(fps_data)) > 1:  # 只有在有变化时才绘制直方图
             plt.figure(figsize=(10, 6))
-            plt.hist(fps_data, bins=min(20, len(set(fps_data))), edgecolor="black", alpha=0.7)
+            plt.hist(
+                fps_data, bins=min(20, len(set(fps_data))), edgecolor="black", alpha=0.7
+            )
             expected_fps = results["timestamp_data"]["expected_fps"]
-            plt.axvline(expected_fps, color="red", linestyle="--", linewidth=2, label=f"Expected: {expected_fps} Hz")
+            plt.axvline(
+                expected_fps,
+                color="red",
+                linestyle="--",
+                linewidth=2,
+                label=f"Expected: {expected_fps} Hz",
+            )
             plt.xlabel("FPS")
             plt.ylabel("Count")
             plt.title("Actual Frame Rate Distribution")
@@ -484,7 +525,6 @@ def generate_visualizations(dataset_path: Path, results: Dict[str, Any], output_
         print(f"  ⚠ 合并报告生成失败: {e}")
 
 
-
 def save_report(results: Dict[str, Any], output_file: Path):
     """保存检查报告"""
     print("\n" + "=" * 60)
@@ -519,7 +559,7 @@ def main():
     parser.add_argument(
         "--dataset-path",
         type=str,
-        default="data/openpi/franka_droid_lerobot_20260130_161202",
+        default="data/openpi/franka_droid_lerobot_2_21",
         help="数据集路径",
     )
     parser.add_argument(
@@ -557,7 +597,9 @@ def main():
     all_results = {}
 
     all_results["completeness"] = check_data_completeness(dataset_path, info)
-    all_results["image_quality"] = check_image_quality(dataset_path, info, args.sample_size)
+    all_results["image_quality"] = check_image_quality(
+        dataset_path, info, args.sample_size
+    )
     all_results["action_data"] = check_action_data(dataset_path, info)
     all_results["timestamp_data"] = check_timestamps(dataset_path, info)
     all_results["episode_stats"] = analyze_episode_statistics(dataset_path, episodes)

@@ -3,15 +3,14 @@
 Collect Franka teleop data into a LeRobot dataset using DROID-style keys.
 
 - Cameras: external + wrist (2x RealSense)
-- Control: joint velocity via IntegratedVelocity + DROID dm_control IK solver
-- Actions: normalized joint velocity [-1, 1] + gripper state
+- Actions: measured joint velocity (rad/s) + gripper state
 - Output: LeRobot dataset (no intermediate HDF5)
 
-uv run xbox_openpi_lerobot_franka.py \
+uv run xbox_openpi_lerobot_franka_setcontrol.py \
   --instruction "Pick up the brown bottle" \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
-  --color-only
+  --color-only 
 """
 
 import argparse
@@ -26,7 +25,6 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 from pygame_gamepad import PygameGamepadTeleop
 from realsense_connector import RealSenseConnector
-from droid_ik_solver import DroidIKSolver
 from robotic_arm_controller import RoboticArmControler
 from robotic_arm_controller import _camera_capture_worker
 from robotic_arm_controller import _LatestFrameBuffer
@@ -264,13 +262,45 @@ def main() -> None:
     parser.add_argument("--instruction", type=str, default="")
     parser.add_argument("--control-frequency", type=float, default=15.0)
     parser.add_argument(
-        "--sensitivity",
+        "--translation-speed",
         type=float,
-        default=1.0,
+        default=0.05,
         help=(
-            "Joystick sensitivity multiplier (0-1]. "
-            "1.0 = full DROID speed (0.075 m/step translation, 0.15 rad/step rotation). "
-            "0.5 = half speed. Applied before IK solver."
+            "Max translation speed. Interpreted as m/s when --speed-units=per_second, "
+            "or as m/step when --speed-units=per_step."
+        ),
+    )
+    parser.add_argument(
+        "--rotation-speed",
+        type=float,
+        default=0.6,
+        help=(
+            "Max rotation speed. Interpreted as rad/s when --speed-units=per_second, "
+            "or as rad/step when --speed-units=per_step."
+        ),
+    )
+    parser.add_argument(
+        "--speed-units",
+        choices=("per_second", "per_step"),
+        default="per_second",
+        help=(
+            "How to interpret --translation-speed/--rotation-speed. "
+            "per_second is safer (scaled by dt=1/control_frequency)."
+        ),
+    )
+    parser.add_argument(
+        "--max-ee-step-m",
+        type=float,
+        default=0.004,
+        help="Safety clamp for per-loop end-effector translation step (meters).",
+    )
+    parser.add_argument(
+        "--max-position-error-m",
+        type=float,
+        default=0.03,
+        help=(
+            "Safety clamp for the distance between commanded target position and current position (meters). "
+            "Helps avoid wind-up near singularities."
         ),
     )
     parser.add_argument("--action-epsilon", type=float, default=1e-6)
@@ -309,7 +339,12 @@ def main() -> None:
     print("Franka LeRobot data collection (joint velocity actions)")
     print("=" * 70)
     print(f"Control frequency: {args.control_frequency} Hz")
-    print(f"Sensitivity: {args.sensitivity} (1.0 = full DROID speed)")
+    if args.speed_units == "per_second":
+        print(f"Translation speed: {args.translation_speed} m/s")
+        print(f"Rotation speed: {args.rotation_speed} rad/s")
+    else:
+        print(f"Translation speed: {args.translation_speed} m/step")
+        print(f"Rotation speed: {args.rotation_speed} rad/step")
     print(f"Action epsilon: {args.action_epsilon}")
     print(
         "Camera stream: "
@@ -320,7 +355,7 @@ def main() -> None:
     print(f"External camera serial: {args.external_camera_serial}")
     print(f"Wrist camera serial: {args.wrist_camera_serial}")
     if enable_logging:
-        date = "2_21"
+        date = "2_20_1"
         args.repo_id = f"{args.repo_id}_{date}"
         print(f"Logging: enabled (max {args.max_duration} s)")
         print(f"Instruction: {args.instruction}")
@@ -428,17 +463,38 @@ def main() -> None:
     print("Moving to start position...")
     arm.move_to_start()
 
-    # --- DROID IK solver (replaces simple Jacobian pseudoinverse) ---
-    print("Initializing DROID IK solver (dm_control)...")
-    ik_solver = DroidIKSolver(control_hz=float(args.control_frequency))
-
     from panda_py import controllers
+    from scipy.spatial.transform import Rotation as R
 
-    ctrl = controllers.IntegratedVelocity()
+    # 四元数辅助函数 - 统一使用 [x,y,z,w] 格式（panda_py 约定）
+    def quat_multiply(q1, q2):
+        """四元数乘法，输入输出都是 [x,y,z,w] 格式"""
+        r1 = R.from_quat(q1)  # scipy 使用 [x,y,z,w]
+        r2 = R.from_quat(q2)
+        result = (r1 * r2).as_quat()  # 返回 [x,y,z,w]
+        return result
+
+    def euler_to_quat(roll, pitch, yaw):
+        """欧拉角转四元数，返回 [x,y,z,w] 格式"""
+        r = R.from_euler("xyz", [roll, pitch, yaw])
+        return r.as_quat()  # 返回 [x,y,z,w]
+
+    def quat_inverse(q):
+        """四元数求逆，输入输出都是 [x,y,z,w] 格式"""
+        r = R.from_quat(q)
+        return r.inv().as_quat()
+
+    def quat_to_euler(q):
+        """四元数转欧拉角，输入 [x,y,z,w] 格式"""
+        r = R.from_quat(q)
+        return r.as_euler("xyz")
+
+    ctrl = controllers.CartesianImpedance(filter_coeff=1.0)
     arm.panda.start_controller(ctrl)
-    time.sleep(0.5)
-    ctrl.set_control(np.zeros(7))
+    time.sleep(1.0)
 
+    target_position = arm.panda.get_position().astype(np.float64)
+    target_orientation = arm.panda.get_orientation().astype(np.float64)  # [x,y,z,w]
     gripper_state = 1.0
     last_gripper_cmd = 1.0
 
@@ -481,7 +537,6 @@ def main() -> None:
                         print(
                             "\n[Control] X/O pressed, saving episode and resetting..."
                         )
-                        ctrl.set_control(np.zeros(7))  # 停止运动
                         try:
                             _prepare_episode_for_save(dataset)
                             dataset.save_episode()
@@ -489,6 +544,9 @@ def main() -> None:
                                 f"[Recording] Saved episode with {frame_count} frames"
                             )
                         except Exception as exc:
+                            # NOTE: LeRobotDataset.save_episode mutates episode_buffer (pop size/task).
+                            # If it fails halfway, we must clear the buffer, otherwise subsequent saves will
+                            # crash with "size key not found".
                             print(f"[Error] Failed to save episode: {exc}")
                             try:
                                 dataset.clear_episode_buffer()
@@ -505,47 +563,48 @@ def main() -> None:
                         last_gripper_cmd = 1.0
                         arm.move_to_start()
 
-                        ctrl = controllers.IntegratedVelocity()
+                        target_position = arm.panda.get_position().astype(np.float64)
+                        target_orientation = arm.panda.get_orientation().astype(
+                            np.float64
+                        )  # [x,y,z,w]
                         arm.panda.start_controller(ctrl)
-                        ctrl.set_control(np.zeros(7))
                         continue
 
                     print("\n[Control] X/O pressed, stopping...")
                     break
 
-                # --- Cartesian velocity [-1, 1] (DROID semantics) ---
-                # Joystick input [-1, 1] * sensitivity → cartesian_velocity for IK solver
-                cart_vel = np.zeros(6, dtype=np.float64)
-                sens = float(args.sensitivity)
+                delta = np.zeros(6, dtype=np.float64)
 
-                cart_vel[0] = float(action.get("delta_x", 0.0)) * sens
-                cart_vel[1] = float(action.get("delta_y", 0.0)) * sens
-                cart_vel[2] = (axes["rt"] - axes["lt"]) * sens
+                dt = 1.0 / float(args.control_frequency)
+                speed_scale = dt if args.speed_units == "per_second" else 1.0
+
+                delta[0] = (
+                    float(action.get("delta_x", 0.0))
+                    * args.translation_speed
+                    * speed_scale
+                )
+                delta[1] = (
+                    float(action.get("delta_y", 0.0))
+                    * args.translation_speed
+                    * speed_scale
+                )
+                delta[2] = (
+                    (axes["rt"] - axes["lt"]) * args.translation_speed * speed_scale
+                )
                 if getattr(teleop, "joystick", None) is None:
-                    cart_vel[2] = float(action.get("delta_z", 0.0)) * sens
+                    delta[2] = (
+                        float(action.get("delta_z", 0.0))
+                        * args.translation_speed
+                        * speed_scale
+                    )
 
                 if buttons["l1"]:
-                    cart_vel[3] -= sens
+                    delta[3] -= args.rotation_speed * speed_scale
                 if buttons["r1"]:
-                    cart_vel[3] += sens
-                cart_vel[4] = (-axes["right_y"]) * sens
-                cart_vel[5] = (axes["right_x"]) * sens
+                    delta[3] += args.rotation_speed * speed_scale
+                delta[4] = (-axes["right_y"]) * args.rotation_speed * speed_scale
+                delta[5] = (axes["right_x"]) * args.rotation_speed * speed_scale
 
-                if args.action_epsilon > 0.0:
-                    small_mask = np.abs(cart_vel) <= args.action_epsilon
-                    if np.any(small_mask):
-                        cart_vel[small_mask] = 0.0
-
-                # --- DROID IK solver: cart_vel [-1,1] → joint_delta + normalized_action ---
-                robot_state = arm.panda.get_state()
-                qpos = np.asarray(robot_state.q, dtype=np.float64)
-                qvel = np.asarray(robot_state.dq, dtype=np.float64)
-                joint_delta, normalized_action = ik_solver.solve(cart_vel, qpos, qvel)
-
-                # Apply position increment (same as inference)
-                ctrl.set_control(joint_delta)
-
-                # --- Gripper ---
                 gripper_changed = False
                 gripper_cmd = last_gripper_cmd
                 if buttons["a"]:
@@ -560,7 +619,11 @@ def main() -> None:
                 if gripper_cmd != last_gripper_cmd:
                     gripper_changed = True
                     last_gripper_switch_time = now
-                    ctrl.set_control(np.zeros(7))
+                    pos_before = arm.panda.get_position().astype(np.float64)
+                    ori_before = arm.panda.get_orientation().astype(
+                        np.float64
+                    )  # [x,y,z,w]
+
                     arm.panda.stop_controller()
                     if gripper_cmd > 0.5:
                         arm.gripper_open()
@@ -568,10 +631,68 @@ def main() -> None:
                     else:
                         arm.gripper_close()
                         gripper_state = 0.0
-                    ctrl = controllers.IntegratedVelocity()
+
+                    target_position = arm.panda.get_position().astype(np.float64)
+                    target_orientation = arm.panda.get_orientation().astype(
+                        np.float64
+                    )  # [x,y,z,w]
+
+                    drift = np.zeros(6, dtype=np.float64)
+                    drift[:3] = target_position - pos_before
+                    delta_quat = quat_multiply(
+                        target_orientation, quat_inverse(ori_before)
+                    )  # [x,y,z,w]
+                    drift[3:] = quat_to_euler(delta_quat)  # 转为欧拉角
+
                     arm.panda.start_controller(ctrl)
-                    ctrl.set_control(np.zeros(7))
                     last_gripper_cmd = gripper_cmd
+
+                    if np.any(drift != 0):
+                        delta = delta + drift
+
+                if args.action_epsilon > 0.0:
+                    small_mask = np.abs(delta) <= args.action_epsilon
+                    if np.any(small_mask):
+                        delta = delta.copy()
+                        delta[small_mask] = 0.0
+
+                if args.max_ee_step_m > 0.0:
+                    step = delta[:3]
+                    step_norm = float(np.linalg.norm(step))
+                    if step_norm > float(args.max_ee_step_m):
+                        delta = delta.copy()
+                        delta[:3] = step / step_norm * float(args.max_ee_step_m)
+
+                if np.any(delta != 0):
+                    current_position = arm.panda.get_position().astype(np.float64)
+                    target_position_new = target_position + delta[:3]
+
+                    if args.max_position_error_m > 0.0:
+                        pos_err = target_position_new - current_position
+                        pos_err_norm = float(np.linalg.norm(pos_err))
+                        if pos_err_norm > float(args.max_position_error_m):
+                            target_position_new = (
+                                current_position
+                                + pos_err
+                                / pos_err_norm
+                                * float(args.max_position_error_m)
+                            )
+
+                    target_orientation_new = target_orientation
+                    if np.any(delta[3:] != 0):
+                        # 欧拉角增量转为四元数，使用 [x,y,z,w] 格式
+                        delta_quat = euler_to_quat(
+                            delta[3], delta[4], delta[5]
+                        )  # [x,y,z,w]
+                        target_orientation_new = quat_multiply(
+                            target_orientation, delta_quat
+                        )  # [x,y,z,w]
+
+                    target_position = target_position_new
+                    target_orientation = target_orientation_new
+                    ctrl.set_control(
+                        target_position, target_orientation
+                    )  # 传入 [x,y,z,w] 格式
 
                 if not enable_logging:
                     continue
@@ -586,7 +707,7 @@ def main() -> None:
                 if wrist_img.shape != (args.image_hw, args.image_hw, 3):
                     continue
 
-                motion_norm = float(np.linalg.norm(cart_vel))
+                motion_norm = float(np.linalg.norm(delta))
                 has_action = motion_norm >= motion_start_threshold or gripper_changed
                 if has_action and not recording_started:
                     recording_started = True
@@ -594,14 +715,12 @@ def main() -> None:
                     print("[Recording] First action detected, start logging...")
 
                 if recording_started:
-                    joint_pos = np.asarray(robot_state.q, dtype=np.float32)
+                    state = arm.panda.get_state()
+                    joint_pos = np.asarray(state.q, dtype=np.float32)
+                    joint_vel = np.asarray(state.dq, dtype=np.float32)
 
                     actions = np.concatenate(
-                        [
-                            normalized_action.astype(np.float32),
-                            [np.float32(gripper_state)],
-                        ],
-                        dtype=np.float32,
+                        [joint_vel, [np.float32(gripper_state)]], dtype=np.float32
                     )
                     gripper_pos = np.asarray(
                         [np.float32(gripper_state)], dtype=np.float32
@@ -629,14 +748,16 @@ def main() -> None:
             reflex_error_occurred = True
             print("\n[Error] Franka reflex triggered; aborting teleop safely.")
             print(f"[Error] {msg}")
-            print("[Hint] Try smaller --sensitivity, or increase --control-frequency.")
+            print(
+                "[Hint] Try smaller --translation-speed/--rotation-speed, or increase --control-frequency. "
+                "The new default --speed-units=per_second is recommended."
+            )
         else:
             raise
     except KeyboardInterrupt:
         print("\n[Recording] Ctrl+C detected, stopping...")
     finally:
         try:
-            ctrl.set_control(np.zeros(7))
             arm.panda.stop_controller()
         except Exception:
             pass

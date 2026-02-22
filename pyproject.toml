@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "dm-control>=1.0.31",
+    "dm-robotics-moma>=0.10.0",
     "lerobot @ git+https://github.com/huggingface/lerobot@0cf864870cf29f4738d3ade893e6fd13fbd7cdb5",
     "opencv-python>=4.13.0.92",
     "panda-python>=0.8.1",
