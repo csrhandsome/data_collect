@@ -4,6 +4,7 @@ Replay or inspect LeRobot datasets collected for OpenPI (DROID-style keys).
 
 Default behavior: print summary and optionally show recorded images.
 Use --execute to actually send joint-velocity commands to the robot.
+夹爪抓的时候会导致速度控制器停止，视频也会停止一下
 """
 
 from __future__ import annotations
@@ -196,7 +197,7 @@ def main() -> None:
         help="Replay speed multiplier (1.0 = real time)",
     )
     parser.add_argument("--loop", type=int, default=1, help="Number of loops")
-    parser.add_argument("--show", action="store_true", help="Show recorded images")
+    parser.add_argument("--no-show", action="store_true", help="Hide recorded images")
     parser.add_argument(
         "--execute", action="store_true", help="Execute joint velocities on the robot"
     )
@@ -247,6 +248,7 @@ def main() -> None:
 
     # Read fps from meta/info.json
     import json
+
     _info = json.loads((ds_root / "meta" / "info.json").read_text())
     fps = float(_info.get("fps", 15.0))
     print("=" * 70)
@@ -286,7 +288,12 @@ def main() -> None:
                         item = ds[int(frame_idx)]
                         action = np.asarray(item["actions"], dtype=np.float32)
                         # action[:7] is normalized [-1,1]; convert to rad/s for apply_joint_velocity
-                        joint_vel = action[:7] * MAX_JOINT_DELTA * action_freq * float(args.velocity_scale)
+                        joint_vel = (
+                            action[:7]
+                            * MAX_JOINT_DELTA
+                            * action_freq
+                            * float(args.velocity_scale)
+                        )
                         gripper_cmd = float(action[7])
                         gripper_open = gripper_cmd > float(args.gripper_threshold)
 
@@ -307,7 +314,7 @@ def main() -> None:
 
                         arm.apply_joint_velocity(joint_vel, streaming=True)
 
-                        if args.show:
+                        if not args.no_show:
                             ep_idx = _as_int(item.get("episode_index"))
                             fr_idx = _as_int(item.get("frame_index"))
                             ext = _decode_image(
@@ -331,7 +338,7 @@ def main() -> None:
                 for frame_idx in ep_indices:
                     item = ds[int(frame_idx)]
                     action = np.asarray(item["actions"], dtype=np.float32)
-                    if args.show:
+                    if not args.no_show:
                         ep_idx = _as_int(item.get("episode_index"))
                         fr_idx = _as_int(item.get("frame_index"))
                         ext = _decode_image(

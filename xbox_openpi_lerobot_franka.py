@@ -320,7 +320,7 @@ def main() -> None:
     print(f"External camera serial: {args.external_camera_serial}")
     print(f"Wrist camera serial: {args.wrist_camera_serial}")
     if enable_logging:
-        date = "2_21"
+        date = "2_22"
         args.repo_id = f"{args.repo_id}_{date}"
         print(f"Logging: enabled (max {args.max_duration} s)")
         print(f"Instruction: {args.instruction}")

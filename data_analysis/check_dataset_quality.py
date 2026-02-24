@@ -559,7 +559,7 @@ def main():
     parser.add_argument(
         "--dataset-path",
         type=str,
-        default="data/openpi/franka_droid_lerobot_2_21",
+        default="data/openpi/franka_droid_lerobot_2_22",
         help="数据集路径",
     )
     parser.add_argument(
