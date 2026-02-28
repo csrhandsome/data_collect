@@ -3,102 +3,274 @@
 Collect Franka teleop data into a LeRobot dataset using DROID-style keys.
 
 - Cameras: external + wrist (2x RealSense)
-- Control: joint velocity via IntegratedVelocity + DROID dm_control IK solver
+- Control: VR controller pose via teleop_xr + IntegratedVelocity + DROID IK solver
 - Actions: normalized joint velocity [-1, 1] + gripper state
 - Output: LeRobot dataset (no intermediate HDF5)
 
-uv run xbox_openpi_lerobot_franka.py \
+Usage example:
+
+uv run vr_openpi_lerobot_franka.py \
   --instruction "Pick up the wide-mouth bottle" \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only
 """
 
+from __future__ import annotations
+
 import argparse
+import socket
 import threading
 import time
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from transforms3d.quaternions import qinverse, qmult, quat2axangle
 
-from control.pygame_gamepad import PygameGamepadTeleop
-from realsense_connector import RealSenseConnector
 from droid_ik_solver import DroidIKSolver
+from realsense_connector import RealSenseConnector
 from control.robotic_arm_controller import RoboticArmControler
-from control.robotic_arm_controller import _camera_capture_worker
 from control.robotic_arm_controller import _LatestFrameBuffer
+from control.robotic_arm_controller import _camera_capture_worker
 
 
-def _get_gamepad_inputs(teleop: PygameGamepadTeleop) -> tuple[dict, dict]:
-    joystick = getattr(teleop, "joystick", None)
-    deadzone = float(getattr(teleop, "deadzone", 0.1))
+def _get_local_ip() -> str:
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
-    axes: dict[str, float] = {
-        "right_x": 0.0,
-        "right_y": 0.0,
-        "lt": 0.0,
-        "rt": 0.0,
-    }
-    buttons: dict[str, bool] = {
-        "l1": False,
-        "r1": False,
-        "a": False,
-        "b": False,
-        "x": False,
-        "o": False,
-    }
 
-    if joystick is None:
-        return axes, buttons
+@dataclass
+class ControllerPose:
+    position: np.ndarray
+    orientation_wxyz: np.ndarray
 
-    teleop.update()
-    num_axes = joystick.get_numaxes()
-    num_buttons = joystick.get_numbuttons()
 
-    def read_axis(index: int, *, apply_deadzone: bool = True) -> float:
-        if index < 0 or index >= num_axes:
-            return 0.0
-        value = float(joystick.get_axis(index))
-        if apply_deadzone and abs(value) < deadzone:
-            return 0.0
-        return value
+def _enum_value(value: Any) -> str:
+    return value.value if hasattr(value, "value") else str(value)
 
-    def read_button(index: int) -> bool:
-        if index < 0 or index >= num_buttons:
-            return False
-        return bool(joystick.get_button(index))
 
-    if num_axes >= 5:
-        axes["right_y"] = read_axis(3)
-        axes["right_x"] = read_axis(4)
-    elif num_axes >= 4:
-        axes["right_x"] = read_axis(2)
-        axes["right_y"] = read_axis(3)
+def _get_controller_device(state: Any, handedness: str) -> Any | None:
+    for device in getattr(state, "devices", []):
+        role = _enum_value(getattr(device, "role", ""))
+        hand = _enum_value(getattr(device, "handedness", ""))
+        if role == "controller" and hand == handedness:
+            return device
+    return None
 
-    def normalize_trigger(value: float) -> float:
-        if value < 0.0:
-            return (value + 1.0) / 2.0
-        return value
 
-    if num_axes >= 6:
-        axes["lt"] = normalize_trigger(read_axis(2, apply_deadzone=False))
-        axes["rt"] = normalize_trigger(read_axis(5, apply_deadzone=False))
-    elif num_axes >= 5:
-        combined = read_axis(2, apply_deadzone=False)
-        axes["lt"] = max(0.0, -combined)
-        axes["rt"] = max(0.0, combined)
+def _get_controller_pose(device: Any) -> ControllerPose | None:
+    if device is None:
+        return None
 
-    buttons["l1"] = read_button(4)
-    buttons["r1"] = read_button(5)
-    buttons["a"] = read_button(0)
-    buttons["b"] = read_button(1)
-    buttons["x"] = read_button(2)
-    buttons["o"] = read_button(3)
+    pose = getattr(device, "gripPose", None) or getattr(device, "pose", None)
+    if pose is None:
+        return None
 
-    return axes, buttons
+    pos = getattr(pose, "position", None)
+    ori = getattr(pose, "orientation", None)
+    if pos is None or ori is None:
+        return None
+
+    position = np.array(
+        [
+            float(pos.get("x", 0.0)),
+            float(pos.get("y", 0.0)),
+            float(pos.get("z", 0.0)),
+        ],
+        dtype=np.float64,
+    )
+    quat = np.array(
+        [
+            float(ori.get("w", 1.0)),
+            float(ori.get("x", 0.0)),
+            float(ori.get("y", 0.0)),
+            float(ori.get("z", 0.0)),
+        ],
+        dtype=np.float64,
+    )
+    norm = np.linalg.norm(quat)
+    if norm <= 1e-12:
+        quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    else:
+        quat = quat / norm
+
+    return ControllerPose(position=position, orientation_wxyz=quat)
+
+
+def _button_pressed(device: Any, index: int) -> bool:
+    if device is None:
+        return False
+    gamepad = getattr(device, "gamepad", None)
+    if gamepad is None:
+        return False
+    buttons = getattr(gamepad, "buttons", [])
+    if index < 0 or index >= len(buttons):
+        return False
+    return bool(getattr(buttons[index], "pressed", False))
+
+
+class TeleopXRInput:
+    """Background teleop_xr server + latest XR state cache."""
+
+    def __init__(self, host: str, port: int, input_mode: str = "controller") -> None:
+        try:
+            from teleop_xr import Teleop
+            from teleop_xr.config import TeleopSettings, InputMode
+            from teleop_xr.messages import XRState
+        except Exception as exc:
+            raise RuntimeError(
+                "teleop_xr is required for VR control. Install it first, e.g.\n"
+                "  uv add 'teleop-xr[ik]@git+https://github.com/qrafty-ai/teleop_xr'"
+            ) from exc
+
+        if input_mode == "controller":
+            mode_enum = InputMode.CONTROLLER
+        elif input_mode == "hand":
+            mode_enum = InputMode.HAND
+        else:
+            mode_enum = InputMode.AUTO
+
+        settings = TeleopSettings(host=host, port=port, input_mode=mode_enum)
+        self._teleop = Teleop(settings=settings)
+        self._xr_state_type = XRState
+
+        self._state_lock = threading.Lock()
+        self._latest_state = None
+        self._last_update_s: float = 0.0
+        self._thread: threading.Thread | None = None
+
+        def _on_xr_update(_pose: np.ndarray, message: dict[str, Any]) -> None:
+            try:
+                payload = message.get("data", message)
+                state = self._xr_state_type.model_validate(payload)
+            except Exception:
+                return
+
+            with self._state_lock:
+                self._latest_state = state
+                self._last_update_s = time.time()
+
+        self._teleop.subscribe(_on_xr_update)
+
+    def connect(self) -> None:
+        self._thread = threading.Thread(target=self._teleop.run, daemon=True)
+        self._thread.start()
+
+    def wait_for_first_state(self, timeout_s: float) -> bool:
+        start = time.time()
+        while True:
+            if self.get_latest_state() is not None:
+                return True
+            if timeout_s > 0 and (time.time() - start) > timeout_s:
+                return False
+            time.sleep(0.01)
+
+    def get_latest_state(self) -> Any | None:
+        with self._state_lock:
+            return self._latest_state
+
+    def last_update_age_s(self) -> float:
+        with self._state_lock:
+            if self._last_update_s <= 0:
+                return float("inf")
+            return max(0.0, time.time() - self._last_update_s)
+
+    def disconnect(self) -> None:
+        try:
+            self._teleop.stop()
+        except Exception:
+            pass
+
+
+class VRToDroidMapper:
+    """Map teleop_xr controller motion to DROID cartesian velocity [-1, 1]."""
+
+    def __init__(
+        self,
+        *,
+        max_lin_step: float,
+        max_rot_step: float,
+        deadman_both_squeeze: bool,
+    ) -> None:
+        self.max_lin_step = max(float(max_lin_step), 1e-6)
+        self.max_rot_step = max(float(max_rot_step), 1e-6)
+        self.deadman_both_squeeze = bool(deadman_both_squeeze)
+
+        self._prev_right_pose: ControllerPose | None = None
+
+    def reset(self) -> None:
+        self._prev_right_pose = None
+
+    def compute(self, xr_state: Any) -> tuple[np.ndarray, dict[str, bool], bool]:
+        left = _get_controller_device(xr_state, "left")
+        right = _get_controller_device(xr_state, "right")
+
+        left_squeeze = _button_pressed(left, 1)
+        right_squeeze = _button_pressed(right, 1)
+
+        if self.deadman_both_squeeze:
+            deadman = left_squeeze and right_squeeze
+        else:
+            deadman = right_squeeze
+
+        right_pose = _get_controller_pose(right)
+        control_active = deadman and right_pose is not None
+
+        # Quest-like mapping (xr-standard gamepad)
+        # index 4: primary (A/X), index 5: secondary (B/Y)
+        right_primary = _button_pressed(right, 4)
+        right_secondary = _button_pressed(right, 5)
+        left_primary = _button_pressed(left, 4)
+        left_secondary = _button_pressed(left, 5)
+
+        buttons = {
+            "gripper_open": right_primary,
+            "gripper_close": right_secondary,
+            "episode_toggle": left_primary or left_secondary,
+        }
+
+        cart_vel = np.zeros(6, dtype=np.float64)
+
+        if not control_active:
+            self._prev_right_pose = None
+            return cart_vel, buttons, False
+
+        assert right_pose is not None
+
+        if self._prev_right_pose is None:
+            self._prev_right_pose = right_pose
+            return cart_vel, buttons, True
+
+        pos_prev = self._prev_right_pose.position
+        quat_prev = self._prev_right_pose.orientation_wxyz
+        pos_now = right_pose.position
+        quat_now = right_pose.orientation_wxyz
+
+        delta_pos = pos_now - pos_prev
+        dq = qmult(quat_now, qinverse(quat_prev))
+        axis, angle = quat2axangle(dq)
+        if abs(angle) < 1e-12 or np.any(np.isnan(axis)):
+            rot_vec = np.zeros(3, dtype=np.float64)
+        else:
+            if angle > np.pi:
+                angle -= 2.0 * np.pi
+            rot_vec = np.asarray(axis, dtype=np.float64) * float(angle)
+
+        cart_vel[:3] = delta_pos / self.max_lin_step
+        cart_vel[3:] = rot_vec / self.max_rot_step
+        cart_vel = np.clip(cart_vel, -1.0, 1.0)
+
+        self._prev_right_pose = right_pose
+        return cart_vel, buttons, True
 
 
 def _create_dataset(
@@ -155,17 +327,11 @@ def _load_or_create_dataset(
         ).is_file()
 
     def resume_existing_dataset_for_recording(path: Path) -> LeRobotDataset:
-        """严格续写模式：只从本地加载 metadata，且不做下载/修复。
-
-        目的：避免 LeRobotDataset.__init__ 在发现缺文件时尝试从 Hub 下载。
-        """
-
         from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
         from lerobot.common.datasets.video_utils import get_safe_default_codec
 
         meta = LeRobotDatasetMetadata(repo_id=repo_id, root=path)
 
-        # 1) 必须所有已记录 episode 的 parquet 都存在，否则不允许续写。
         missing: list[Path] = []
         for ep_idx in range(meta.total_episodes):
             fpath = meta.root / meta.get_data_file_path(ep_idx)
@@ -180,7 +346,6 @@ def _load_or_create_dataset(
                 "Fix the dataset first (e.g. delete/prune incomplete data), then retry."
             )
 
-        # 2) 如果上次录制中断，可能残留 images/episode_{next}. 这种情况会污染续写。
         next_ep = meta.total_episodes
         images_dir = meta.root / "images"
         if images_dir.is_dir():
@@ -191,7 +356,6 @@ def _load_or_create_dataset(
                     f"Please remove '{images_dir}' (or the episode_{next_ep:06d} folder) and retry."
                 )
 
-        # 构造一个“录制用”的 LeRobotDataset：hf_dataset 从空开始即可，meta.total_frames 仍会保证 index 连续。
         dataset = LeRobotDataset.__new__(LeRobotDataset)
         dataset.meta = meta
         dataset.repo_id = meta.repo_id
@@ -207,10 +371,6 @@ def _load_or_create_dataset(
         dataset.delta_indices = None
         dataset.episode_data_index = None
         dataset.video_backend = get_safe_default_codec()
-
-        # Async image writer:
-        # - Use threads by default to avoid multiprocessing semaphore issues on some systems.
-        # - Adjust to processes>0 if your environment supports it and you need higher throughput.
         dataset.start_image_writer(num_processes=0, num_threads=6)
         return dataset
 
@@ -237,7 +397,6 @@ def _load_or_create_dataset(
 
 
 def _prepare_episode_for_save(dataset: LeRobotDataset) -> None:
-    """Align scalar-like features with HF encoding (shape (1,) -> scalar list)."""
     if dataset.episode_buffer is None:
         return
     gripper_values = dataset.episode_buffer.get("gripper_position")
@@ -253,7 +412,7 @@ def _prepare_episode_for_save(dataset: LeRobotDataset) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Collect Franka data into LeRobot (DROID-style keys)"
+        description="Collect Franka data into LeRobot with teleop_xr VR input"
     )
     parser.add_argument(
         "--repo-id",
@@ -268,9 +427,8 @@ def main() -> None:
         type=float,
         default=1.0,
         help=(
-            "Joystick sensitivity multiplier (0-1]. "
-            "1.0 = full DROID speed (0.075 m/step translation, 0.15 rad/step rotation). "
-            "0.5 = half speed. Applied before IK solver."
+            "VR sensitivity multiplier (0-1]. "
+            "1.0 = full DROID speed (0.075 m/step translation, 0.15 rad/step rotation)."
         ),
     )
     parser.add_argument("--action-epsilon", type=float, default=1e-6)
@@ -296,6 +454,44 @@ def main() -> None:
     parser.add_argument("--crop-scale", type=float, default=0.9)
     parser.add_argument("--no-logging", action="store_true")
 
+    parser.add_argument("--host", type=str, default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=4443)
+    parser.add_argument(
+        "--input-mode",
+        type=str,
+        default="controller",
+        choices=["controller", "hand", "auto"],
+    )
+    parser.add_argument(
+        "--xr-startup-timeout-s",
+        type=float,
+        default=60.0,
+        help="Seconds to wait for first XR state after server starts.",
+    )
+    parser.add_argument(
+        "--vr-max-lin-step",
+        type=float,
+        default=0.075,
+        help="Meters of controller translation per control step mapped to cart_vel=1.0",
+    )
+    parser.add_argument(
+        "--vr-max-rot-step",
+        type=float,
+        default=0.15,
+        help="Radians of controller rotation per control step mapped to cart_vel=1.0",
+    )
+    parser.add_argument(
+        "--deadman-both-squeeze",
+        action="store_true",
+        default=True,
+        help="Require both controllers squeeze to move (default: on).",
+    )
+    parser.add_argument(
+        "--deadman-right-only",
+        action="store_true",
+        help="Use only right squeeze as deadman switch.",
+    )
+
     args = parser.parse_args()
 
     if args.control_frequency <= 0:
@@ -305,8 +501,10 @@ def main() -> None:
     if enable_logging and not args.instruction.strip():
         raise ValueError("--instruction is required when logging is enabled")
 
+    deadman_both_squeeze = bool(args.deadman_both_squeeze and not args.deadman_right_only)
+
     print("=" * 70)
-    print("Franka LeRobot data collection (joint velocity actions)")
+    print("Franka LeRobot data collection (VR + joint velocity actions)")
     print("=" * 70)
     print(f"Control frequency: {args.control_frequency} Hz")
     print(f"Sensitivity: {args.sensitivity} (1.0 = full DROID speed)")
@@ -316,7 +514,8 @@ def main() -> None:
         f"{args.camera_width}x{args.camera_height}@{args.camera_fps} "
         f"(depth={'off' if args.color_only else 'on'})"
     )
-    print("Input device: gamepad")
+    print(f"Input device: teleop_xr WebXR ({args.input_mode})")
+    print(f"Teleop host/port: {args.host}:{args.port}")
     print(f"External camera serial: {args.external_camera_serial}")
     print(f"Wrist camera serial: {args.wrist_camera_serial}")
     if enable_logging:
@@ -329,9 +528,26 @@ def main() -> None:
         print("Logging: disabled")
     print("=" * 70)
 
-    print("Connecting gamepad (pygame) backend...")
-    teleop = PygameGamepadTeleop()
-    teleop.connect()
+    print("Starting teleop_xr server...")
+    vr_input = TeleopXRInput(host=args.host, port=args.port, input_mode=args.input_mode)
+    vr_input.connect()
+
+    local_ip = _get_local_ip()
+    print("Open this URL in your headset/browser:")
+    print(f"  https://{local_ip}:{args.port}")
+    print("Wait for VR connection and enter XR mode...")
+
+    if not vr_input.wait_for_first_state(timeout_s=float(args.xr_startup_timeout_s)):
+        raise RuntimeError(
+            "Timed out waiting for XR state. Ensure headset opened the URL and entered XR mode."
+        )
+    print("[VR] First XR state received.")
+
+    mapper = VRToDroidMapper(
+        max_lin_step=float(args.vr_max_lin_step),
+        max_rot_step=float(args.vr_max_rot_step),
+        deadman_both_squeeze=deadman_both_squeeze,
+    )
 
     print("Initializing Franka arm...")
     arm = RoboticArmControler()
@@ -408,10 +624,7 @@ def main() -> None:
     wait_start = time.time()
     while external_buf.get_latest() is None or wrist_buf.get_latest() is None:
         elapsed = time.time() - wait_start
-        if (
-            args.camera_startup_timeout_s > 0
-            and elapsed > args.camera_startup_timeout_s
-        ):
+        if args.camera_startup_timeout_s > 0 and elapsed > args.camera_startup_timeout_s:
             if external_buf.get_latest() is None:
                 print("  Waiting for external camera frame...")
             if wrist_buf.get_latest() is None:
@@ -428,7 +641,6 @@ def main() -> None:
     print("Moving to start position...")
     arm.move_to_start()
 
-    # --- DROID IK solver (replaces simple Jacobian pseudoinverse) ---
     print("Initializing DROID IK solver (dm_control)...")
     ik_solver = DroidIKSolver(control_hz=float(args.control_frequency))
 
@@ -450,14 +662,19 @@ def main() -> None:
     gripper_busy = False
     gripper_switch_cooldown_s = 0.12
     reflex_error_occurred = False
+    last_episode_toggle_pressed = False
+    last_vr_drop_warning_s = 0.0
 
     print("\nControl mapping:")
-    print("  Left stick: XY translation")
-    print("  L2/R2: Z down/up")
-    print("  L1/R1: roll rotation")
-    print("  Right stick: yaw/pitch rotation")
-    print("  A: gripper close | B: gripper open")
-    print("  X/O: save episode + reset (press again with no frames to quit)")
+    print("  Hold squeeze to enable motion")
+    if deadman_both_squeeze:
+        print("    deadman: LEFT squeeze + RIGHT squeeze")
+    else:
+        print("    deadman: RIGHT squeeze")
+    print("  Right controller pose: 6DoF motion")
+    print("  Right A(primary): gripper open | Right B(secondary): gripper close")
+    print("  Left X/Y(primary/secondary): save episode + reset")
+    print("    press again with no frames to quit")
 
     try:
         with arm.panda.create_context(frequency=args.control_frequency) as ctx:
@@ -471,24 +688,31 @@ def main() -> None:
                     print("\n[Recording] Max duration reached, stopping...")
                     break
 
-                action = teleop.get_action()
-                if not action:
+                xr_state = vr_input.get_latest_state()
+                if xr_state is None:
                     time.sleep(0.001)
                     continue
 
-                axes, buttons = _get_gamepad_inputs(teleop)
-                if buttons["x"] or buttons["o"]:
-                    if enable_logging and frame_count > 0:
+                state_age_s = vr_input.last_update_age_s()
+                if state_age_s > 0.5:
+                    now = time.time()
+                    if now - last_vr_drop_warning_s > 1.0:
                         print(
-                            "\n[Control] X/O pressed, saving episode and resetting..."
+                            f"[VR] No fresh XR updates for {state_age_s:.2f}s; holding still...",
+                            end="\r",
                         )
-                        ctrl.set_control(np.zeros(7))  # 停止运动
+                        last_vr_drop_warning_s = now
+
+                cart_vel, vr_buttons, control_active = mapper.compute(xr_state)
+
+                if vr_buttons["episode_toggle"] and not last_episode_toggle_pressed:
+                    if enable_logging and frame_count > 0:
+                        print("\n[Control] Episode toggle pressed, saving and resetting...")
+                        ctrl.set_control(np.zeros(7))
                         try:
                             _prepare_episode_for_save(dataset)
                             dataset.save_episode()
-                            print(
-                                f"[Recording] Saved episode with {frame_count} frames"
-                            )
+                            print(f"[Recording] Saved episode with {frame_count} frames")
                         except Exception as exc:
                             print(f"[Error] Failed to save episode: {exc}")
                             try:
@@ -504,56 +728,45 @@ def main() -> None:
                         arm.gripper_open()
                         gripper_state = 1.0
                         last_gripper_cmd = 1.0
+                        mapper.reset()
                         arm.move_to_start()
 
                         ctrl = controllers.IntegratedVelocity()
                         arm.panda.start_controller(ctrl)
                         ctrl.set_control(np.zeros(7))
-                        continue
+                    else:
+                        print("\n[Control] Episode toggle pressed, stopping...")
+                        break
 
-                    print("\n[Control] X/O pressed, stopping...")
-                    break
+                last_episode_toggle_pressed = vr_buttons["episode_toggle"]
 
-                # --- Cartesian velocity [-1, 1] (DROID semantics) ---
-                # Joystick input [-1, 1] * sensitivity → cartesian_velocity for IK solver
-                cart_vel = np.zeros(6, dtype=np.float64)
                 sens = float(args.sensitivity)
-
-                cart_vel[0] = float(action.get("delta_x", 0.0)) * sens
-                cart_vel[1] = float(action.get("delta_y", 0.0)) * sens
-                cart_vel[2] = (axes["rt"] - axes["lt"]) * sens
-                if getattr(teleop, "joystick", None) is None:
-                    cart_vel[2] = float(action.get("delta_z", 0.0)) * sens
-
-                if buttons["l1"]:
-                    cart_vel[3] -= sens
-                if buttons["r1"]:
-                    cart_vel[3] += sens
-                cart_vel[4] = (-axes["right_y"]) * sens
-                cart_vel[5] = (axes["right_x"]) * sens
+                cart_vel = cart_vel * sens
 
                 if args.action_epsilon > 0.0:
                     small_mask = np.abs(cart_vel) <= args.action_epsilon
                     if np.any(small_mask):
                         cart_vel[small_mask] = 0.0
 
-                # --- DROID IK solver: cart_vel [-1,1] → joint_delta + normalized_action ---
+                if not control_active:
+                    cart_vel[:] = 0.0
+
                 robot_state = arm.panda.get_state()
                 qpos = np.asarray(robot_state.q, dtype=np.float64)
                 qvel = np.asarray(robot_state.dq, dtype=np.float64)
                 joint_delta, normalized_action = ik_solver.solve(cart_vel, qpos, qvel)
 
-                # Apply position increment (same as inference)
-                if not gripper_busy:
+                if control_active and not gripper_busy:
                     ctrl.set_control(joint_delta)
+                elif not gripper_busy:
+                    ctrl.set_control(np.zeros(7))
 
-                # --- Gripper ---
                 gripper_changed = False
                 gripper_cmd = last_gripper_cmd
-                if buttons["a"]:
-                    gripper_cmd = 0.0
-                elif buttons["b"]:
+                if vr_buttons["gripper_open"]:
                     gripper_cmd = 1.0
+                elif vr_buttons["gripper_close"]:
+                    gripper_cmd = 0.0
 
                 now = time.time()
                 if now - last_gripper_switch_time < gripper_switch_cooldown_s:
@@ -566,9 +779,8 @@ def main() -> None:
                     last_gripper_cmd = gripper_cmd
                     gripper_busy = True
 
-                    def _do_gripper(cmd):
+                    def _do_gripper(cmd: float) -> None:
                         nonlocal gripper_busy, ctrl
-                        # 同步操作放到线程里面
                         ctrl.set_control(np.zeros(7))
                         arm.panda.stop_controller()
                         if cmd > 0.5:
@@ -580,9 +792,7 @@ def main() -> None:
                         ctrl.set_control(np.zeros(7))
                         gripper_busy = False
 
-                    threading.Thread(
-                        target=_do_gripper, args=(gripper_cmd,), daemon=True
-                    ).start()
+                    threading.Thread(target=_do_gripper, args=(gripper_cmd,), daemon=True).start()
 
                 if not enable_logging:
                     continue
@@ -614,9 +824,7 @@ def main() -> None:
                         ],
                         dtype=np.float32,
                     )
-                    gripper_pos = np.asarray(
-                        [np.float32(gripper_state)], dtype=np.float32
-                    )
+                    gripper_pos = np.asarray([np.float32(gripper_state)], dtype=np.float32)
                     blank = np.zeros_like(external_img)
 
                     dataset.add_frame(
@@ -667,7 +875,7 @@ def main() -> None:
             pass
 
         try:
-            teleop.disconnect()
+            vr_input.disconnect()
         except Exception:
             pass
 

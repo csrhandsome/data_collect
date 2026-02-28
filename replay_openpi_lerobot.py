@@ -19,7 +19,7 @@ import numpy as np
 
 import datasets as _hf_datasets
 
-from robotic_arm_controller import RoboticArmControler
+from control.robotic_arm_controller import RoboticArmControler
 
 
 def _default_data_root() -> Path:

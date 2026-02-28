@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 import h5py
 import numpy as np
-from robotic_arm_controller import RoboticArmControler
+from control.robotic_arm_controller import RoboticArmControler
 
 
 def find_latest_log(log_dir: str) -> str:

@@ -13,8 +13,8 @@ from typing import Optional
 import h5py
 import numpy as np
 
-from pygame_gamepad import PygameGamepadTeleop
-from robotic_arm_controller import (
+from control.pygame_gamepad import PygameGamepadTeleop
+from control.robotic_arm_controller import (
     RoboticArmControler,
     _LatestFrameBuffer,
     _camera_capture_worker,

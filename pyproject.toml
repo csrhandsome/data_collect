@@ -13,5 +13,6 @@ dependencies = [
     "pygame>=2.6.1",
     "pyrealsense2>=2.56.5.9235",
     "spatialmath-python>=1.1.15",
+    "teleop-xr>=1.2.3",
     "transforms3d>=0.4.2",
 ]
