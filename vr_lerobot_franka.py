@@ -214,8 +214,13 @@ def main() -> None:
     parser.add_argument(
         "--vr-rotation-scale",
         type=float,
-        default=0.3,
-        help="VR rotation (rad) from neutral that maps to full speed. 0.3 ≈ 17 deg.",
+        default=0.8,
+        help="VR rotation (rad) from neutral that maps to full speed. 0.35 ≈ 20 deg.",
+    )
+    parser.add_argument(
+        "--vr-enable-rotation",
+        action="store_true",
+        help="Enable rotation control from VR wrist. Off by default to avoid IK chaos.",
     )
 
     args = parser.parse_args()
