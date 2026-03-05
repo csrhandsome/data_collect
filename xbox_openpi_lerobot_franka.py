@@ -142,7 +142,7 @@ def _create_dataset(
             },
         },
         image_writer_threads=6,
-        image_writer_processes=3,
+        image_writer_processes=0,
     )
 
 
