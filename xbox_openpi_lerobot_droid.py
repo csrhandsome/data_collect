@@ -26,7 +26,7 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 from control.pygame_gamepad import PygameGamepadTeleop
 from realsense_connector import RealSenseConnector
-from droid_ik_solver import DroidIKSolver
+from ik_solver import DroidIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 from control.robotic_arm_controller import _camera_capture_worker
 from control.robotic_arm_controller import _LatestFrameBuffer

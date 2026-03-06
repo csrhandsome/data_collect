@@ -3,15 +3,15 @@
 Collect Franka teleop data into a LeRobot dataset using VR (teleop_xr) input.
 
 - Cameras: external + wrist (2x RealSense)
-- Control: joint velocity via IntegratedVelocity + DROID dm_control IK solver
-- Actions: normalized joint velocity [-1, 1] + gripper state
+- Control: VR end-effector pose -> IK -> joint position controller
+- Actions: absolute joint target + gripper state
 - Output: LeRobot dataset (no intermediate HDF5)
 
 Deadman: hold both VR triggers (long press) to enable arm movement.
 X / Y (left controller): save episode + reset.
 A (right controller): gripper close.  B: gripper open.
 
-uv run vr_lerobot_franka.py \
+uv run vr_openpi_lerobot_joint.py \
   --instruction "Pick up the wide-mouth bottle" \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
@@ -28,9 +28,9 @@ import numpy as np
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 from control.vr_input import VRInputProcess
-from control.vr_input_mapper import VRInputMapper
+from control.vr_input_mapper import VREEPoseMapper
 from realsense_connector import RealSenseConnector
-from droid_ik_solver import DroidIKSolver
+from ik_solver import FrankaJointIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 from control.robotic_arm_controller import _camera_capture_worker
 from control.robotic_arm_controller import _LatestFrameBuffer
@@ -181,7 +181,7 @@ def main() -> None:
         "--sensitivity",
         type=float,
         default=1.0,
-        help="Cartesian velocity multiplier (0-1]. 1.0 = full DROID speed.",
+        help="Global multiplier on the per-step EE command increments.",
     )
     parser.add_argument("--action-epsilon", type=float, default=1e-6)
     parser.add_argument("--camera-width", type=int, default=640)
@@ -208,14 +208,50 @@ def main() -> None:
     parser.add_argument(
         "--vr-translation-scale",
         type=float,
-        default=0.05,
-        help="VR displacement (m) from neutral that maps to full speed. 0.05 = 5cm.",
+        default=0.04,
+        help="VR translation delta (m) between adjacent samples that maps to a full EE translation step. Smaller values make motion faster.",
     )
     parser.add_argument(
         "--vr-rotation-scale",
         type=float,
-        default=0.8,
-        help="VR rotation (rad) from neutral that maps to full speed. 0.35 ≈ 20 deg.",
+        default=0.20,
+        help="VR rotation delta (rad) between adjacent samples that maps to a full EE rotation step. Smaller values make rotation faster.",
+    )
+    parser.add_argument(
+        "--max-ee-translation-step",
+        type=float,
+        default=0.020,
+        help="Maximum EE translation increment per control cycle (m/step) at full VR input.",
+    )
+    parser.add_argument(
+        "--max-ee-rotation-step",
+        type=float,
+        default=0.100,
+        help="Maximum EE rotation increment per control cycle (rad/step) at full VR input.",
+    )
+    parser.add_argument(
+        "--max-ee-translation",
+        type=float,
+        default=0.5,
+        help="Optional workspace half-range around the engagement pose (m). Set 0 to disable the translation clamp.",
+    )
+    parser.add_argument(
+        "--max-ee-rotation",
+        type=float,
+        default=1.2,
+        help="Optional rotational half-range around the engagement pose (rad). Set 0 to disable the rotation clamp.",
+    )
+    parser.add_argument(
+        "--max-joint-delta",
+        type=float,
+        default=0.0,
+        help="Optional hard clip for per-cycle joint position change (rad). Set 0 to disable clipping.",
+    )
+    parser.add_argument(
+        "--joint-velocity-limit",
+        type=float,
+        default=0.45,
+        help="Clip joint velocity feedforward (rad/s). Set 0 to disable feedforward.",
     )
     parser.add_argument(
         "--vr-enable-rotation",
@@ -227,6 +263,22 @@ def main() -> None:
     sys.setswitchinterval(0.0005)
     if args.control_frequency <= 0:
         raise ValueError("--control-frequency must be > 0")
+    if args.vr_translation_scale <= 0:
+        raise ValueError("--vr-translation-scale must be > 0")
+    if args.vr_rotation_scale <= 0:
+        raise ValueError("--vr-rotation-scale must be > 0")
+    if args.max_ee_translation_step <= 0:
+        raise ValueError("--max-ee-translation-step must be > 0")
+    if args.max_ee_rotation_step <= 0:
+        raise ValueError("--max-ee-rotation-step must be > 0")
+    if args.max_ee_translation < 0:
+        raise ValueError("--max-ee-translation must be >= 0")
+    if args.max_ee_rotation < 0:
+        raise ValueError("--max-ee-rotation must be >= 0")
+    if args.max_joint_delta < 0:
+        raise ValueError("--max-joint-delta must be >= 0")
+    if args.joint_velocity_limit < 0:
+        raise ValueError("--joint-velocity-limit must be >= 0")
 
     enable_logging = not args.no_logging
     if enable_logging and not args.instruction.strip():
@@ -235,8 +287,32 @@ def main() -> None:
     print("=" * 70)
     print("Franka LeRobot data collection (VR teleop)")
     print("=" * 70)
+    dq_clip_str = (
+        "off" if args.max_joint_delta <= 0 else f"{args.max_joint_delta:.3f}rad/step"
+    )
+    qvel_ff_str = (
+        "off"
+        if args.joint_velocity_limit <= 0
+        else f"{args.joint_velocity_limit:.2f}rad/s"
+    )
+    trans_limit_str = (
+        "off" if args.max_ee_translation <= 0 else f"±{args.max_ee_translation:.3f}m"
+    )
+    rot_limit_str = (
+        "off" if args.max_ee_rotation <= 0 else f"±{args.max_ee_rotation:.3f}rad"
+    )
     print(f"Control frequency: {args.control_frequency} Hz")
     print(f"Sensitivity: {args.sensitivity}")
+    print(
+        "Joint control tuning: "
+        f"step_xyz={args.max_ee_translation_step:.3f}m, "
+        f"step_rot={args.max_ee_rotation_step:.3f}rad, "
+        f"limit_xyz={trans_limit_str}, "
+        f"limit_rot={rot_limit_str}, "
+        f"vr_rot={'on' if args.vr_enable_rotation else 'off'}, "
+        f"dq_clip={dq_clip_str}, "
+        f"qdot_ff={qvel_ff_str}"
+    )
     print(
         f"Camera stream: {args.camera_width}x{args.camera_height}@{args.camera_fps} "
         f"(depth={'off' if args.color_only else 'on'})"
@@ -263,9 +339,20 @@ def main() -> None:
     )
     vr_reader.start()
 
-    vr_mapper = VRInputMapper(
+    max_ee_translation = float(args.max_ee_translation)
+    max_ee_rotation = float(args.max_ee_rotation)
+    max_ee_translation_step = float(args.max_ee_translation_step)
+    max_ee_rotation_step = float(args.max_ee_rotation_step)
+    max_joint_delta = float(args.max_joint_delta)
+
+    vr_mapper = VREEPoseMapper(
         translation_scale=args.vr_translation_scale,
         rotation_scale=args.vr_rotation_scale,
+        max_translation_step=max_ee_translation_step,
+        max_rotation_step=max_ee_rotation_step,
+        translation_limit=max_ee_translation,
+        rotation_limit=max_ee_rotation,
+        sensitivity=args.sensitivity,
     )
 
     # --- Franka arm ---
@@ -364,16 +451,35 @@ def main() -> None:
     print("Moving to start position...")
     arm.move_to_start()
 
-    # --- DROID IK solver ---
-    print("Initializing DROID IK solver (dm_control)...")
-    ik_solver = DroidIKSolver(control_hz=float(args.control_frequency))
+    # --- EE pose IK solver ---
+    print("Initializing Franka EE pose IK solver (dm_control)...")
+    ik_solver = FrankaJointIKSolver(
+        linear_tol=2e-3,
+        angular_tol=5e-3,
+        max_steps=50,
+        num_attempts=1,
+    )
+    joint_limits = ik_solver.joint_limits
 
     from panda_py import controllers
 
-    ctrl = controllers.IntegratedVelocity()
-    arm.panda.start_controller(ctrl)
-    time.sleep(0.5)
-    ctrl.set_control(np.zeros(7))
+    def _current_qpos() -> np.ndarray:
+        robot_state = arm.panda.get_state()
+        return np.asarray(robot_state.q, dtype=np.float64)
+
+    def _hold_current_joint_position(controller) -> None:
+        qpos = _current_qpos()
+        controller.set_control(qpos, np.zeros(7, dtype=np.float64))
+
+    def _start_joint_position_controller(settle_s: float = 0.0):
+        controller = controllers.JointPosition()
+        arm.panda.start_controller(controller)
+        if settle_s > 0.0:
+            time.sleep(settle_s)
+        _hold_current_joint_position(controller)
+        return controller
+
+    ctrl = _start_joint_position_controller(settle_s=0.5)
 
     gripper_state = 1.0
     last_gripper_cmd = 1.0
@@ -387,10 +493,14 @@ def main() -> None:
     gripper_switch_cooldown_s = 0.12
     reflex_error_occurred = False
     prev_save_pressed = False
+    last_ik_warning_at = 0.0
 
     print("\nControl mapping (VR):")
     print("  Hold both triggers (long press): enable arm movement")
-    print("  Right controller pose: 6DoF arm control")
+    print(
+        "  Right controller pose: snapshot-based EE pose control -> IK -> joint position"
+    )
+    print("  Release / re-hold triggers: re-anchor the VR neutral pose")
     print("  A (right): gripper close | B (right): gripper open")
     print("  X/Y (left): save episode + reset (press again with no frames to quit)")
 
@@ -418,7 +528,7 @@ def main() -> None:
                         print(
                             "\n[Control] X/Y pressed, saving episode and resetting..."
                         )
-                        ctrl.set_control(np.zeros(7))
+                        _hold_current_joint_position(ctrl)
                         try:
                             _prepare_episode_for_save(dataset)
                             dataset.save_episode()
@@ -442,31 +552,78 @@ def main() -> None:
                         last_gripper_cmd = 1.0
                         arm.move_to_start()
 
-                        ctrl = controllers.IntegratedVelocity()
-                        arm.panda.start_controller(ctrl)
-                        ctrl.set_control(np.zeros(7))
+                        ctrl = _start_joint_position_controller()
                         vr_mapper.reset()
                         continue
 
                     print("\n[Control] X/Y pressed, stopping...")
                     break
 
-                # --- Cartesian velocity from VR ---
-                cart_vel = vr_mapper.map(vr) * float(args.sensitivity)
-
-                if args.action_epsilon > 0.0:
-                    small_mask = np.abs(cart_vel) <= args.action_epsilon
-                    if np.any(small_mask):
-                        cart_vel[small_mask] = 0.0
-
-                # --- DROID IK: cart_vel [-1,1] -> joint_delta + normalized_action ---
                 robot_state = arm.panda.get_state()
                 qpos = np.asarray(robot_state.q, dtype=np.float64)
-                qvel = np.asarray(robot_state.dq, dtype=np.float64)
-                joint_delta, normalized_action = ik_solver.solve(cart_vel, qpos, qvel)
+                ee_pos, ee_quat = ik_solver.forward_kinematics(qpos)
+                target_ee_pos, target_ee_quat = vr_mapper.map(vr, ee_pos, ee_quat)
+
+                joint_delta = np.zeros(7, dtype=np.float64)
+                normalized_action = np.zeros(7, dtype=np.float64)
+                qpos_cmd = qpos.copy()
+                qvel_cmd = np.zeros(7, dtype=np.float64)
+
+                if vr.arm_enabled and not gripper_busy:
+                    target_qpos = ik_solver.solve_pose(
+                        target_ee_pos,
+                        target_ee_quat,
+                        initial_joint_configuration=qpos,
+                        nullspace_reference=qpos,
+                        early_stop=True,
+                        num_attempts=1,
+                        stop_on_first_successful_attempt=True,
+                    )
+                    if target_qpos is None:
+                        now = time.time()
+                        if now - last_ik_warning_at > 1.0:
+                            print(
+                                "[Warning] IK failed for current EE target; holding position."
+                            )
+                            last_ik_warning_at = now
+                    else:
+                        target_qpos = np.clip(
+                            np.asarray(target_qpos, dtype=np.float64),
+                            joint_limits[:, 0],
+                            joint_limits[:, 1],
+                        )
+                        joint_delta = target_qpos - qpos
+                        if max_joint_delta > 0.0:
+                            joint_delta = np.clip(
+                                joint_delta,
+                                -max_joint_delta,
+                                max_joint_delta,
+                            )
+                            normalized_action = joint_delta / max_joint_delta
+                        else:
+                            normalized_action = joint_delta.copy()
+
+                if args.action_epsilon > 0.0:
+                    small_mask = np.abs(joint_delta) <= args.action_epsilon
+                    if np.any(small_mask):
+                        normalized_action[small_mask] = 0.0
+                        joint_delta[small_mask] = 0.0
 
                 if not gripper_busy:
-                    ctrl.set_control(joint_delta)
+                    qpos_cmd = np.clip(
+                        qpos + joint_delta,
+                        joint_limits[:, 0],
+                        joint_limits[:, 1],
+                    )
+                    if args.joint_velocity_limit > 0.0:
+                        qvel_cmd = np.clip(
+                            joint_delta * float(args.control_frequency),
+                            -float(args.joint_velocity_limit),
+                            float(args.joint_velocity_limit),
+                        )
+                    else:
+                        qvel_cmd = np.zeros(7, dtype=np.float64)
+                    ctrl.set_control(qpos_cmd, qvel_cmd)
 
                 # --- Gripper ---
                 gripper_changed = False
@@ -489,15 +646,14 @@ def main() -> None:
 
                     def _do_gripper(cmd):
                         nonlocal gripper_busy, ctrl
-                        ctrl.set_control(np.zeros(7))
+                        _hold_current_joint_position(ctrl)
                         arm.panda.stop_controller()
                         if cmd > 0.5:
                             arm.gripper_open()
                         else:
                             arm.gripper_close()
-                        ctrl = controllers.IntegratedVelocity()
-                        arm.panda.start_controller(ctrl)
-                        ctrl.set_control(np.zeros(7))
+                        ctrl = _start_joint_position_controller()
+                        vr_mapper.reset()
                         gripper_busy = False
 
                     threading.Thread(
@@ -517,7 +673,7 @@ def main() -> None:
                 if wrist_img.shape != (args.image_hw, args.image_hw, 3):
                     continue
 
-                motion_norm = float(np.linalg.norm(cart_vel))
+                motion_norm = float(np.linalg.norm(joint_delta))
                 has_action = motion_norm >= motion_start_threshold or gripper_changed
                 if has_action and not recording_started:
                     recording_started = True
@@ -529,7 +685,7 @@ def main() -> None:
 
                     actions = np.concatenate(
                         [
-                            normalized_action.astype(np.float32),
+                            qpos_cmd.astype(np.float32),
                             [np.float32(gripper_state)],
                         ],
                         dtype=np.float32,
@@ -560,14 +716,17 @@ def main() -> None:
             reflex_error_occurred = True
             print("\n[Error] Franka reflex triggered; aborting teleop safely.")
             print(f"[Error] {msg}")
-            print("[Hint] Try smaller --sensitivity, or increase --control-frequency.")
+            print(
+                "[Hint] Try smaller --sensitivity, --max-ee-translation-step, "
+                "or --max-ee-rotation-step."
+            )
         else:
             raise
     except KeyboardInterrupt:
         print("\n[Recording] Ctrl+C detected, stopping...")
     finally:
         try:
-            ctrl.set_control(np.zeros(7))
+            _hold_current_joint_position(ctrl)
             arm.panda.stop_controller()
         except Exception:
             pass
