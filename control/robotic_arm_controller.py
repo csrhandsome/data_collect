@@ -189,8 +189,8 @@ class RoboticArmControler:
         self.enforce_default_height = enforce_default_height
 
         # 设置碰撞检测阈值
-        collision_torque = [50.0, 50.0, 50.0, 50.0, 40.0, 30.0, 20.0]
-        collision_force = [50.0, 50.0, 50.0, 40.0, 40.0, 40.0]
+        collision_torque = [80.0, 80.0, 80.0, 80.0, 48.0, 36.0, 24.0]
+        collision_force = [90.0, 90.0, 90.0, 55.0, 55.0, 55.0]
         self.panda.get_robot().set_collision_behavior(
             collision_torque,
             collision_torque,

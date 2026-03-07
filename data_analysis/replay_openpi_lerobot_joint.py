@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Replay or inspect LeRobot datasets collected for OpenPI (DROID-style keys).
+Replay or inspect LeRobot joint-position datasets collected for OpenPI.
 
 Default behavior: print summary and optionally show recorded images.
-Use --execute to actually send joint-velocity commands to the robot.
-夹爪抓的时候会导致速度控制器停止，视频也会停止一下
+Use --execute to actually send recorded joint-position actions to the robot.
+夹爪抓的时候会导致控制器停止，视频也会停止一下
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import textwrap
 import time
 from io import BytesIO
 from pathlib import Path
@@ -23,7 +24,7 @@ from control.robotic_arm_controller import RoboticArmControler
 
 
 def _default_data_root() -> Path:
-    return Path(__file__).resolve().parent / "data"
+    return Path(__file__).resolve().parent.parent / "data"
 
 
 def _default_dataset_root(repo_id: str) -> Path:
@@ -65,7 +66,82 @@ def _list_episodes(ds: _hf_datasets.Dataset) -> list[int]:
     return sorted(set(ds["episode_index"]))
 
 
-def show_image(frame: np.ndarray, *, win_name: str, scale: float = 1.0) -> None:
+def _as_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0 or value.size == 1:
+            try:
+                return _as_text(value.item())
+            except Exception:
+                return ""
+        return ""
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1:
+            return _as_text(value[0])
+        return " ".join(part for part in (_as_text(v) for v in value) if part)
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8", errors="ignore").strip()
+        except Exception:
+            return ""
+    return str(value).strip()
+
+
+def _draw_prompt_overlay(bgr: np.ndarray, prompt: str) -> np.ndarray:
+    prompt = prompt.strip()
+    if not prompt:
+        return bgr
+
+    try:
+        import cv2
+    except Exception:
+        return bgr
+
+    annotated = bgr.copy()
+    height, width = annotated.shape[:2]
+    margin = max(8, width // 50)
+    font_scale = max(0.45, min(0.8, width / 960.0))
+    thickness = 1 if width < 960 else 2
+    line_height = max(20, int(26 * font_scale))
+    max_chars = max(24, width // 12)
+    lines = textwrap.wrap(f"Prompt: {prompt}", width=max_chars)[:4]
+    box_height = margin * 2 + line_height * len(lines)
+
+    overlay = annotated.copy()
+    cv2.rectangle(
+        overlay,
+        (margin, margin),
+        (width - margin, min(height - margin, margin + box_height)),
+        (0, 0, 0),
+        -1,
+    )
+    cv2.addWeighted(overlay, 0.45, annotated, 0.55, 0.0, annotated)
+
+    y = margin + line_height
+    for line in lines:
+        cv2.putText(
+            annotated,
+            line,
+            (margin * 2, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (255, 255, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
+        y += line_height
+
+    return annotated
+
+
+def show_image(
+    frame: np.ndarray,
+    *,
+    win_name: str,
+    scale: float = 1.0,
+    prompt: str = "",
+) -> None:
     try:
         import cv2
     except Exception:
@@ -80,6 +156,7 @@ def show_image(frame: np.ndarray, *, win_name: str, scale: float = 1.0) -> None:
         img = (img * 255.0).astype(np.uint8)
     if img.ndim == 3 and img.shape[-1] == 3:
         bgr = img[..., ::-1]
+        bgr = _draw_prompt_overlay(bgr, prompt)
     else:
         return
     if scale != 1.0:
@@ -163,7 +240,7 @@ def _decode_image(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Replay/inspect LeRobot dataset (OpenPI DROID-style keys)"
+        description="Replay/inspect LeRobot dataset (OpenPI joint-position actions)"
     )
     parser.add_argument(
         "--repo-id",
@@ -199,7 +276,9 @@ def main() -> None:
     parser.add_argument("--loop", type=int, default=1, help="Number of loops")
     parser.add_argument("--no-show", action="store_true", help="Hide recorded images")
     parser.add_argument(
-        "--execute", action="store_true", help="Execute joint velocities on the robot"
+        "--execute",
+        action="store_true",
+        help="Execute joint-position actions on the robot",
     )
     parser.add_argument(
         "--velocity-scale",
@@ -251,8 +330,9 @@ def main() -> None:
 
     _info = json.loads((ds_root / "meta" / "info.json").read_text())
     fps = float(_info.get("fps", 15.0))
+    episode_prompt = _as_text(ds[int(ep_indices[0])].get("task"))
     print("=" * 70)
-    print("LeRobot replay")
+    print("LeRobot replay (joint position)")
     print("=" * 70)
     print(f"Dataset: {repo_id}")
     print(f"Root: {ds_root}")
@@ -261,25 +341,27 @@ def main() -> None:
     print(f"FPS: {fps:.2f}")
     print(f"Speed: {args.speed}x")
     print(f"Execute: {args.execute}")
+    if episode_prompt:
+        print(f"Prompt: {episode_prompt}")
     print("=" * 70)
 
     arm = None
+    action_freq = float(fps * args.speed)
     if args.execute:
+        from panda_py import controllers
+
         arm = RoboticArmControler()
+        first_action = np.asarray(ds[int(ep_indices[0])]["actions"], dtype=np.float64)
         if not args.no_init:
-            arm.move_to_start()
-        action_freq = float(fps * args.speed)
-        control_freq = max(action_freq * 10.0, 200.0)
-        MAX_JOINT_DELTA = 0.2  # rad/step, matches DROID
-        arm.start_velocity_streaming(
-            control_frequency=control_freq, time_step=1.0 / action_freq
-        )
+            print("Moving to first recorded joint target...")
+            arm.panda.move_to_joint_position(first_action[:7])
 
     try:
         for loop_idx in range(int(args.loop)):
             print(f"\n[Replay] Loop {loop_idx + 1}/{args.loop}")
-            # Using create_context only when executing, to maintain control frequency.
             if args.execute and arm is not None:
+                ctrl = controllers.JointPosition()
+                arm.panda.start_controller(ctrl)
                 with arm.panda.create_context(frequency=action_freq) as ctx:
                     last_gripper_open = None
                     for frame_idx in ep_indices:
@@ -287,13 +369,8 @@ def main() -> None:
                             break
                         item = ds[int(frame_idx)]
                         action = np.asarray(item["actions"], dtype=np.float32)
-                        # action[:7] is normalized [-1,1]; convert to rad/s for apply_joint_velocity
-                        joint_vel = (
-                            action[:7]
-                            * MAX_JOINT_DELTA
-                            * action_freq
-                            * float(args.velocity_scale)
-                        )
+                        prompt = _as_text(item.get("task"))
+                        joint_target = np.asarray(action[:7], dtype=np.float64)
                         gripper_cmd = float(action[7])
                         gripper_open = gripper_cmd > float(args.gripper_threshold)
 
@@ -301,18 +378,16 @@ def main() -> None:
                             last_gripper_open is None
                             or gripper_open != last_gripper_open
                         ):
-                            arm.stop_velocity_streaming()
+                            arm.panda.stop_controller()
                             if gripper_open:
                                 arm.gripper_open()
                             else:
                                 arm.gripper_close()
-                            arm.start_velocity_streaming(
-                                control_frequency=control_freq,
-                                time_step=1.0 / action_freq,
-                            )
+                            ctrl = controllers.JointPosition()
+                            arm.panda.start_controller(ctrl)
                             last_gripper_open = gripper_open
 
-                        arm.apply_joint_velocity(joint_vel, streaming=True)
+                        ctrl.set_control(joint_target, np.zeros(7, dtype=np.float64))
 
                         if not args.no_show:
                             ep_idx = _as_int(item.get("episode_index"))
@@ -331,13 +406,22 @@ def main() -> None:
                                 episode_index=ep_idx,
                                 frame_index=fr_idx,
                             )
-                            show_image(ext, win_name="Recorded External")
-                            show_image(wrist, win_name="Recorded Wrist")
+                            show_image(
+                                ext,
+                                win_name="Recorded External",
+                                prompt=prompt,
+                            )
+                            show_image(
+                                wrist,
+                                win_name="Recorded Wrist",
+                                prompt=prompt,
+                            )
             else:
                 dt = (1.0 / fps) / float(args.speed)
                 for frame_idx in ep_indices:
                     item = ds[int(frame_idx)]
                     action = np.asarray(item["actions"], dtype=np.float32)
+                    prompt = _as_text(item.get("task"))
                     if not args.no_show:
                         ep_idx = _as_int(item.get("episode_index"))
                         fr_idx = _as_int(item.get("frame_index"))
@@ -355,15 +439,15 @@ def main() -> None:
                             episode_index=ep_idx,
                             frame_index=fr_idx,
                         )
-                        show_image(ext, win_name="Recorded External")
-                        show_image(wrist, win_name="Recorded Wrist")
+                        show_image(ext, win_name="Recorded External", prompt=prompt)
+                        show_image(wrist, win_name="Recorded Wrist", prompt=prompt)
                     time.sleep(dt)
     except KeyboardInterrupt:
         print("\n[Replay] Interrupted")
     finally:
         if args.execute and arm is not None:
             try:
-                arm.stop_velocity_streaming()
+                arm.panda.stop_controller()
             except Exception:
                 pass
             arm.cleanup()

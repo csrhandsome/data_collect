@@ -1,6 +1,67 @@
-# LeRobot 数据集质量检查工具
+# LeRobot 数据分析工具
 
 ## 概述
+
+`data_analysis` 目录目前包含两类脚本：
+
+1. 数据集质量检查
+2. 基于大模型的视频 CoT 分析
+
+---
+
+## 视频 CoT 分析
+
+`cot_pipeline.py` 会：
+
+1. 从视频中均匀抽取若干帧
+2. 读取 `data/config.json` 里的 OpenAI 兼容配置
+3. 默认使用配置中的 Qwen 模型发起分析请求
+4. 将输出整理成 `<think>...</think>` + 最终结论 的格式
+
+### 配置文件
+
+默认读取 `data/config.json`，支持以下字段：
+
+- `API_KEY` / `OPENAI_API_KEY` / `DASHSCOPE_API_KEY`
+- `BASE_URL` / `OPENAI_BASE_URL`
+- `MODEL_NAME` / `OPENAI_MODEL`
+
+当前仓库里的示例配置可直接匹配 `BASE_URL` + `MODEL_NAME` 这种写法。
+
+### 用法示例
+
+```bash
+python data_analysis/cot_pipeline.py \
+  --video-path path/to/demo.mp4 \
+  --output-path data_analysis/output/demo_think.txt
+```
+
+自定义提示词：
+
+```bash
+python data_analysis/cot_pipeline.py \
+  --video-path path/to/demo.mp4 \
+  --prompt "请判断这个视频里的人在做什么，并总结关键动作与最终状态。" \
+  --max-frames 10
+```
+
+### 输出格式
+
+输出会尽量统一成：
+
+```text
+<think>
+这里是模型推理摘要
+</think>
+
+这里是最终结论
+```
+
+如果底层接口没有单独返回 `reasoning_content`，脚本也会自动补齐 `<think>` 包裹结构。
+
+---
+
+## 数据集质量检查
 
 这个工具用于检查 LeRobot 格式数据集的质量，包括数据完整性、图像质量、动作数据、时间戳和帧率等。
 

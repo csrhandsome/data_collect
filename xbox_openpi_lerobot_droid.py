@@ -9,9 +9,15 @@ Collect Franka teleop data into a LeRobot dataset using DROID-style keys.
 
 uv run xbox_openpi_lerobot_franka.py \
   --instruction "Pick up the wide-mouth bottle" \
+  --second-instruction "..." \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only
+
+Controls:
+- X: switch to the second prompt.
+- Y: start/stop recording (save on stop, no reset).
+- A/B: gripper close/open.
 """
 
 import argparse
@@ -48,6 +54,7 @@ def _get_gamepad_inputs(teleop: PygameGamepadTeleop) -> tuple[dict, dict]:
         "a": False,
         "b": False,
         "x": False,
+        "y": False,
         "o": False,
     }
 
@@ -96,6 +103,7 @@ def _get_gamepad_inputs(teleop: PygameGamepadTeleop) -> tuple[dict, dict]:
     buttons["a"] = read_button(0)
     buttons["b"] = read_button(1)
     buttons["x"] = read_button(2)
+    buttons["y"] = read_button(3)
     buttons["o"] = read_button(3)
 
     return axes, buttons
@@ -262,6 +270,7 @@ def main() -> None:
         help="Repo id for storing all episodes (all prompts share the same repo).",
     )
     parser.add_argument("--instruction", type=str, default="")
+    parser.add_argument("--second-instruction", type=str, default="")
     parser.add_argument("--control-frequency", type=float, default=15.0)
     parser.add_argument(
         "--sensitivity",
@@ -324,6 +333,8 @@ def main() -> None:
         args.repo_id = f"{args.repo_id}_{date}"
         print(f"Logging: enabled (max {args.max_duration} s)")
         print(f"Instruction: {args.instruction}")
+        if args.second_instruction.strip():
+            print(f"Second instruction: {args.second_instruction}")
         print(f"LeRobot repo_id: {args.repo_id}")
     else:
         print("Logging: disabled")
@@ -439,10 +450,10 @@ def main() -> None:
     time.sleep(0.5)
     ctrl.set_control(np.zeros(7))
 
+    active_instruction = args.instruction
     gripper_state = 1.0
     last_gripper_cmd = 1.0
 
-    motion_start_threshold = max(float(args.action_epsilon), 1e-3)
     recording_started = False
     recording_started_at: Optional[float] = None
     frame_count = 0
@@ -450,6 +461,34 @@ def main() -> None:
     gripper_busy = False
     gripper_switch_cooldown_s = 0.12
     reflex_error_occurred = False
+    prev_x_pressed = False
+    prev_y_pressed = False
+
+    def _finish_recording(*, save_episode: bool, message: str) -> None:
+        nonlocal frame_count, recording_started, recording_started_at
+
+        print(message)
+        if dataset is not None:
+            if save_episode and frame_count > 0:
+                try:
+                    _prepare_episode_for_save(dataset)
+                    dataset.save_episode()
+                    print(f"[Recording] Saved episode with {frame_count} frames")
+                except Exception as exc:
+                    print(f"[Error] Failed to save episode: {exc}")
+                    try:
+                        dataset.clear_episode_buffer()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    dataset.clear_episode_buffer()
+                except Exception:
+                    pass
+
+        frame_count = 0
+        recording_started = False
+        recording_started_at = None
 
     print("\nControl mapping:")
     print("  Left stick: XY translation")
@@ -457,7 +496,10 @@ def main() -> None:
     print("  L1/R1: roll rotation")
     print("  Right stick: yaw/pitch rotation")
     print("  A: gripper close | B: gripper open")
-    print("  X/O: save episode + reset (press again with no frames to quit)")
+    print("  X: switch to second prompt")
+    print(
+        "  Y (top face button): start/stop recording (save on stop, no move_to_start)"
+    )
 
     try:
         with arm.panda.create_context(frequency=args.control_frequency) as ctx:
@@ -468,8 +510,12 @@ def main() -> None:
                     and recording_started_at is not None
                     and (time.time() - recording_started_at) > args.max_duration
                 ):
-                    print("\n[Recording] Max duration reached, stopping...")
-                    break
+                    ctrl.set_control(np.zeros(7))
+                    _finish_recording(
+                        save_episode=frame_count > 0,
+                        message="\n[Recording] Max duration reached, stopping current episode...",
+                    )
+                    continue
 
                 action = teleop.get_action()
                 if not action:
@@ -477,42 +523,51 @@ def main() -> None:
                     continue
 
                 axes, buttons = _get_gamepad_inputs(teleop)
-                if buttons["x"] or buttons["o"]:
-                    if enable_logging and frame_count > 0:
+                x_pressed = buttons["x"]
+                y_pressed = buttons["y"]
+                x_edge = x_pressed and not prev_x_pressed
+                y_edge = y_pressed and not prev_y_pressed
+                prev_x_pressed = x_pressed
+                prev_y_pressed = y_pressed
+
+                if x_edge:
+                    if not enable_logging:
+                        print("\n[Prompt] Ignored X press because logging is disabled.")
+                    elif not args.second_instruction.strip():
                         print(
-                            "\n[Control] X/O pressed, saving episode and resetting..."
+                            "\n[Prompt] X pressed, but --second-instruction is empty; keeping current prompt."
                         )
-                        ctrl.set_control(np.zeros(7))  # 停止运动
-                        try:
-                            _prepare_episode_for_save(dataset)
-                            dataset.save_episode()
-                            print(
-                                f"[Recording] Saved episode with {frame_count} frames"
-                            )
-                        except Exception as exc:
-                            print(f"[Error] Failed to save episode: {exc}")
-                            try:
-                                dataset.clear_episode_buffer()
-                            except Exception:
-                                pass
-                        finally:
-                            frame_count = 0
-                            recording_started = False
-                            recording_started_at = None
+                    elif active_instruction == args.second_instruction:
+                        print("\n[Prompt] Second prompt is already active.")
+                    else:
+                        active_instruction = args.second_instruction
+                        print(
+                            f"\n[Prompt] Switched active prompt to second prompt: {active_instruction}"
+                        )
+                    continue
 
-                        arm.panda.stop_controller()
-                        arm.gripper_open()
-                        gripper_state = 1.0
-                        last_gripper_cmd = 1.0
-                        arm.move_to_start()
-
-                        ctrl = controllers.IntegratedVelocity()
-                        arm.panda.start_controller(ctrl)
+                if y_edge:
+                    if not enable_logging:
+                        print(
+                            "\n[Recording] Ignored Y press because logging is disabled."
+                        )
+                    elif not recording_started:
+                        recording_started = True
+                        recording_started_at = time.time()
+                        print(
+                            f"\n[Recording] Y pressed, start logging with prompt: {active_instruction}"
+                        )
+                    else:
                         ctrl.set_control(np.zeros(7))
-                        continue
-
-                    print("\n[Control] X/O pressed, stopping...")
-                    break
+                        _finish_recording(
+                            save_episode=frame_count > 0,
+                            message=(
+                                "\n[Control] Y pressed, stopping and saving episode..."
+                                if frame_count > 0
+                                else "\n[Control] Y pressed, stopping recording with no captured frames."
+                            ),
+                        )
+                    continue
 
                 # --- Cartesian velocity [-1, 1] (DROID semantics) ---
                 # Joystick input [-1, 1] * sensitivity → cartesian_velocity for IK solver
@@ -548,7 +603,6 @@ def main() -> None:
                     ctrl.set_control(joint_delta)
 
                 # --- Gripper ---
-                gripper_changed = False
                 gripper_cmd = last_gripper_cmd
                 if buttons["a"]:
                     gripper_cmd = 0.0
@@ -560,7 +614,6 @@ def main() -> None:
                     gripper_cmd = last_gripper_cmd
 
                 if gripper_cmd != last_gripper_cmd and not gripper_busy:
-                    gripper_changed = True
                     last_gripper_switch_time = now
                     gripper_state = 1.0 if gripper_cmd > 0.5 else 0.0
                     last_gripper_cmd = gripper_cmd
@@ -597,13 +650,6 @@ def main() -> None:
                 if wrist_img.shape != (args.image_hw, args.image_hw, 3):
                     continue
 
-                motion_norm = float(np.linalg.norm(cart_vel))
-                has_action = motion_norm >= motion_start_threshold or gripper_changed
-                if has_action and not recording_started:
-                    recording_started = True
-                    recording_started_at = time.time()
-                    print("[Recording] First action detected, start logging...")
-
                 if recording_started:
                     joint_pos = np.asarray(robot_state.q, dtype=np.float32)
 
@@ -627,7 +673,7 @@ def main() -> None:
                             "joint_position": joint_pos,
                             "gripper_position": gripper_pos,
                             "actions": actions,
-                            "task": args.instruction,
+                            "task": active_instruction,
                         }
                     )
                     frame_count += 1

@@ -6,7 +6,8 @@ Provides two modes:
     contention from camera / IK / panda threads in the main process.
 
 Deadman switch: both triggers (button 0) held for >long_press_s.
-X/Y (left controller buttons 4/5): save episode.
+X (left controller button 4): switch to the second prompt.
+Y (left controller button 5): start/stop recording.
 A/B (right controller buttons 4/5): close/open gripper.
 """
 
@@ -19,7 +20,7 @@ from teleop_xr import Teleop
 from teleop_xr.config import TeleopSettings
 from teleop_xr.messages import XRState
 
-# Shared-memory layout (12 doubles, lock-free):
+# Shared-memory layout (13 doubles, lock-free):
 #  [0]  arm_enabled   (0.0 / 1.0)
 #  [1]  pos_x
 #  [2]  pos_y
@@ -28,11 +29,12 @@ from teleop_xr.messages import XRState
 #  [5]  quat_y
 #  [6]  quat_z
 #  [7]  quat_w
-#  [8]  save_pressed  (0.0 / 1.0)
-#  [9]  gripper_close (0.0 / 1.0)
-#  [10] gripper_open  (0.0 / 1.0)
-#  [11] timestamp
-_SHM_SIZE = 12
+#  [8]  x_pressed     (0.0 / 1.0)
+#  [9]  y_pressed     (0.0 / 1.0)
+#  [10] gripper_close (0.0 / 1.0)
+#  [11] gripper_open  (0.0 / 1.0)
+#  [12] timestamp
+_SHM_SIZE = 13
 
 
 @dataclass(slots=True)
@@ -52,6 +54,8 @@ class VRInput:
     quat_w: float = 1.0
 
     # Button states (active while pressed)
+    x_pressed: bool = False
+    y_pressed: bool = False
     save_pressed: bool = False
     gripper_close: bool = False  # A (right btn 4)
     gripper_open: bool = False  # B (right btn 5)
@@ -154,17 +158,20 @@ class VRInputReader:
                 quat_w = float(o.get("w", 1.0))
 
         # --- Buttons ---
-        save_pressed = False
+        x_pressed = False
+        y_pressed = False
         gripper_close = False
         gripper_open = False
 
-        # Left controller: X (btn 4) / Y (btn 5) -> save
+        # Left controller: X (btn 4) -> second prompt, Y (btn 5) -> start/stop
         if left_dev and left_dev.gamepad:
             btns = left_dev.gamepad.buttons
             if len(btns) > 4 and btns[4].pressed:
-                save_pressed = True
+                x_pressed = True
             if len(btns) > 5 and btns[5].pressed:
-                save_pressed = True
+                y_pressed = True
+
+        save_pressed = y_pressed
 
         # Right controller: A (btn 4) -> close, B (btn 5) -> open
         if right_dev and right_dev.gamepad:
@@ -184,6 +191,8 @@ class VRInputReader:
             quat_y=quat_y,
             quat_z=quat_z,
             quat_w=quat_w,
+            x_pressed=x_pressed,
+            y_pressed=y_pressed,
             save_pressed=save_pressed,
             gripper_close=gripper_close,
             gripper_open=gripper_open,
@@ -211,10 +220,11 @@ def _vr_worker(
         shm[5] = v.quat_y
         shm[6] = v.quat_z
         shm[7] = v.quat_w
-        shm[8] = 1.0 if v.save_pressed else 0.0
-        shm[9] = 1.0 if v.gripper_close else 0.0
-        shm[10] = 1.0 if v.gripper_open else 0.0
-        shm[11] = v.timestamp
+        shm[8] = 1.0 if v.x_pressed else 0.0
+        shm[9] = 1.0 if v.y_pressed else 0.0
+        shm[10] = 1.0 if v.gripper_close else 0.0
+        shm[11] = 1.0 if v.gripper_open else 0.0
+        shm[12] = v.timestamp
         time.sleep(0.001)  # 1 kHz — <1 ms latency, negligible CPU
 
 
@@ -264,10 +274,12 @@ class VRInputProcess:
             quat_y=s[5],
             quat_z=s[6],
             quat_w=s[7],
-            save_pressed=s[8] > 0.5,
-            gripper_close=s[9] > 0.5,
-            gripper_open=s[10] > 0.5,
-            timestamp=s[11],
+            x_pressed=s[8] > 0.5,
+            y_pressed=s[9] > 0.5,
+            save_pressed=(s[8] > 0.5) or (s[9] > 0.5),
+            gripper_close=s[10] > 0.5,
+            gripper_open=s[11] > 0.5,
+            timestamp=s[12],
         )
 
 
@@ -282,7 +294,7 @@ def main() -> None:
                 f"enabled={v.arm_enabled}  "
                 f"pos=({v.pos_x:+.3f}, {v.pos_y:+.3f}, {v.pos_z:+.3f})  "
                 f"quat=({v.quat_x:+.3f}, {v.quat_y:+.3f}, {v.quat_z:+.3f}, {v.quat_w:+.3f})  "
-                f"save={v.save_pressed}  "
+                f"x={v.x_pressed}  y={v.y_pressed}  save={v.save_pressed}  "
                 f"grip_close={v.gripper_close}  grip_open={v.gripper_open}",
                 end="\r",
             )

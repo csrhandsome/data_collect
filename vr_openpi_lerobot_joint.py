@@ -8,11 +8,13 @@ Collect Franka teleop data into a LeRobot dataset using VR (teleop_xr) input.
 - Output: LeRobot dataset (no intermediate HDF5)
 
 Deadman: hold both VR triggers (long press) to enable arm movement.
-X / Y (left controller): save episode + reset.
+X (left controller): switch to the second prompt.
+Y (left controller): start/stop recording (save on stop, no reset).
 A (right controller): gripper close.  B: gripper open.
 
 uv run vr_openpi_lerobot_joint.py \
   --instruction "Pick up the wide-mouth bottle" \
+  --second-instruction "Pick up the narrow-mouth bottle" \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only
@@ -176,12 +178,25 @@ def main() -> None:
     )
     parser.add_argument("--repo-id", type=str, default="openpi/franka_droid_lerobot")
     parser.add_argument("--instruction", type=str, default="")
-    parser.add_argument("--control-frequency", type=float, default=15.0)
+    parser.add_argument("--second-instruction", type=str, default="")
+    parser.add_argument("--control-frequency", type=float, default=30.0)
     parser.add_argument(
         "--sensitivity",
         type=float,
-        default=1.0,
+        default=0.9,
         help="Global multiplier on the per-step EE command increments.",
+    )
+    parser.add_argument(
+        "--max-ee-translation-step",
+        type=float,
+        default=0.04,  # 0.02
+        help="Maximum EE translation increment per control cycle (m/step) at full VR input.",
+    )
+    parser.add_argument(
+        "--max-ee-rotation-step",
+        type=float,
+        default=0.04,
+        help="Maximum EE rotation increment per control cycle (rad/step) at full VR input.",
     )
     parser.add_argument("--action-epsilon", type=float, default=1e-6)
     parser.add_argument("--camera-width", type=int, default=640)
@@ -216,18 +231,6 @@ def main() -> None:
         type=float,
         default=0.20,
         help="VR rotation delta (rad) between adjacent samples that maps to a full EE rotation step. Smaller values make rotation faster.",
-    )
-    parser.add_argument(
-        "--max-ee-translation-step",
-        type=float,
-        default=0.020,
-        help="Maximum EE translation increment per control cycle (m/step) at full VR input.",
-    )
-    parser.add_argument(
-        "--max-ee-rotation-step",
-        type=float,
-        default=0.100,
-        help="Maximum EE rotation increment per control cycle (rad/step) at full VR input.",
     )
     parser.add_argument(
         "--max-ee-translation",
@@ -321,10 +324,12 @@ def main() -> None:
     print(f"External camera serial: {args.external_camera_serial}")
     print(f"Wrist camera serial: {args.wrist_camera_serial}")
     if enable_logging:
-        date = "3_8"
+        date = "3_7"
         args.repo_id = f"{args.repo_id}_{date}"
         print(f"Logging: enabled (max {args.max_duration} s)")
         print(f"Instruction: {args.instruction}")
+        if args.second_instruction.strip():
+            print(f"Second instruction: {args.second_instruction}")
         print(f"LeRobot repo_id: {args.repo_id}")
     else:
         print("Logging: disabled")
@@ -481,10 +486,10 @@ def main() -> None:
 
     ctrl = _start_joint_position_controller(settle_s=0.5)
 
+    active_instruction = args.instruction
     gripper_state = 1.0
     last_gripper_cmd = 1.0
 
-    motion_start_threshold = max(float(args.action_epsilon), 1e-3)
     recording_started = False
     recording_started_at: Optional[float] = None
     frame_count = 0
@@ -492,8 +497,35 @@ def main() -> None:
     gripper_busy = False
     gripper_switch_cooldown_s = 0.12
     reflex_error_occurred = False
-    prev_save_pressed = False
+    prev_x_pressed = False
+    prev_y_pressed = False
     last_ik_warning_at = 0.0
+
+    def _finish_recording(*, save_episode: bool, message: str) -> None:
+        nonlocal frame_count, recording_started, recording_started_at
+
+        print(message)
+        if dataset is not None:
+            if save_episode and frame_count > 0:
+                try:
+                    _prepare_episode_for_save(dataset)
+                    dataset.save_episode()
+                    print(f"[Recording] Saved episode with {frame_count} frames")
+                except Exception as exc:
+                    print(f"[Error] Failed to save episode: {exc}")
+                    try:
+                        dataset.clear_episode_buffer()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    dataset.clear_episode_buffer()
+                except Exception:
+                    pass
+
+        frame_count = 0
+        recording_started = False
+        recording_started_at = None
 
     print("\nControl mapping (VR):")
     print("  Hold both triggers (long press): enable arm movement")
@@ -502,7 +534,8 @@ def main() -> None:
     )
     print("  Release / re-hold triggers: re-anchor the VR neutral pose")
     print("  A (right): gripper close | B (right): gripper open")
-    print("  X/Y (left): save episode + reset (press again with no frames to quit)")
+    print("  X (left): switch to second prompt")
+    print("  Y (left): start/stop recording (save on stop, no move_to_start)")
 
     try:
         with arm.panda.create_context(frequency=args.control_frequency) as ctx:
@@ -513,51 +546,60 @@ def main() -> None:
                     and recording_started_at is not None
                     and (time.time() - recording_started_at) > args.max_duration
                 ):
-                    print("\n[Recording] Max duration reached, stopping...")
-                    break
+                    _hold_current_joint_position(ctrl)
+                    _finish_recording(
+                        save_episode=frame_count > 0,
+                        message="\n[Recording] Max duration reached, stopping current episode...",
+                    )
+                    continue
 
                 vr = vr_reader.latest
 
-                # --- Save / Quit (edge: rising) ---
-                save_pressed = vr.save_pressed
-                save_edge = save_pressed and not prev_save_pressed
-                prev_save_pressed = save_pressed
+                x_pressed = bool(getattr(vr, "x_pressed", False))
+                y_pressed = bool(getattr(vr, "y_pressed", False))
+                x_edge = x_pressed and not prev_x_pressed
+                y_edge = y_pressed and not prev_y_pressed
+                prev_x_pressed = x_pressed
+                prev_y_pressed = y_pressed
 
-                if save_edge:
-                    if enable_logging and frame_count > 0:
+                if x_edge:
+                    if not enable_logging:
+                        print("\n[Prompt] Ignored X press because logging is disabled.")
+                    elif not args.second_instruction.strip():
                         print(
-                            "\n[Control] X/Y pressed, saving episode and resetting..."
+                            "\n[Prompt] X pressed, but --second-instruction is empty; keeping current prompt."
                         )
+                    elif active_instruction == args.second_instruction:
+                        print("\n[Prompt] Second prompt is already active.")
+                    else:
+                        active_instruction = args.second_instruction
+                        print(
+                            f"\n[Prompt] Switched active prompt to second prompt: {active_instruction}"
+                        )
+                    continue
+
+                if y_edge:
+                    if not enable_logging:
+                        print(
+                            "\n[Recording] Ignored Y press because logging is disabled."
+                        )
+                    elif not recording_started:
+                        recording_started = True
+                        recording_started_at = time.time()
+                        print(
+                            f"\n[Recording] Y pressed, start logging with prompt: {active_instruction}"
+                        )
+                    else:
                         _hold_current_joint_position(ctrl)
-                        try:
-                            _prepare_episode_for_save(dataset)
-                            dataset.save_episode()
-                            print(
-                                f"[Recording] Saved episode with {frame_count} frames"
-                            )
-                        except Exception as exc:
-                            print(f"[Error] Failed to save episode: {exc}")
-                            try:
-                                dataset.clear_episode_buffer()
-                            except Exception:
-                                pass
-                        finally:
-                            frame_count = 0
-                            recording_started = False
-                            recording_started_at = None
-
-                        arm.panda.stop_controller()
-                        arm.gripper_open()
-                        gripper_state = 1.0
-                        last_gripper_cmd = 1.0
-                        arm.move_to_start()
-
-                        ctrl = _start_joint_position_controller()
-                        vr_mapper.reset()
-                        continue
-
-                    print("\n[Control] X/Y pressed, stopping...")
-                    break
+                        _finish_recording(
+                            save_episode=frame_count > 0,
+                            message=(
+                                "\n[Control] Y pressed, stopping and saving episode..."
+                                if frame_count > 0
+                                else "\n[Control] Y pressed, stopping recording with no captured frames."
+                            ),
+                        )
+                    continue
 
                 robot_state = arm.panda.get_state()
                 qpos = np.asarray(robot_state.q, dtype=np.float64)
@@ -626,7 +668,6 @@ def main() -> None:
                     ctrl.set_control(qpos_cmd, qvel_cmd)
 
                 # --- Gripper ---
-                gripper_changed = False
                 gripper_cmd = last_gripper_cmd
                 if vr.gripper_close:
                     gripper_cmd = 0.0
@@ -638,7 +679,6 @@ def main() -> None:
                     gripper_cmd = last_gripper_cmd
 
                 if gripper_cmd != last_gripper_cmd and not gripper_busy:
-                    gripper_changed = True
                     last_gripper_switch_time = now
                     gripper_state = 1.0 if gripper_cmd > 0.5 else 0.0
                     last_gripper_cmd = gripper_cmd
@@ -673,13 +713,6 @@ def main() -> None:
                 if wrist_img.shape != (args.image_hw, args.image_hw, 3):
                     continue
 
-                motion_norm = float(np.linalg.norm(joint_delta))
-                has_action = motion_norm >= motion_start_threshold or gripper_changed
-                if has_action and not recording_started:
-                    recording_started = True
-                    recording_started_at = time.time()
-                    print("[Recording] First action detected, start logging...")
-
                 if recording_started:
                     joint_pos = np.asarray(robot_state.q, dtype=np.float32)
 
@@ -703,7 +736,7 @@ def main() -> None:
                             "joint_position": joint_pos,
                             "gripper_position": gripper_pos,
                             "actions": actions,
-                            "task": args.instruction,
+                            "task": active_instruction,
                         }
                     )
                     frame_count += 1
