@@ -31,7 +31,7 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 from control.vr_input import VRInputProcess
 from control.vr_input_mapper import VREEPoseMapper
-from realsense_connector import RealSenseConnector
+from control.dual_camera_manager import RealSenseConnector
 from ik_solver import FrankaJointIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 from control.robotic_arm_controller import _camera_capture_worker
@@ -233,6 +233,18 @@ def main() -> None:
         help="VR rotation delta (rad) between adjacent samples that maps to a full EE rotation step. Smaller values make rotation faster.",
     )
     parser.add_argument(
+        "--vr-position-alpha",
+        type=float,
+        default=0.6,
+        help="Right-controller position interpolation factor in (0, 1]. Smaller values are smoother but add latency; 1 disables input smoothing.",
+    )
+    parser.add_argument(
+        "--vr-rotation-alpha",
+        type=float,
+        default=0.35,
+        help="Right-controller rotation interpolation factor in (0, 1]. Smaller values are smoother but add latency; 1 disables input smoothing.",
+    )
+    parser.add_argument(
         "--max-ee-translation",
         type=float,
         default=0.5,
@@ -270,6 +282,10 @@ def main() -> None:
         raise ValueError("--vr-translation-scale must be > 0")
     if args.vr_rotation_scale <= 0:
         raise ValueError("--vr-rotation-scale must be > 0")
+    if not 0.0 < args.vr_position_alpha <= 1.0:
+        raise ValueError("--vr-position-alpha must be in (0, 1]")
+    if not 0.0 < args.vr_rotation_alpha <= 1.0:
+        raise ValueError("--vr-rotation-alpha must be in (0, 1]")
     if args.max_ee_translation_step <= 0:
         raise ValueError("--max-ee-translation-step must be > 0")
     if args.max_ee_rotation_step <= 0:
@@ -317,6 +333,11 @@ def main() -> None:
         f"qdot_ff={qvel_ff_str}"
     )
     print(
+        "VR input smoothing: "
+        f"pos_alpha={args.vr_position_alpha:.2f}, "
+        f"rot_alpha={args.vr_rotation_alpha:.2f}"
+    )
+    print(
         f"Camera stream: {args.camera_width}x{args.camera_height}@{args.camera_fps} "
         f"(depth={'off' if args.color_only else 'on'})"
     )
@@ -341,6 +362,8 @@ def main() -> None:
         host=args.vr_host,
         port=args.vr_port,
         long_press_s=args.vr_long_press_s,
+        position_alpha=args.vr_position_alpha,
+        rotation_alpha=args.vr_rotation_alpha,
     )
     vr_reader.start()
 

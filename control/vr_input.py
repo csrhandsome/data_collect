@@ -5,12 +5,17 @@ Provides two modes:
   - VRInputProcess: out-of-process via multiprocessing.  Immune to GIL
     contention from camera / IK / panda threads in the main process.
 
+Optionally applies lightweight pose interpolation on the right controller
+while the deadman switch is engaged. This smooths single-frame WebXR jitter
+before downstream IK / joint control consumes the pose stream.
+
 Deadman switch: both triggers (button 0) held for >long_press_s.
 X (left controller button 4): switch to the second prompt.
 Y (left controller button 5): start/stop recording.
 A/B (right controller buttons 4/5): close/open gripper.
 """
 
+import math
 import multiprocessing as mp
 import threading
 import time
@@ -35,6 +40,30 @@ from teleop_xr.messages import XRState
 #  [11] gripper_open  (0.0 / 1.0)
 #  [12] timestamp
 _SHM_SIZE = 13
+
+
+def _normalize_quaternion(
+    quaternion_xyzw: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    norm_sq = sum(component * component for component in quaternion_xyzw)
+    if norm_sq <= 1e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    inv_norm = 1.0 / math.sqrt(norm_sq)
+    return tuple(component * inv_norm for component in quaternion_xyzw)
+
+
+def _nlerp_quaternion(
+    start_xyzw: tuple[float, float, float, float],
+    end_xyzw: tuple[float, float, float, float],
+    alpha: float,
+) -> tuple[float, float, float, float]:
+    if sum(a * b for a, b in zip(start_xyzw, end_xyzw)) < 0.0:
+        end_xyzw = tuple(-component for component in end_xyzw)
+    blended = tuple(
+        (1.0 - alpha) * start_component + alpha * end_component
+        for start_component, end_component in zip(start_xyzw, end_xyzw)
+    )
+    return _normalize_quaternion(blended)
 
 
 @dataclass(slots=True)
@@ -74,13 +103,25 @@ class VRInputReader:
         host: str = "0.0.0.0",
         port: int = 4443,
         long_press_s: float = 0.5,
+        position_alpha: float = 1.0,
+        rotation_alpha: float = 1.0,
     ) -> None:
+        if not 0.0 < position_alpha <= 1.0:
+            raise ValueError("position_alpha must be in (0, 1]")
+        if not 0.0 < rotation_alpha <= 1.0:
+            raise ValueError("rotation_alpha must be in (0, 1]")
+
         self._long_press_s = long_press_s
+        self._position_alpha = float(position_alpha)
+        self._rotation_alpha = float(rotation_alpha)
         self._latest: VRInput = VRInput()
 
         # Internal timing for deadman detection
         self._left_trigger_since: float = 0.0
         self._right_trigger_since: float = 0.0
+
+        self._filtered_pos: tuple[float, float, float] | None = None
+        self._filtered_quat: tuple[float, float, float, float] | None = None
 
         settings = TeleopSettings(host=host, port=port)
         self._teleop = Teleop(settings=settings)
@@ -95,6 +136,67 @@ class VRInputReader:
         self._teleop.run()
 
     # ------------------------------------------------------------------
+
+    def _set_filtered_pose(
+        self,
+        pos_x: float,
+        pos_y: float,
+        pos_z: float,
+        quat_x: float,
+        quat_y: float,
+        quat_z: float,
+        quat_w: float,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+        raw_pos = (pos_x, pos_y, pos_z)
+        raw_quat = _normalize_quaternion((quat_x, quat_y, quat_z, quat_w))
+        self._filtered_pos = raw_pos
+        self._filtered_quat = raw_quat
+        return raw_pos, raw_quat
+
+    def _filter_pose(
+        self,
+        *,
+        arm_enabled: bool,
+        pos_x: float,
+        pos_y: float,
+        pos_z: float,
+        quat_x: float,
+        quat_y: float,
+        quat_z: float,
+        quat_w: float,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+        if (
+            not arm_enabled
+            or self._filtered_pos is None
+            or self._filtered_quat is None
+        ):
+            return self._set_filtered_pose(
+                pos_x,
+                pos_y,
+                pos_z,
+                quat_x,
+                quat_y,
+                quat_z,
+                quat_w,
+            )
+
+        raw_pos = (pos_x, pos_y, pos_z)
+        raw_quat = _normalize_quaternion((quat_x, quat_y, quat_z, quat_w))
+
+        filtered_pos = tuple(
+            prev_component
+            + self._position_alpha * (raw_component - prev_component)
+            for prev_component, raw_component in zip(self._filtered_pos, raw_pos)
+        )
+        filtered_quat = _nlerp_quaternion(
+            self._filtered_quat,
+            raw_quat,
+            self._rotation_alpha,
+        )
+
+        self._filtered_pos = filtered_pos
+        self._filtered_quat = filtered_quat
+        return filtered_pos, filtered_quat
 
     def _on_xr_update(self, _pose, message) -> None:
         xr_data = message.get("data", message)
@@ -181,8 +283,7 @@ class VRInputReader:
             if len(btns) > 5 and btns[5].pressed:
                 gripper_open = True
 
-        # Atomic reference swap — no lock needed
-        self._latest = VRInput(
+        (filtered_pos, filtered_quat) = self._filter_pose(
             arm_enabled=arm_enabled,
             pos_x=pos_x,
             pos_y=pos_y,
@@ -191,6 +292,18 @@ class VRInputReader:
             quat_y=quat_y,
             quat_z=quat_z,
             quat_w=quat_w,
+        )
+
+        # Atomic reference swap — no lock needed
+        self._latest = VRInput(
+            arm_enabled=arm_enabled,
+            pos_x=filtered_pos[0],
+            pos_y=filtered_pos[1],
+            pos_z=filtered_pos[2],
+            quat_x=filtered_quat[0],
+            quat_y=filtered_quat[1],
+            quat_z=filtered_quat[2],
+            quat_w=filtered_quat[3],
             x_pressed=x_pressed,
             y_pressed=y_pressed,
             save_pressed=save_pressed,
@@ -205,9 +318,17 @@ def _vr_worker(
     host: str,
     port: int,
     long_press_s: float,
+    position_alpha: float,
+    rotation_alpha: float,
 ) -> None:
     """Child-process entry point.  Has its own GIL — teleop_xr runs free."""
-    reader = VRInputReader(host=host, port=port, long_press_s=long_press_s)
+    reader = VRInputReader(
+        host=host,
+        port=port,
+        long_press_s=long_press_s,
+        position_alpha=position_alpha,
+        rotation_alpha=rotation_alpha,
+    )
     t = threading.Thread(target=reader.run, daemon=True)
     t.start()
     while True:
@@ -245,12 +366,21 @@ class VRInputProcess:
         host: str = "0.0.0.0",
         port: int = 4443,
         long_press_s: float = 0.5,
+        position_alpha: float = 1.0,
+        rotation_alpha: float = 1.0,
     ) -> None:
         self._shm: mp.Array = mp.Array("d", _SHM_SIZE, lock=False)
         self._shm[7] = 1.0  # quat_w default
         self._proc = mp.Process(
             target=_vr_worker,
-            args=(self._shm, host, port, long_press_s),
+            args=(
+                self._shm,
+                host,
+                port,
+                long_press_s,
+                position_alpha,
+                rotation_alpha,
+            ),
             daemon=True,
         )
 

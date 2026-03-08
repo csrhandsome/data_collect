@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -12,7 +13,166 @@ class RealSenseSensorData:
     color_img: Optional[np.ndarray] = None  # RGB uint8 (H,W,3)
     depth_m: Optional[np.ndarray] = None  # float32 (H,W) in meters
     intrinsics: Optional[np.ndarray] = None  # 3x3 float32
-    ee_pose: Optional[np.ndarray] = None  # 4x4 float32 (optional, for stale observation)
+    ee_pose: Optional[np.ndarray] = (
+        None  # 4x4 float32 (optional, for stale observation)
+    )
+
+
+@dataclass
+class RGBCameraSensorData:
+    timestamp: float = 0.0
+    color_img: Optional[np.ndarray] = None  # RGB uint8 (H,W,3)
+
+
+class RGBCameraConnector:
+    """
+    OpenCV-based RGB-only camera connector.
+
+    适用于普通 USB 相机 / 笔记本摄像头：
+    - 只采集 RGB 图像
+    - 不做 depth / intrinsics / mask
+    """
+
+    def __init__(
+        self,
+        *,
+        device: int | str = 0,
+        width: int = 640,
+        height: int = 480,
+        fps: int = 30,
+        backend: Optional[int] = None,
+        convert_bgr_to_rgb: bool = True,
+    ) -> None:
+        self._device = device
+        self._width = int(width)
+        self._height = int(height)
+        self._fps = int(fps)
+        self._backend = backend
+        self._convert_bgr_to_rgb = bool(convert_bgr_to_rgb)
+
+        self._capture = None
+        self._sensor_data = RGBCameraSensorData()
+
+    def connect(self) -> "RGBCameraConnector":
+        if self._capture is not None:
+            return self
+
+        try:
+            import cv2
+        except Exception as e:
+            raise RuntimeError(
+                "RGBCameraConnector requires `opencv-python` (`cv2`)."
+            ) from e
+
+        if self._backend is None:
+            capture = cv2.VideoCapture(self._device)
+        else:
+            capture = cv2.VideoCapture(self._device, int(self._backend))
+
+        if not capture.isOpened():
+            capture.release()
+            raise RuntimeError(f"Failed to open RGB camera: {self._device}")
+
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+        capture.set(cv2.CAP_PROP_FPS, self._fps)
+
+        self._capture = capture
+        self._refresh_capture_info()
+        return self
+
+    def close(self) -> None:
+        if self._capture is not None:
+            try:
+                self._capture.release()
+            finally:
+                self._capture = None
+
+    def __enter__(self) -> "RGBCameraConnector":
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.close()
+        return False
+
+    def _refresh_capture_info(self) -> None:
+        if self._capture is None:
+            return
+
+        try:
+            import cv2
+        except Exception:
+            return
+
+        width = int(round(float(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH))))
+        height = int(round(float(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT))))
+        fps = float(self._capture.get(cv2.CAP_PROP_FPS))
+
+        if width > 0:
+            self._width = width
+        if height > 0:
+            self._height = height
+        if fps > 0:
+            self._fps = int(round(fps))
+
+    def update(self, timeout: int = 1000) -> bool:
+        del timeout
+        if self._capture is None:
+            self.connect()
+
+        ok, frame = self._capture.read()
+        if not ok or frame is None:
+            return False
+
+        try:
+            import cv2
+        except Exception:
+            return False
+
+        if frame.ndim == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        elif frame.ndim == 3 and frame.shape[2] == 4:
+            if self._convert_bgr_to_rgb:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
+            else:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        elif frame.ndim == 3 and frame.shape[2] == 3 and self._convert_bgr_to_rgb:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        if frame.ndim != 3 or frame.shape[2] != 3:
+            return False
+
+        self._refresh_capture_info()
+        self._sensor_data = RGBCameraSensorData(
+            timestamp=time.time(),
+            color_img=frame.astype(np.uint8, copy=False),
+        )
+        return True
+
+    @property
+    def sensor_data(self) -> RGBCameraSensorData:
+        return self._sensor_data
+
+    @property
+    def img(self) -> Optional[np.ndarray]:
+        return self._sensor_data.color_img
+
+    @property
+    def timestamp(self) -> float:
+        return self._sensor_data.timestamp
+
+    @property
+    def device(self) -> int | str:
+        return self._device
+
+    @property
+    def resolution(self) -> tuple[int, int]:
+        return self._width, self._height
+
+    @property
+    def fps(self) -> int:
+        return self._fps
 
 
 class RealSenseConnector:
@@ -127,7 +287,9 @@ class RealSenseConnector:
         if self._serial:
             cfg.enable_device(self._serial)
 
-        cfg.enable_stream(rs.stream.color, self._width, self._height, rs.format.rgb8, self._fps)
+        cfg.enable_stream(
+            rs.stream.color, self._width, self._height, rs.format.rgb8, self._fps
+        )
         if self._enable_depth:
             cfg.enable_stream(
                 rs.stream.depth, self._width, self._height, rs.format.z16, self._fps
@@ -186,17 +348,25 @@ class RealSenseConnector:
             preferred_stream = rs.stream.color
             fallback_stream = rs.stream.color
         else:
-            preferred_stream = rs.stream.color if self._align_depth_to_color else rs.stream.depth
+            preferred_stream = (
+                rs.stream.color if self._align_depth_to_color else rs.stream.depth
+            )
             fallback_stream = (
-                rs.stream.depth if preferred_stream == rs.stream.color else rs.stream.color
+                rs.stream.depth
+                if preferred_stream == rs.stream.color
+                else rs.stream.color
             )
 
         try:
-            vs_profile = self._profile.get_stream(preferred_stream).as_video_stream_profile()
+            vs_profile = self._profile.get_stream(
+                preferred_stream
+            ).as_video_stream_profile()
             print("Using preferred stream intrinsics")
         except Exception:
             try:
-                vs_profile = self._profile.get_stream(fallback_stream).as_video_stream_profile()
+                vs_profile = self._profile.get_stream(
+                    fallback_stream
+                ).as_video_stream_profile()
                 print("Using fallback stream intrinsics")
             except Exception:
                 return
@@ -249,7 +419,9 @@ class RealSenseConnector:
             depth_raw = np.asanyarray(depth_frame.get_data())
             if depth_raw.ndim != 2:
                 return False
-            depth_scale = 0.001 if self._depth_scale is None else float(self._depth_scale)
+            depth_scale = (
+                0.001 if self._depth_scale is None else float(self._depth_scale)
+            )
             depth_m = depth_raw.astype(np.float32, copy=False) * depth_scale
 
         timestamp_frame = depth_frame if depth_frame is not None else color_frame
@@ -289,11 +461,14 @@ class RealSenseConnector:
             # 从 HuggingFace 下载模型（会自动缓存）
             # model_path = hf_hub_download("Bingsu/adetailer", self._yolo_model_name)
             # print("[RealSenseConnector] Loading YOLO model from:", model_path)
-            self._yolo_model = YOLO("/home/three/.cache/huggingface/hub/models--Bingsu--adetailer/snapshots/53cc19de382014514d9d4038601d261a7faa9b7b/hand_yolov8n.pt")
+            self._yolo_model = YOLO(
+                "/home/three/.cache/huggingface/hub/models--Bingsu--adetailer/snapshots/53cc19de382014514d9d4038601d261a7faa9b7b/hand_yolov8n.pt"
+            )
         return self._yolo_model
 
     def _compute_mask(self) -> Optional[np.ndarray]:
         """
+        过去用于handover项目当中的,现在暂时没有使用
         计算物体 mask：
         1. YOLO 手部检测 → Bounding Box
         2. 深度阈值过滤 → 切掉远处背景
@@ -327,8 +502,13 @@ class RealSenseConnector:
         if len(results) == 0 or results[0].boxes is None or len(results[0].boxes) == 0:
             # 没有检测到手，回退到上一帧完整观测包
             self._last_hand_bbox = None
-            if self._last_valid_observation is not None and self._stale_count < self._max_stale_count:
-                print(f"[RealSenseConnector] No hand detected, using last valid FULL observation (rgb+depth+mask) [{self._stale_count + 1}/{self._max_stale_count}]")
+            if (
+                self._last_valid_observation is not None
+                and self._stale_count < self._max_stale_count
+            ):
+                print(
+                    f"[RealSenseConnector] No hand detected, using last valid FULL observation (rgb+depth+mask) [{self._stale_count + 1}/{self._max_stale_count}]"
+                )
                 # 恢复完整观测包（rgb, depth, mask 都回退到同一帧）
                 self._sensor_data = RealSenseSensorData(
                     timestamp=self._last_valid_observation["timestamp"],
@@ -341,7 +521,9 @@ class RealSenseConnector:
                 return self._last_valid_observation["mask"].copy()
             # 没有缓存的有效观测，或者已超过最大回退次数
             if self._stale_count >= self._max_stale_count:
-                print(f"[RealSenseConnector] Exceeded max stale count ({self._max_stale_count}), returning background mask")
+                print(
+                    f"[RealSenseConnector] Exceeded max stale count ({self._max_stale_count}), returning background mask"
+                )
             self._is_stale_observation = False
             self._stale_count = 0
             return mask
@@ -370,8 +552,12 @@ class RealSenseConnector:
         roi_hsv = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2HSV)
 
         # HSV 肤色范围
-        lower_skin = np.array([self._skin_h_min, self._skin_s_min, self._skin_v_min], dtype=np.uint8)
-        upper_skin = np.array([self._skin_h_max, self._skin_s_max, self._skin_v_max], dtype=np.uint8)
+        lower_skin = np.array(
+            [self._skin_h_min, self._skin_s_min, self._skin_v_min], dtype=np.uint8
+        )
+        upper_skin = np.array(
+            [self._skin_h_max, self._skin_s_max, self._skin_v_max], dtype=np.uint8
+        )
         skin_mask_roi = cv2.inRange(roi_hsv, lower_skin, upper_skin)
 
         # 形态学处理：去噪 + 填充
@@ -397,7 +583,11 @@ class RealSenseConnector:
             max_depth_dynamic = self._max_depth_m
 
         # 生成深度有效区域掩码
-        valid_depth_mask = (roi_depth > min_depth_dynamic) & (roi_depth < max_depth_dynamic) & (roi_depth > 0)
+        valid_depth_mask = (
+            (roi_depth > min_depth_dynamic)
+            & (roi_depth < max_depth_dynamic)
+            & (roi_depth > 0)
+        )
 
         # Step 4: 生成最终 mask
         # 在 ROI 内：
@@ -472,11 +662,15 @@ def _main() -> None:
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--fps", type=int, default=30)
-    p.add_argument("--no-align", action="store_true", help="Disable depth->color alignment")
+    p.add_argument(
+        "--no-align", action="store_true", help="Disable depth->color alignment"
+    )
     p.add_argument("--color-only", action="store_true", help="Disable depth stream")
     p.add_argument("--frames", type=int, default=30, help="Number of frames to capture")
     p.add_argument("--timeout-ms", type=int, default=1000)
-    p.add_argument("--print-mask", action="store_true", help="Compute FastSAM mask and print ids")
+    p.add_argument(
+        "--print-mask", action="store_true", help="Compute FastSAM mask and print ids"
+    )
     args = p.parse_args()
 
     connector = RealSenseConnector(

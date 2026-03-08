@@ -10,6 +10,8 @@ dependencies = [
     "langchain-openai>=1.1.10",
     "lerobot @ git+https://github.com/huggingface/lerobot@0cf864870cf29f4738d3ade893e6fd13fbd7cdb5",
     "opencv-python>=4.13.0.92",
+    "crcmod>=1.7",
+    "pyserial>=3.5",
     "panda-python>=0.8.1",
     "pygame>=2.6.1",
     "pyrealsense2>=2.56.5.9235",
