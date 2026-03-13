@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
-import threading
 import time
 from typing import Optional
 
@@ -34,11 +33,33 @@ class ControlRoot(object):
         crcQ = int.from_bytes(crc[1:2], byteorder="big", signed=False)
         return crcQ, crcH
 
-    def readSerial(self, expected_length=None):
-        time.sleep(0.02)
+    def clear_input_buffer(self) -> None:
+        try:
+            self.sc.reset_input_buffer()
+        except AttributeError:
+            self.sc.read_all()
+
+    def readSerial(self, expected_length=None, timeout_s: Optional[float] = None):
         if expected_length is None:
             return self.sc.read_all()
-        return self.sc.read(expected_length)
+
+        if timeout_s is None:
+            timeout_s = self.sc.timeout
+        timeout_s = 0.0 if timeout_s is None else max(float(timeout_s), 0.0)
+        deadline = time.monotonic() + timeout_s
+        received = bytearray()
+
+        while len(received) < expected_length:
+            remaining = expected_length - len(received)
+            chunk = self.sc.read(remaining)
+            if chunk:
+                received.extend(chunk)
+                continue
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.002)
+
+        return bytes(received)
 
     def sendCmd(
         self,
@@ -110,9 +131,6 @@ def isRange(value, min_, max_):
         raise RuntimeError("Out of range")
 
 
-DEFAULT_POSITION_SEQUENCE = [0, 1000]
-
-
 @dataclass
 class DHGripperObservation:
     external_img: Optional[np.ndarray] = None
@@ -122,7 +140,7 @@ class DHGripperObservation:
     )
 
 
-class DHGripper(object):
+class DH5Gripper(object):
     def __init__(
         self,
         com="/dev/ttyUSB0",
@@ -133,27 +151,41 @@ class DHGripper(object):
         camera_fps: int = 30,
         camera_timeout_ms: int = 1000,
         camera_poll_interval_s: float = 0.01,
+        discrete_level_count: int = 28,
+        vr_axis_threshold: float = 0.55,
+        vr_step_interval_s: float = 0.08,
     ):
+        if int(discrete_level_count) <= 1:
+            raise ValueError("discrete_level_count must be > 1")
+        if not 0.0 < float(vr_axis_threshold) <= 1.0:
+            raise ValueError("vr_axis_threshold must be in (0, 1]")
+        if float(vr_step_interval_s) <= 0.0:
+            raise ValueError("vr_step_interval_s must be > 0")
+
         self.Hand = ControlRoot(com=com)
         self._position_command = 0
-        self._camera_timeout_ms = int(camera_timeout_ms)
-        self._camera_poll_interval_s = max(float(camera_poll_interval_s), 0.0)
+        self._gripper_level_count = int(discrete_level_count)
+        self._gripper_level = 0
+        self._vr_axis_threshold = float(vr_axis_threshold)
+        self._vr_step_interval_s = float(vr_step_interval_s)
+        self._last_gripper_step_time = 0.0
+        self._last_gripper_step_dir = 0
         self.dual_camera_manager = DualRGBCameraManager(
             right_camera_device=right_camera_device,
             left_camera_device=left_camera_device,
             width=camera_width,
             height=camera_height,
             fps=camera_fps,
+            background_poll=True,
+            background_poll_interval_s=camera_poll_interval_s,
+            background_timeout_ms=camera_timeout_ms,
         )
-        self._observation_lock = threading.Lock()
-        self._camera_stop_event = threading.Event()
-        self._camera_thread: Optional[threading.Thread] = None
-        self._camera_thread_error: Optional[Exception] = None
         self._observation = DHGripperObservation(
             gripper_open_ratio=self.gripper_open_ratio
         )
         self.initialize()
-        self._start_camera_thread()
+        self.dual_camera_manager.connect()
+        self._gripper_level = self._position_to_level(self._position_command)
 
     def _build_observation(
         self,
@@ -166,52 +198,6 @@ class DHGripper(object):
             wrist_img=wrist_img,
             gripper_open_ratio=self.gripper_open_ratio,
         )
-
-    def _refresh_observation_once(self) -> bool:
-        external_img = None
-        wrist_img = None
-
-        try:
-            self.dual_camera_manager.update(timeout_ms=self._camera_timeout_ms)
-            external_img, wrist_img = self.dual_camera_manager.get_images()
-        except Exception as exc:
-            self._camera_thread_error = exc
-            return False
-
-        with self._observation_lock:
-            previous = self._observation
-            self._observation = self._build_observation(
-                external_img=(
-                    external_img if external_img is not None else previous.external_img
-                ),
-                wrist_img=wrist_img if wrist_img is not None else previous.wrist_img,
-            )
-        self._camera_thread_error = None
-        return True
-
-    def _camera_worker(self) -> None:
-        try:
-            self.dual_camera_manager.connect()
-        except Exception as exc:
-            self._camera_thread_error = exc
-            return
-
-        while not self._camera_stop_event.is_set():
-            self._refresh_observation_once()
-            if self._camera_stop_event.wait(self._camera_poll_interval_s):
-                break
-
-    def _start_camera_thread(self) -> None:
-        if self._camera_thread is not None:
-            return
-
-        self._camera_stop_event.clear()
-        self._camera_thread = threading.Thread(
-            target=self._camera_worker,
-            name="dh-gripper-camera",
-            daemon=True,
-        )
-        self._camera_thread.start()
 
     def _set_register(self, high_address, low_address, value, is_read_serial=True):
         return self.Hand.sendCmd(
@@ -236,9 +222,11 @@ class DHGripper(object):
         isRange(value, 20, 100)
         self._set_register(0x01, 0x01, value)
 
-    def set_position(self, value):
+    def set_position(self, value, *, wait: bool = True):
         isRange(value, 0, 1000)
-        self._set_register(0x01, 0x03, value)
+        if not wait:
+            self.Hand.clear_input_buffer()
+        self._set_register(0x01, 0x03, value, is_read_serial=wait)
         self._position_command = int(value)
 
     def set_velocity(self, value):
@@ -270,6 +258,88 @@ class DHGripper(object):
         return self._get_register(0x02, 0x08)
 
     @property
+    def gripper_level_count(self) -> int:
+        return self._gripper_level_count
+
+    @property
+    def gripper_level(self) -> int:
+        return self._gripper_level
+
+    @property
+    def position_command(self) -> int:
+        return int(self._position_command)
+
+    @property
+    def max_gripper_level(self) -> int:
+        return self._gripper_level_count - 1
+
+    def _level_to_position(self, level: int) -> int:
+        clipped = int(np.clip(level, 0, self.max_gripper_level))
+        if self.max_gripper_level <= 0:
+            return 0
+        return int(round((float(clipped) / float(self.max_gripper_level)) * 1000.0))
+
+    def _position_to_level(self, position: int) -> int:
+        if self.max_gripper_level <= 0:
+            return 0
+        clipped = float(np.clip(position, 0, 1000))
+        return int(
+            np.clip(
+                np.rint((clipped / 1000.0) * float(self.max_gripper_level)),
+                0,
+                self.max_gripper_level,
+            )
+        )
+
+    def set_gripper_level(self, level: int, *, wait: bool = True) -> bool:
+        next_level = int(np.clip(level, 0, self.max_gripper_level))
+        if next_level == self._gripper_level:
+            return False
+        self.set_position(self._level_to_position(next_level), wait=wait)
+        self._gripper_level = next_level
+        return True
+
+    def update_from_vr(
+        self,
+        vr_input,
+        *,
+        axis_threshold: Optional[float] = None,
+        step_interval_s: Optional[float] = None,
+        now: Optional[float] = None,
+        wait: bool = False,
+    ) -> bool:
+        axis = float(getattr(vr_input, "gripper_velocity_axis", 0.0))
+        threshold = (
+            self._vr_axis_threshold if axis_threshold is None else float(axis_threshold)
+        )
+        step_interval = (
+            self._vr_step_interval_s
+            if step_interval_s is None
+            else float(step_interval_s)
+        )
+        now = time.monotonic() if now is None else float(now)
+
+        if axis >= threshold:
+            step_dir = 1
+        elif axis <= -threshold:
+            step_dir = -1
+        else:
+            self._last_gripper_step_dir = 0
+            return False
+
+        should_step = (
+            step_dir != self._last_gripper_step_dir
+            or self._last_gripper_step_time == 0.0
+            or (now - self._last_gripper_step_time) >= step_interval
+        )
+        if not should_step:
+            return False
+
+        self._last_gripper_step_time = now
+        self._last_gripper_step_dir = step_dir
+        return self.set_gripper_level(self._gripper_level + step_dir, wait=wait)
+
+    @property
     def gripper_open_ratio(self) -> np.ndarray:
         normalized = 1.0 - (float(self._position_command) / 1000.0)
         normalized = np.clip(normalized, 0.0, 1.0)
@@ -277,13 +347,12 @@ class DHGripper(object):
 
     @property
     def observation(self) -> DHGripperObservation:
-        with self._observation_lock:
-            cached = self._observation
-
-        return self._build_observation(
-            external_img=cached.external_img,
-            wrist_img=cached.wrist_img,
+        external_img, wrist_img = self.dual_camera_manager.get_images()
+        self._observation = self._build_observation(
+            external_img=external_img,
+            wrist_img=wrist_img,
         )
+        return self._observation
 
     def wait_until_ready(self, max_wait_seconds=5.0):
         deadline = time.time() + max_wait_seconds
@@ -303,15 +372,11 @@ class DHGripper(object):
             print(f"initialization_status={back}")
 
     def close(self) -> None:
-        self._camera_stop_event.set()
-        if self._camera_thread is not None:
-            self._camera_thread.join(timeout=max(self._camera_timeout_ms / 1000.0, 1.0))
-            self._camera_thread = None
         self.dual_camera_manager.close()
         if self.Hand.sc.is_open:
             self.Hand.sc.close()
 
-    def __enter__(self) -> "DHGripper":
+    def __enter__(self) -> "DH5Gripper":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
@@ -319,11 +384,12 @@ class DHGripper(object):
         return False
 
 
-DHgripper = DHGripper
+DHgripper = DH5Gripper
 
 
 def main():
     import cv2
+    from control.vr_input import VRInputProcess
 
     def show_observation(observation: DHGripperObservation) -> None:
         if observation.external_img is not None:
@@ -333,30 +399,42 @@ def main():
             wrist_bgr = cv2.cvtColor(observation.wrist_img, cv2.COLOR_RGB2BGR)
             cv2.imshow("DHGripper Wrist", wrist_bgr)
 
-    def pump_display(gripper: DHGripper, duration_s: float) -> bool:
-        deadline = time.time() + max(duration_s, 0.0)
-        while time.time() < deadline:
-            show_observation(gripper.observation)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q") or key == 27:
-                return False
-            time.sleep(0.01)
-        return True
-
-    parser = argparse.ArgumentParser(description="DHgripper 开合测试")
+    parser = argparse.ArgumentParser(description="DHgripper VR 遥杆速度控制")
     parser.add_argument("--com", default="/dev/ttyUSB0", help="串口设备")
     parser.add_argument("--force", type=int, default=50, help="夹持力 20~100")
     parser.add_argument("--velocity", type=int, default=100, help="夹爪速度 0~1000")
-    parser.add_argument("--sleep", type=float, default=0.5, help="每次动作后的附加等待")
+    parser.add_argument(
+        "--step-interval",
+        type=float,
+        default=0.08,
+        help="VR 档位步进最小间隔（秒）。摇杆持续推住时按该频率逐档变化。",
+    )
+    parser.add_argument(
+        "--axis-threshold",
+        type=float,
+        default=0.55,
+        help="VR 摇杆触发一步档位变化的阈值，绝对值需达到该值才会动作。",
+    )
+    parser.add_argument(
+        "--loop-hz",
+        type=float,
+        default=60.0,
+        help="VR 模式主循环频率",
+    )
+    parser.add_argument(
+        "--status-interval",
+        type=float,
+        default=0.2,
+        help="VR 模式状态打印周期（秒）",
+    )
     args = parser.parse_args()
 
     print(f"[DHGripper] open {args.com}")
-    print(f"[DHGripper] test positions = {DEFAULT_POSITION_SEQUENCE}")
 
     cv2.namedWindow("DHGripper External", cv2.WINDOW_NORMAL)
     cv2.namedWindow("DHGripper Wrist", cv2.WINDOW_NORMAL)
 
-    with DHGripper(com=args.com) as gripper:
+    with DH5Gripper(com=args.com) as gripper:
         print(f"[DHGripper] initialization_status={gripper.initialization_status}")
 
         gripper.set_force(args.force)
@@ -364,19 +442,66 @@ def main():
         print(f"[DHGripper] force={args.force}, velocity={args.velocity}")
         print("[DHGripper] 按 'q' 或 ESC 可提前退出")
 
-        for _ in range(3):
-            for position in DEFAULT_POSITION_SEQUENCE:
-                print(f"[DHGripper] move -> {position}")
-                gripper.set_position(position)
+        if args.loop_hz <= 0:
+            raise ValueError("--loop-hz must be > 0")
+        if args.step_interval <= 0:
+            raise ValueError("--step-interval must be > 0")
+        if not 0.0 < args.axis_threshold <= 1.0:
+            raise ValueError("--axis-threshold must be in (0, 1]")
+
+        vr = VRInputProcess()
+        vr.start()
+        print(
+            "[DHGripper][VR] 右手柄摇杆控制夹爪: 上=闭合一档, 下=打开一档, "
+            f"levels={gripper.gripper_level_count}, axis_threshold={args.axis_threshold:.2f}, "
+            f"step_interval={args.step_interval:.2f}s"
+        )
+        print(
+            "[DHGripper][VR] 当前使用 gripper_velocity_axis: "
+            "正值=闭合一档, 负值=打开一档"
+        )
+
+        try:
+            last_status_time = 0.0
+            loop_period = 1.0 / float(args.loop_hz)
+
+            while True:
+                loop_start = time.monotonic()
+
+                vr_state = vr.latest
+                axis = float(vr_state.gripper_velocity_axis)
+                gripper.update_from_vr(
+                    vr_state,
+                    axis_threshold=args.axis_threshold,
+                    step_interval_s=args.step_interval,
+                    now=loop_start,
+                    wait=False,
+                )
+
                 observation = gripper.observation
-                print(f"[DHGripper] gripper_open_ratio={gripper.gripper_open_ratio}")
-
                 show_observation(observation)
-                if not pump_display(gripper, args.sleep):
-                    cv2.destroyAllWindows()
-                    return
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q") or key == 27:
+                    break
 
-                print(f"[DHGripper] rotate_angle={gripper.rotate_angle}")
+                if (loop_start - last_status_time) >= args.status_interval:
+                    print(
+                        "[DHGripper][VR] "
+                        f"axis={axis:+.3f}  "
+                        f"right_stick=({vr_state.right_stick_x:+.3f}, {vr_state.right_stick_y:+.3f})  "
+                        f"level={gripper.gripper_level:02d}/{gripper.max_gripper_level:02d}  "
+                        f"target_position={gripper.position_command:4d}",
+                        end="\r",
+                    )
+                    last_status_time = loop_start
+
+                elapsed = time.monotonic() - loop_start
+                remaining = loop_period - elapsed
+                if remaining > 0:
+                    time.sleep(remaining)
+        finally:
+            vr.stop()
+            print()
 
     cv2.destroyAllWindows()
 

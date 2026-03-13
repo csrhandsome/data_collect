@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from dataclasses import dataclass
 from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Optional, Sequence
@@ -36,110 +37,16 @@ class _LatestFrameBuffer:
             return np.array(self._rgb, copy=True)
 
 
-def _camera_capture_worker(
-    *,
-    camera: "RealSenseConnector",
-    buf: _LatestFrameBuffer,
-    stop_event: threading.Event,
-    timeout_ms: int,
-    crop_scale: float,
-    out_hw: int,
-    label: str | None = None,
-) -> None:
-    frame_count = 0
-    error_count = 0
-    name = label or "camera"
-    while not stop_event.is_set():
-        try:
-            ok = camera.update(timeout=int(timeout_ms))
-        except Exception as e:
-            error_count += 1
-            if error_count <= 3:
-                print(f"[Camera Thread:{name}] Update exception: {e}")
-            ok = False
-        if not ok:
-            continue
-
-        rgb = camera.img
-        if rgb is None:
-            continue
-        try:
-            rgb224 = _center_crop_and_resize_rgb_uint8(
-                np.asarray(rgb, dtype=np.uint8),
-                crop_scale=float(crop_scale),
-                out_hw=int(out_hw),
-            )
-        except Exception as e:
-            error_count += 1
-            if error_count <= 3:
-                print(f"[Camera Thread:{name}] Crop/resize exception: {e}")
-            continue
-        buf.set(rgb224)
-        frame_count += 1
-        if frame_count == 1:
-            print(f"[Camera Thread:{name}] First frame captured successfully!")
-        elif frame_count % 100 == 0:
-            print(f"[Camera Thread:{name}] {frame_count} frames captured")
+RealtimeControlMode = Literal["joint_position"]
 
 
-def _center_crop_and_resize_rgb_uint8(
-    rgb: np.ndarray, *, crop_scale: float = 0.9, out_hw: int = 224
-) -> np.ndarray:
-    rgb = np.asarray(rgb, dtype=np.uint8)
-    if rgb.ndim != 3 or rgb.shape[-1] != 3:
-        raise ValueError(f"Expected RGB image of shape (H, W, 3), got {rgb.shape}")
-
-    try:
-        import tensorflow as tf
-
-        # Match OpenVLAPolicy._crop_and_resize behavior (center crop by area scale, then resize to 224x224).
-        image_tf = tf.convert_to_tensor(rgb)  # uint8 (H,W,3)
-        orig_dtype = image_tf.dtype
-        image_tf = tf.image.convert_image_dtype(image_tf, tf.float32)  # [0,1]
-        image_tf = tf.expand_dims(image_tf, axis=0)  # (1,H,W,3)
-
-        batch_size = 1
-        scale = tf.reshape(
-            tf.clip_by_value(tf.sqrt(float(crop_scale)), 0, 1), shape=(batch_size,)
-        )
-        height_offsets = (1 - scale) / 2
-        width_offsets = (1 - scale) / 2
-        boxes = tf.stack(
-            [
-                height_offsets,
-                width_offsets,
-                height_offsets + scale,
-                width_offsets + scale,
-            ],
-            axis=1,
-        )
-
-        image_tf = tf.image.crop_and_resize(
-            image_tf, boxes, tf.range(batch_size), (int(out_hw), int(out_hw))
-        )
-        image_tf = image_tf[0]
-        image_tf = tf.clip_by_value(image_tf, 0, 1)
-        image_tf = tf.image.convert_image_dtype(image_tf, orig_dtype, saturate=True)
-        out = image_tf.numpy()
-    except Exception:
-        h, w = int(rgb.shape[0]), int(rgb.shape[1])
-        frac = float(np.sqrt(float(crop_scale)))
-        crop_h = max(1, min(h, int(round(h * frac))))
-        crop_w = max(1, min(w, int(round(w * frac))))
-        y0 = max(0, (h - crop_h) // 2)
-        x0 = max(0, (w - crop_w) // 2)
-        cropped = rgb[y0 : y0 + crop_h, x0 : x0 + crop_w]
-
-        from PIL import Image
-
-        img = Image.fromarray(cropped, mode="RGB").resize(
-            (int(out_hw), int(out_hw)), resample=Image.BILINEAR
-        )
-        out = np.asarray(img, dtype=np.uint8)
-
-    if out.shape != (int(out_hw), int(out_hw), 3):
-        raise RuntimeError(f"Unexpected resized RGB shape: {out.shape}")
-    return out.astype(np.uint8, copy=False)
+@dataclass
+class _GripperCommand:
+    kind: Literal["move", "grasp"]
+    params: dict[str, float]
+    done: threading.Event
+    result: Optional[bool] = None
+    error: Optional[BaseException] = None
 
 
 class RoboticArmControler:
@@ -158,6 +65,7 @@ class RoboticArmControler:
         damping: Optional[Sequence[float]] = None,
         auto_set_default_behavior: bool = True,
         auto_move_to_start: bool = True,
+        realtime_control: bool = False,
     ) -> None:
         config_path = os.path.join(os.path.dirname(__file__), "config.json")
         if os.path.exists(config_path):
@@ -206,17 +114,33 @@ class RoboticArmControler:
         self._logging_started_at: Optional[datetime] = None
         self._last_log_filename: Optional[str] = None
 
-        # 流式速度控制的持久化状态
-        self._velocity_controller: Optional[object] = None
-        self._velocity_ctx: Optional[object] = None
-        self._velocity_control_thread: Optional[threading.Thread] = None
-        self._velocity_control_stop = threading.Event()
-        self._velocity_control_lock = threading.Lock()
-        self._velocity_accel_time: float = 0.1  # 加速度时间
-        self._velocity_control_freq: float = 200.0  # 控制频率
-        self._velocity_time_step: float = 1.0 / 200.0  # 积分时间步
-        self._last_velocity_target: Optional[np.ndarray] = None  # 上一次的速度目标
-        self._velocity_ramp_start_time: Optional[float] = None  # 梯形斜坡开始时间
+        self.realtime_control = bool(realtime_control)
+
+        # 最小实时控制状态：仅在 realtime_control=True 时启用。
+        self._realtime_controller: Optional[object] = None
+        self._realtime_paused: Optional[threading.Event] = None
+        self._realtime_lock: Optional[threading.Lock] = None
+        self._joint_position_target: Optional[np.ndarray] = None
+        self._joint_velocity_feedforward: Optional[np.ndarray] = None
+        self._velocity_time_step: Optional[float] = None
+        if self.realtime_control:
+            self._realtime_paused = threading.Event()
+            self._realtime_lock = threading.Lock()
+            self._joint_velocity_feedforward = np.zeros(7, dtype=np.float64)
+            self._velocity_time_step = 1.0 / 200.0
+
+        # 夹爪后台线程
+        self._gripper_lock = threading.Lock()
+        self._gripper_command: Optional[_GripperCommand] = None
+        self._gripper_active_command: Optional[_GripperCommand] = None
+        self._gripper_request = threading.Event()
+        self._gripper_stop = threading.Event()
+        self._gripper_thread = threading.Thread(
+            target=self._gripper_worker,
+            name="franka-gripper-worker",
+            daemon=True,
+        )
+        self._gripper_thread.start()
 
     def move_to_start(self) -> None:
         if self.auto_set_default_behavior:
@@ -224,6 +148,21 @@ class RoboticArmControler:
         if self.auto_move_to_start:
             self.panda.move_to_start()
         self.T_0 = SE3(self.panda.get_pose(), check=False)
+
+    def wait_until_stopped(
+        self,
+        *,
+        timeout_s: float = 2.0,
+        velocity_tol: float = 5e-3,
+        poll_s: float = 0.01,
+    ) -> bool:
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            qvel = np.asarray(self.panda.get_state().dq, dtype=np.float64)
+            if np.max(np.abs(qvel)) <= velocity_tol:
+                return True
+            time.sleep(poll_s)
+        return False
 
     def move_to_pose(self, poses: list, cart_speed_factor=None, stiffness=None) -> None:
         """poses传的是世界坐标系的坐标,格式: [x, y, z, roll, pitch, yaw]"""
@@ -245,29 +184,58 @@ class RoboticArmControler:
         self.panda.move_to_pose(se3_poses, speed_factor=cart_speed_factor)
         self.T_0 = SE3(self.panda.get_pose(), check=False)
 
-    def move_to_joint_position(
-        self, poses: list, joint_speed_factor=None, stiffness=None
-    ) -> None:
-        """poses传的是世界坐标系的坐标,格式: [x, y, z, roll, pitch, yaw]"""
+    @staticmethod
+    def _as_joint_vector(values: Sequence[float], *, name: str) -> np.ndarray:
+        vector = np.asarray(values, dtype=np.float64).flatten()
+        if vector.shape != (7,):
+            raise ValueError(f"{name} must be 7D, got shape {vector.shape}")
+        return vector
+
+    def _get_robot_state_snapshot(self):
+        if self._realtime_controller is not None:
+            return self.panda.get_state()
+        return self.panda.get_robot().read_once()
+
+    def _require_realtime_control(self) -> None:
+        if (
+            not self.realtime_control
+            or self._realtime_lock is None
+            or self._realtime_paused is None
+            or self._joint_velocity_feedforward is None
+            or self._velocity_time_step is None
+        ):
+            raise RuntimeError(
+                "Realtime control is disabled for this arm. Create `RoboticArmControler(..., realtime_control=True)` to use realtime APIs."
+            )
+
+
+    def _solve_joint_targets_from_poses(
+        self, poses: Sequence[Sequence[float]]
+    ) -> list[np.ndarray]:
         initial_pose = SE3(self.panda.get_pose(), check=False)
         initial_rpy = initial_pose.rpy(order="xyz", unit="rad")
 
         def _normalize_angle(angle: float) -> float:
             return (angle + np.pi) % (2 * np.pi) - np.pi
 
-        q_current = self.panda.q
-        current_yaw = initial_rpy[2]
+        robot_state = self._get_robot_state_snapshot()
+        q_current = np.asarray(robot_state.q, dtype=np.float64)
+        current_yaw = float(initial_rpy[2])
 
         qs = []
         for i, pose in enumerate(poses):
-            x, y, z = pose[:3]
-            trans = SE3.Trans(x, y, z)
+            pose = np.asarray(pose, dtype=np.float64).flatten()
+            if pose.shape[0] not in (3, 6):
+                raise ValueError(f"pose[{i}] must be 3D or 6D, got shape {pose.shape}")
 
-            if len(pose) == 6:
+            x, y, z = pose[:3]
+            trans = SE3.Trans(float(x), float(y), float(z))
+
+            if pose.shape[0] == 6:
                 roll, pitch, yaw = pose[3:6]
-                yaw_candidates = [yaw]
+                yaw_candidates = [float(yaw)]
             else:
-                roll, pitch = initial_rpy[0], initial_rpy[1]
+                roll, pitch = float(initial_rpy[0]), float(initial_rpy[1])
                 base_candidates = [current_yaw]
                 offsets = [np.pi / 6, np.pi / 4, np.pi / 2, 3 * np.pi / 4, np.pi]
                 for offset in offsets:
@@ -287,8 +255,8 @@ class RoboticArmControler:
 
             for yaw_candidate in yaw_candidates:
                 rot = SE3.RPY([roll, pitch, yaw_candidate], order="xyz")
-                T = trans * rot
-                all_solutions = panda_py.ik_full(T, q_init=q_current)
+                target_pose = trans * rot
+                all_solutions = panda_py.ik_full(target_pose, q_init=q_current)
                 for solution in all_solutions:
                     if np.any(np.isnan(solution)):
                         continue
@@ -302,20 +270,165 @@ class RoboticArmControler:
                 raise ValueError(
                     f"IK求解失败:目标位姿 {i} 无解或超出工作空间。\n"
                     f"目标位置: x={x:.3f}, y={y:.3f}, z={z:.3f}\n"
-                    f"请检查目标位置是否在机械臂可达范围内。"
+                    "请检查目标位置是否在机械臂可达范围内。"
                 )
+
+            best_q = np.asarray(best_q, dtype=np.float64)
             qs.append(best_q)
             q_current = best_q
-            if len(pose) == 6:
-                current_yaw = yaw
-            else:
-                current_yaw = chosen_yaw
+            current_yaw = float(yaw if pose.shape[0] == 6 else chosen_yaw)
+
+        return qs
+
+    def move_to_joint_position(
+        self, poses: list, joint_speed_factor=None, stiffness=None
+    ) -> None:
+        """poses传的是世界坐标系的坐标,格式: [x, y, z, roll, pitch, yaw]"""
+        qs = self._solve_joint_targets_from_poses(poses)
         if joint_speed_factor is None:
             joint_speed_factor = self.joint_speed_factor
         if stiffness is None:
             stiffness = self.stiffness
         self.panda.move_to_joint_position(qs, speed_factor=joint_speed_factor)
         self.T_0 = SE3(self.panda.get_pose(), check=False)
+
+    def _wait_for_gripper_command(
+        self, command: _GripperCommand, timeout: Optional[float] = None
+    ) -> bool:
+        if not command.done.wait(timeout=timeout):
+            raise TimeoutError("Timed out waiting for gripper command to finish")
+        if command.error is not None:
+            raise RuntimeError("Gripper command failed") from command.error
+        return bool(command.result)
+
+    def _submit_gripper_command(
+        self,
+        kind: Literal["move", "grasp"],
+        params: dict[str, float],
+        *,
+        wait: bool = True,
+        timeout: Optional[float] = None,
+    ) -> bool:
+        command = _GripperCommand(
+            kind=kind,
+            params={key: float(value) for key, value in params.items()},
+            done=threading.Event(),
+        )
+        with self._gripper_lock:
+            if (
+                self._gripper_command is not None
+                or self._gripper_active_command is not None
+            ):
+                raise RuntimeError(
+                    "Gripper is busy. Wait for the previous gripper command to finish first."
+                )
+            self._gripper_command = command
+            self._gripper_request.set()
+
+        if not wait:
+            return True
+        return self._wait_for_gripper_command(command, timeout=timeout)
+
+    def _pause_realtime_controller(self, timeout: float = 2.0) -> bool:
+        del timeout
+        if not self.realtime_control or self._realtime_lock is None or self._realtime_paused is None:
+            return False
+        with self._realtime_lock:
+            controller = self._realtime_controller
+            if controller is None:
+                return False
+
+            self._hold_current_joint_position_with_controller(controller)
+            self._realtime_paused.set()
+            self.panda.stop_controller()
+            return True
+
+    def _resume_realtime_controller(self, timeout: float = 2.0) -> None:
+        del timeout
+        if not self.realtime_control or self._realtime_lock is None or self._realtime_paused is None:
+            return
+        with self._realtime_lock:
+            controller = self._realtime_controller
+            if controller is None:
+                return
+
+            self.panda.start_controller(controller)
+            if self._joint_position_target is None:
+                qpos = self._hold_current_joint_position_with_controller(controller)
+                self._joint_position_target = qpos.copy()
+                self._joint_velocity_feedforward = np.zeros(7, dtype=np.float64)
+            else:
+                controller.set_control(
+                    self._joint_position_target,
+                    self._joint_velocity_feedforward,
+                )
+            self._realtime_paused.clear()
+
+    def _execute_gripper_command(self, command: _GripperCommand) -> bool:
+        if command.kind == "move":
+            return self.gripper.move(command.params["width"], command.params["speed"])
+        return self.gripper.grasp(
+            command.params["width"],
+            command.params["speed"],
+            command.params["force"],
+            command.params["epsilon_inner"],
+            command.params["epsilon_outer"],
+        )
+
+    def _gripper_worker(self) -> None:
+        while not self._gripper_stop.is_set():
+            self._gripper_request.wait(0.05)
+            if self._gripper_stop.is_set():
+                break
+            if not self._gripper_request.is_set():
+                continue
+
+            with self._gripper_lock:
+                command = self._gripper_command
+                self._gripper_command = None
+                self._gripper_active_command = command
+                self._gripper_request.clear()
+
+            if command is None:
+                continue
+
+            paused = False
+            try:
+                paused = self._pause_realtime_controller()
+                command.result = self._execute_gripper_command(command)
+            except BaseException as exc:
+                command.error = exc
+            finally:
+                if paused:
+                    try:
+                        self._resume_realtime_controller()
+                    except BaseException as exc:
+                        if command.error is None:
+                            command.error = exc
+                with self._gripper_lock:
+                    self._gripper_active_command = None
+                command.done.set()
+
+    @property
+    def gripper_busy(self) -> bool:
+        with self._gripper_lock:
+            command = self._gripper_command
+            active = self._gripper_active_command
+        return (
+            (command is not None and not command.done.is_set())
+            or (active is not None and not active.done.is_set())
+            or self._gripper_request.is_set()
+        )
+
+    def wait_gripper(self, timeout: Optional[float] = None) -> None:
+        with self._gripper_lock:
+            command = self._gripper_command
+            active = self._gripper_active_command
+        if command is None:
+            command = active
+        if command is None:
+            return
+        self._wait_for_gripper_command(command, timeout=timeout)
 
     def gripper_grasp(
         self,
@@ -324,14 +437,47 @@ class RoboticArmControler:
         force: float = 10.0,
         epsilon_inner: float = 0.04,
         epsilon_outer: float = 0.04,
+        *,
+        wait: bool = True,
+        timeout: Optional[float] = None,
     ) -> bool:
-        return self.gripper.grasp(width, speed, force, epsilon_inner, epsilon_outer)
+        return self._submit_gripper_command(
+            "grasp",
+            {
+                "width": width,
+                "speed": speed,
+                "force": force,
+                "epsilon_inner": epsilon_inner,
+                "epsilon_outer": epsilon_outer,
+            },
+            wait=wait,
+            timeout=timeout,
+        )
 
-    def gripper_move(self, width: float = 0.08, speed: float = 0.2) -> bool:
-        return self.gripper.move(width, speed)
+    def gripper_move(
+        self,
+        width: float = 0.08,
+        speed: float = 0.2,
+        *,
+        wait: bool = True,
+        timeout: Optional[float] = None,
+    ) -> bool:
+        return self._submit_gripper_command(
+            "move",
+            {"width": width, "speed": speed},
+            wait=wait,
+            timeout=timeout,
+        )
 
-    def gripper_open(self, width: float = 0.05, speed: float = 0.2) -> bool:
-        return self.gripper_move(width=width, speed=speed)
+    def gripper_open(
+        self,
+        width: float = 0.05,
+        speed: float = 0.2,
+        *,
+        wait: bool = True,
+        timeout: Optional[float] = None,
+    ) -> bool:
+        return self.gripper_move(width=width, speed=speed, wait=wait, timeout=timeout)
 
     def gripper_close(
         self,
@@ -340,8 +486,19 @@ class RoboticArmControler:
         force: float = 60.0,
         epsilon_inner: float = 0.04,
         epsilon_outer: float = 0.04,
+        *,
+        wait: bool = True,
+        timeout: Optional[float] = None,
     ) -> bool:
-        return self.gripper_grasp(width, speed, force, epsilon_inner, epsilon_outer)
+        return self.gripper_grasp(
+            width,
+            speed,
+            force,
+            epsilon_inner,
+            epsilon_outer,
+            wait=wait,
+            timeout=timeout,
+        )
 
     def move_delta_pose(
         self,
@@ -418,6 +575,129 @@ class RoboticArmControler:
 
         return pose_delta
 
+    def _hold_current_joint_position_with_controller(self, controller) -> np.ndarray:
+        robot_state = self.panda.get_state()
+        qpos = np.asarray(robot_state.q, dtype=np.float64)
+        controller.set_control(qpos, np.zeros(7, dtype=np.float64))
+        return qpos
+
+    @property
+    def realtime_mode(self) -> Optional[RealtimeControlMode]:
+        if self._realtime_controller is None:
+            return None
+        return "joint_position"
+
+    def start_joint_position_streaming(
+        self,
+        control_frequency: float = 200.0,
+        settle_s: float = 0.5,
+    ) -> None:
+        self._require_realtime_control()
+        from panda_py import controllers
+
+        controller = controllers.JointPosition()
+        self.stop_realtime_control(raise_on_timeout=False)
+        self.panda.stop_controller()
+        self.panda.start_controller(controller)
+
+        if settle_s > 0.0:
+            time.sleep(max(0.0, float(settle_s)))
+
+        qpos = self._hold_current_joint_position_with_controller(controller)
+        with self._realtime_lock:
+            self._realtime_controller = controller
+            self._joint_position_target = qpos.copy()
+            self._joint_velocity_feedforward = np.zeros(7, dtype=np.float64)
+            self._velocity_time_step = 1.0 / max(1.0, float(control_frequency))
+            self._realtime_paused.clear()
+
+    def hold_current_joint_position(self) -> np.ndarray:
+        self._require_realtime_control()
+        robot_state = self._get_robot_state_snapshot()
+        qpos = np.asarray(robot_state.q, dtype=np.float64)
+        with self._realtime_lock:
+            self._joint_position_target = qpos.copy()
+            self._joint_velocity_feedforward = np.zeros(7, dtype=np.float64)
+            controller = self._realtime_controller
+            if controller is not None and not self._realtime_paused.is_set():
+                controller.set_control(
+                    self._joint_position_target,
+                    self._joint_velocity_feedforward,
+                )
+        return qpos
+
+    def set_joint_position_command(
+        self,
+        joint_position: Sequence[float],
+        joint_velocity: Optional[Sequence[float]] = None,
+    ) -> None:
+        self._require_realtime_control()
+        controller = self._realtime_controller
+        if controller is None:
+            raise RuntimeError(
+                "Realtime joint controller not started. Call start_joint_position_streaming() first, then manage the loop with `with arm.panda.create_context(...):`."
+            )
+
+        qpos = self._as_joint_vector(joint_position, name="joint_position")
+        qvel = (
+            np.zeros(7, dtype=np.float64)
+            if joint_velocity is None
+            else self._as_joint_vector(joint_velocity, name="joint_velocity")
+        )
+
+        with self._realtime_lock:
+            self._joint_position_target = qpos
+            self._joint_velocity_feedforward = qvel
+            if (
+                not self._realtime_paused.is_set()
+                and self._realtime_controller is not None
+            ):
+                self._realtime_controller.set_control(qpos, qvel)
+
+    def set_pose_command(
+        self,
+        pose: Sequence[float],
+        joint_velocity: Optional[Sequence[float]] = None,
+    ) -> np.ndarray:
+        target_q = self._solve_joint_targets_from_poses([pose])[-1]
+        self.set_joint_position_command(target_q, joint_velocity=joint_velocity)
+        return target_q
+
+    def move_delta_pose_realtime(
+        self,
+        action: np.ndarray,
+        joint_velocity: Optional[Sequence[float]] = None,
+        flip_axes: tuple = (False, False, False),
+        delta_frame: Literal["ee", "base"] = "ee",
+    ) -> np.ndarray:
+        if any(flip_axes):
+            action = np.asarray(action, dtype=np.float64).copy()
+            for i, flip in enumerate(flip_axes[:3]):
+                if flip:
+                    action[i] = -action[i]
+
+        current_pose = self.ee_pose_matrix
+        delta_pose = self._unpack_action(np.asarray(action, dtype=np.float64))
+        if delta_frame == "ee":
+            target_pose = current_pose @ delta_pose
+        elif delta_frame == "base":
+            target_pose = delta_pose @ current_pose
+        else:
+            raise ValueError(f"delta_frame must be 'ee' or 'base', got {delta_frame!r}")
+
+        target_se3 = SE3(target_pose, check=False)
+        position = target_se3.t
+        rpy = target_se3.rpy(order="xyz", unit="rad")
+        target_6d = [
+            float(position[0]),
+            float(position[1]),
+            float(position[2]),
+            float(rpy[0]),
+            float(rpy[1]),
+            float(rpy[2]),
+        ]
+        return self.set_pose_command(target_6d, joint_velocity=joint_velocity)
+
     def apply_joint_velocity(
         self,
         joint_velocity: np.ndarray,
@@ -428,45 +708,16 @@ class RoboticArmControler:
         max_abs_velocity: float | None = None,
         streaming: bool = False,
     ) -> None:
-        """
-        关节速度控制 - 支持单次执行或流式持续控制
-
-        Args:
-            joint_velocity: 7维关节速度 (rad/s)
-            duration: 执行时长（秒），仅在 streaming=False 时有效
-            acceleration_time: 加速时间（秒）
-            control_frequency: 控制频率 (Hz)，默认 200Hz
-            max_abs_velocity: 最大速度限幅（可选）
-            streaming:
-                - False (默认): 单次执行，立即返回
-                - True: 启动持久化控制器，后续调用只需更新速度命令
-
-        使用方式:
-            # 单次执行（原来的用法）
-            arm.apply_joint_velocity(velocity, duration=0.066)
-
-            # 流式控制（高频调用）
-            arm.start_velocity_streaming(control_frequency=200.0)
-            for _ in range(1000):
-                arm.apply_joint_velocity(velocity, streaming=True)
-            arm.stop_velocity_streaming()
-        """
-        joint_velocity = np.asarray(joint_velocity, dtype=np.float64).flatten()
-        if joint_velocity.shape[0] != 7:
-            raise ValueError(
-                f"Expected 7-DoF joint velocity, got {joint_velocity.shape}"
-            )
+        joint_velocity = self._as_joint_vector(joint_velocity, name="joint_velocity")
 
         if max_abs_velocity is not None:
             joint_velocity = np.clip(
-                joint_velocity, -max_abs_velocity, max_abs_velocity
+                joint_velocity, -float(max_abs_velocity), float(max_abs_velocity)
             )
 
         if streaming:
-            # 流式模式：只更新控制命令
             self._update_velocity_command(joint_velocity)
         else:
-            # 单次执行模式
             self._execute_velocity_once(
                 joint_velocity, duration, acceleration_time, control_frequency
             )
@@ -478,38 +729,32 @@ class RoboticArmControler:
         acceleration_time: float,
         control_frequency: float,
     ) -> None:
-        """单次执行速度控制（不持久化）"""
         from panda_py import controllers
 
-        # 防止已有控制器冲突（不影响持久化的流式控制器）
-        if self._velocity_controller is None:
-            self.panda.stop_controller()
-
         ctrl = controllers.IntegratedVelocity()
-        self.panda.start_controller(ctrl)
-
         duration = max(0.0, float(duration))
         accel = max(0.0, float(acceleration_time))
 
         try:
+            self.panda.stop_controller()
+            self.panda.start_controller(ctrl)
             with self.panda.create_context(
                 frequency=control_frequency, max_runtime=duration
             ) as ctx:
                 while ctx.ok():
                     t = ctx.time
                     if accel > 0.0 and duration > 0.0:
-                        # 梯形速度曲线：起始加速、末尾减速
                         ramp_up = min(1.0, t / accel)
                         ramp_down = min(1.0, max(0.0, (duration - t) / accel))
                         scale = min(ramp_up, ramp_down)
                     else:
                         scale = 1.0
-
                     ctrl.set_control(joint_velocity * scale)
         finally:
-            # 结束时清零
-            ctrl.set_control(np.zeros(7))
-            self.panda.stop_controller()
+            with suppress(Exception):
+                ctrl.set_control(np.zeros(7, dtype=np.float64))
+            with suppress(Exception):
+                self.panda.stop_controller()
 
     def start_velocity_streaming(
         self,
@@ -517,120 +762,75 @@ class RoboticArmControler:
         acceleration_time: float = 0.1,
         time_step: float | None = None,
     ) -> None:
-        """
-        启动持久化速度控制器（用于高频流式调用）
-
-        Args:
-            control_frequency: 控制循环频率 (Hz)
-            acceleration_time: 加速/减速时间（秒），用于梯形速度曲线
-            time_step: 积分时间步 (秒)。如果提供，每个速度命令会乘以这个值来匹配原来的积分行为
-                      例如：原来 duration=0.066s，现在应该传 time_step=0.066
-
-        Example:
-            arm.start_velocity_streaming(control_frequency=200.0, time_step=0.066)
-            try:
-                for _ in range(1000):
-                    arm.apply_joint_velocity(vel, streaming=True)
-            finally:
-                arm.stop_velocity_streaming()
-        """
-        if self._velocity_controller is not None:
-            print("[Warning] Velocity streaming already started, stopping first...")
-            self.stop_velocity_streaming()
-
-        from panda_py import controllers
-
-        self.panda.stop_controller()
-        self._velocity_controller = controllers.IntegratedVelocity()
-        self.panda.start_controller(self._velocity_controller)
-
-        # 初始化为零速度
-        self._velocity_controller.set_control(np.zeros(7))
-
-        # 保存加速度参数和时间步
-        self._velocity_accel_time = max(0.0, float(acceleration_time))
-        self._velocity_control_freq = max(1.0, float(control_frequency))
+        self._require_realtime_control()
+        del acceleration_time
         self._velocity_time_step = (
             float(time_step)
             if time_step is not None
-            else (1.0 / self._velocity_control_freq)
+            else 1.0 / max(1.0, float(control_frequency))
         )
-        self._last_velocity_target = np.zeros(7)
-        self._velocity_ramp_start_time = None
-        self._velocity_control_stop.clear()
-
-        print(
-            f"[Velocity] 已启动持续速度控制器 (freq={control_frequency:.0f}Hz, accel_time={acceleration_time:.3f}s, time_step={self._velocity_time_step:.4f}s)"
+        self.start_joint_position_streaming(
+            control_frequency=control_frequency,
+            settle_s=0.0,
         )
 
     def _update_velocity_command(self, joint_velocity: np.ndarray) -> None:
-        """在流式模式下更新速度命令"""
-        if self._velocity_controller is None:
+        self._require_realtime_control()
+        if self._realtime_controller is None:
             raise RuntimeError(
-                "Velocity controller not started. Call start_velocity_streaming() first or use streaming=False."
+                "Realtime joint controller not started. Call start_joint_position_streaming() first, then manage the loop with `with arm.panda.create_context(...):`."
             )
 
-        # 应用时间步缩放，保持原来的积分行为
-        # 原来：target_q = current_q + joint_velocity * duration
-        # 现在：速度 * time_step 相当于原来的位置增量
-        scaled_velocity = joint_velocity * self._velocity_time_step
-
-        with self._velocity_control_lock:
-            try:
-                self._velocity_controller.set_control(scaled_velocity)
-            except Exception as e:
-                print(f"[Error] Failed to set velocity command: {e}")
-                raise
+        current_q = np.asarray(self.panda.get_state().q, dtype=np.float64)
+        target_q = current_q + self._as_joint_vector(
+            joint_velocity * float(self._velocity_time_step),
+            name="joint_velocity",
+        )
+        self.set_joint_position_command(target_q, joint_velocity=joint_velocity)
 
     def set_velocity_command(self, joint_velocity: np.ndarray) -> None:
-        """
-        快速设置速度命令（不加锁，性能更高，用于流式控制）
+        self._update_velocity_command(joint_velocity)
 
-        需要先调用 start_velocity_streaming()
-        """
-        joint_velocity = np.asarray(joint_velocity, dtype=np.float64).flatten()
-        if joint_velocity.shape[0] != 7:
-            raise ValueError(
-                f"Expected 7-DoF joint velocity, got {joint_velocity.shape}"
-            )
-
-        if self._velocity_controller is None:
-            raise RuntimeError(
-                "Velocity controller not started. Call start_velocity_streaming() first."
-            )
-
-        self._velocity_controller.set_control(joint_velocity)
-
-    def stop_velocity_streaming(self) -> None:
-        """停止持久化速度控制器"""
-        with self._velocity_control_lock:
-            if self._velocity_controller is None:
+    def stop_realtime_control(
+        self,
+        *,
+        timeout: float = 2.0,
+        raise_on_timeout: bool = True,
+    ) -> None:
+        del timeout, raise_on_timeout
+        if not self.realtime_control or self._realtime_lock is None or self._realtime_paused is None:
+            return
+        with self._realtime_lock:
+            controller = self._realtime_controller
+            if controller is None:
                 return
 
-            try:
-                # 清零速度
-                self._velocity_controller.set_control(np.zeros(7))
+            with suppress(Exception):
+                self._hold_current_joint_position_with_controller(controller)
+            with suppress(Exception):
                 self.panda.stop_controller()
-                self._velocity_controller = None
-                print("[Velocity] 已停止持续速度控制器")
-            except Exception as e:
-                print(f"[Error] Error stopping velocity controller: {e}")
-                raise
+
+            self._realtime_controller = None
+            self._joint_position_target = None
+            self._joint_velocity_feedforward = np.zeros(7, dtype=np.float64)
+            self._velocity_time_step = 1.0 / 200.0
+            self._realtime_paused.clear()
+
+    def stop_velocity_streaming(self) -> None:
+        self.stop_realtime_control()
+
+    def stop_joint_position_streaming(self) -> None:
+        self.stop_realtime_control()
 
     @property
     def state(self):
         """
         获取机器人状态。
 
-        注意：当流式速度控制器运行时，使用 get_state() 返回缓存快照，
+        注意：当实时关节控制运行时，使用 get_state() 返回缓存快照，
         而不是 read_once() 来避免阻塞冲突。
         """
-        if self._velocity_controller is not None:
-            # 流式控制运行中，用缓存状态
-            robot_state = self.panda.get_state()
-        else:
-            # 无控制器运行，可以直接读取最新状态
-            robot_state = self.panda.get_robot().read_once()
+        robot_state = self._get_robot_state_snapshot()
 
         return {
             "joint_positions": robot_state.q,
@@ -649,13 +849,13 @@ class RoboticArmControler:
 
     @property
     def ee_pose_matrix(self):
-        robot_state = self.panda.get_robot().read_once()
+        robot_state = self._get_robot_state_snapshot()
         pose_matrix = np.array(robot_state.O_T_EE).reshape(4, 4).T
         return pose_matrix.astype(np.float32)
 
     @property
     def pose(self):
-        robot_state = self.panda.get_robot().read_once()
+        robot_state = self._get_robot_state_snapshot()
         pose_matrix = np.array(robot_state.O_T_EE).reshape(4, 4).T
         T = SE3(pose_matrix, check=False)
         position = T.t
@@ -666,6 +866,16 @@ class RoboticArmControler:
         self.cleanup()
 
     def cleanup(self) -> None:
+        with suppress(Exception):
+            self.wait_gripper(timeout=2.0)
+        with suppress(Exception):
+            self.stop_realtime_control(raise_on_timeout=False)
+        with suppress(Exception):
+            self._gripper_stop.set()
+            self._gripper_request.set()
+        with suppress(Exception):
+            if self._gripper_thread.is_alive():
+                self._gripper_thread.join(timeout=1.0)
         with suppress(Exception):
             self.panda.disable_logging()
         with suppress(Exception):
@@ -678,8 +888,6 @@ class RoboticArmControler:
             self.desk.release_control()
         with suppress(Exception):
             self.desk.logout()
-
-
 
 
 if __name__ == "__main__":

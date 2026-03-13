@@ -1,30 +1,21 @@
 """删除 LeRobot 数据集中“最新一次”(最大 episode_index) 的 episode。
 
 特点：
-- 默认 dry-run，不会真的改动文件；加 --apply 才会执行。
+- 直接执行硬删除，不做 dry-run、备份或 .trash 中转。
 - 会同步更新 meta/episodes.jsonl、meta/episodes_stats.jsonl、meta/info.json。
-- 默认把被删的文件移动到数据集内的 .trash/ 目录，避免误删；加 --hard-delete 才永久删除。
 - 如果不传 --dataset，会在 data/openpi/ 下自动选择最近修改的一个数据集目录。
 
 用法示例：
-  # 只预览将要删除哪些文件
   .venv/bin/python data_analysis/delete_latest_episode.py --dataset data/openpi/franka_droid_lerobot_2_4
-
-  # 执行删除（移动到 .trash/）
-  .venv/bin/python data_analysis/delete_latest_episode.py --dataset data/openpi/franka_droid_lerobot_2_4 --apply
-
-  # 执行硬删除（不可恢复）
-  uv run data_analysis/delete_latest_episode.py --dataset data/openpi/franka_droid_lerobot_2_4 --apply --hard-delete
+  uv run data_analysis/delete_latest_episode.py --dataset data/openpi/franka_droid_lerobot_2_4
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -115,28 +106,6 @@ def _episode_video_paths(
     return sorted(videos_dir.rglob(pattern))
 
 
-def _backup_meta(dataset_dir: Path, *, dry_run: bool) -> Optional[Path]:
-    meta_dir = dataset_dir / "meta"
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = meta_dir / f"_backup_delete_latest_{stamp}"
-
-    to_copy = [
-        meta_dir / "info.json",
-        meta_dir / "episodes.jsonl",
-        meta_dir / "episodes_stats.jsonl",
-        meta_dir / "tasks.jsonl",
-    ]
-
-    if dry_run:
-        return backup_dir
-
-    backup_dir.mkdir(parents=True, exist_ok=False)
-    for src in to_copy:
-        if src.exists():
-            shutil.copy2(src, backup_dir / src.name)
-    return backup_dir
-
-
 def _update_splits_in_place(
     info: Dict[str, Any], old_total: int, new_total: int
 ) -> None:
@@ -172,7 +141,7 @@ def _load_episode_infos(dataset_dir: Path) -> List[EpisodeInfo]:
     return out
 
 
-def delete_latest_episode(dataset_dir: Path, *, apply: bool, hard_delete: bool) -> int:
+def delete_latest_episode(dataset_dir: Path) -> int:
     dataset_dir = dataset_dir.resolve()
     if not _is_lerobot_dataset_dir(dataset_dir):
         print(f"[ERROR] 不是有效的 LeRobot 数据集目录: {dataset_dir}", file=sys.stderr)
@@ -195,9 +164,6 @@ def delete_latest_episode(dataset_dir: Path, *, apply: bool, hard_delete: bool) 
     parquet_path = _episode_parquet_path(info, dataset_dir, latest_index)
     video_paths = _episode_video_paths(info, dataset_dir, latest_index)
 
-    dry_run = not apply
-    backup_dir = _backup_meta(dataset_dir, dry_run=dry_run)
-
     print(f"Dataset: {dataset_dir}")
     print(f"Latest episode_index: {latest_index}")
     print(f"Parquet: {parquet_path}")
@@ -208,30 +174,15 @@ def delete_latest_episode(dataset_dir: Path, *, apply: bool, hard_delete: bool) 
     else:
         print("Videos: (none)")
 
-    print(f"Meta backup dir: {backup_dir}")
-    if dry_run:
-        print("[DRY-RUN] 未做任何改动。加 --apply 才会真的删除。")
-        return 0
-
-    # 1) 删除/移动数据文件
-    trash_dir = dataset_dir / ".trash" / f"episode_{latest_index:06d}"
-    if not hard_delete:
-        trash_dir.mkdir(parents=True, exist_ok=True)
-
-    def remove_or_trash(path: Path) -> None:
+    # 1) 硬删除数据文件
+    def remove_file(path: Path) -> None:
         if not path.exists():
             return
-        if hard_delete:
-            path.unlink()
-            return
-        # Important: LeRobot's internal consistency checks count files via rglob("*.parquet") and rglob("*.mp4").
-        # If we keep the original extension under the dataset directory, it will break those assertions.
-        dest = trash_dir / f"{path.name}.deleted"
-        shutil.move(str(path), str(dest))
+        path.unlink()
 
-    remove_or_trash(parquet_path)
+    remove_file(parquet_path)
     for vp in video_paths:
-        remove_or_trash(vp)
+        remove_file(vp)
 
     # 2) 更新 episodes.jsonl（删掉 latest 那行）
     episodes_rows = _read_jsonl(episodes_path)
@@ -264,11 +215,7 @@ def delete_latest_episode(dataset_dir: Path, *, apply: bool, hard_delete: bool) 
     _update_splits_in_place(info, old_total=old_total, new_total=new_total)
     _write_json(info_path, info)
 
-    print("[OK] 已删除最新 episode，并更新 meta。")
-    if not hard_delete:
-        print(
-            f"[OK] 被删文件已移动到: {trash_dir} (已加 .deleted 后缀，避免影响 LeRobot 校验)"
-        )
+    print("[OK] 已硬删除最新 episode，并更新 meta。")
     return 0
 
 
@@ -281,12 +228,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=Path,
         default=None,
         help="数据集目录（包含 meta/info.json）。不填则自动在 data/openpi 下找最近修改的数据集。",
-    )
-    parser.add_argument(
-        "--apply", action="store_true", help="真的执行删除（默认只 dry-run 预览）"
-    )
-    parser.add_argument(
-        "--hard-delete", action="store_true", help="永久删除文件（默认移动到 .trash/）"
     )
     args = parser.parse_args(argv)
 
@@ -302,7 +243,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
         print(f"[AUTO] 选择最近修改的数据集: {dataset_dir}")
 
-    return delete_latest_episode(dataset_dir, apply=True, hard_delete=True)
+    return delete_latest_episode(dataset_dir)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ Deadman switch: both triggers (button 0) held for >long_press_s.
 X (left controller button 4): switch to the second prompt.
 Y (left controller button 5): start/stop recording.
 A/B (right controller buttons 4/5): close/open gripper.
+Right thumbstick Y: gripper velocity axis (up=close, down=open).
 """
 
 import math
@@ -25,7 +26,7 @@ from teleop_xr import Teleop
 from teleop_xr.config import TeleopSettings
 from teleop_xr.messages import XRState
 
-# Shared-memory layout (13 doubles, lock-free):
+# Shared-memory layout (16 doubles, lock-free):
 #  [0]  arm_enabled   (0.0 / 1.0)
 #  [1]  pos_x
 #  [2]  pos_y
@@ -38,8 +39,11 @@ from teleop_xr.messages import XRState
 #  [9]  y_pressed     (0.0 / 1.0)
 #  [10] gripper_close (0.0 / 1.0)
 #  [11] gripper_open  (0.0 / 1.0)
-#  [12] timestamp
-_SHM_SIZE = 13
+#  [12] right_stick_x
+#  [13] right_stick_y
+#  [14] gripper_velocity_axis  (+close / -open)
+#  [15] timestamp
+_SHM_SIZE = 16
 
 
 def _normalize_quaternion(
@@ -88,6 +92,9 @@ class VRInput:
     save_pressed: bool = False
     gripper_close: bool = False  # A (right btn 4)
     gripper_open: bool = False  # B (right btn 5)
+    right_stick_x: float = 0.0
+    right_stick_y: float = 0.0
+    gripper_velocity_axis: float = 0.0  # +close (stick up), -open (stick down)
 
     timestamp: float = 0.0
 
@@ -165,11 +172,7 @@ class VRInputReader:
         quat_z: float,
         quat_w: float,
     ) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
-        if (
-            not arm_enabled
-            or self._filtered_pos is None
-            or self._filtered_quat is None
-        ):
+        if not arm_enabled or self._filtered_pos is None or self._filtered_quat is None:
             return self._set_filtered_pose(
                 pos_x,
                 pos_y,
@@ -184,8 +187,7 @@ class VRInputReader:
         raw_quat = _normalize_quaternion((quat_x, quat_y, quat_z, quat_w))
 
         filtered_pos = tuple(
-            prev_component
-            + self._position_alpha * (raw_component - prev_component)
+            prev_component + self._position_alpha * (raw_component - prev_component)
             for prev_component, raw_component in zip(self._filtered_pos, raw_pos)
         )
         filtered_quat = _nlerp_quaternion(
@@ -264,6 +266,8 @@ class VRInputReader:
         y_pressed = False
         gripper_close = False
         gripper_open = False
+        right_stick_x = 0.0
+        right_stick_y = 0.0
 
         # Left controller: X (btn 4) -> second prompt, Y (btn 5) -> start/stop
         if left_dev and left_dev.gamepad:
@@ -278,10 +282,16 @@ class VRInputReader:
         # Right controller: A (btn 4) -> close, B (btn 5) -> open
         if right_dev and right_dev.gamepad:
             btns = right_dev.gamepad.buttons
+            axes = right_dev.gamepad.axes
             if len(btns) > 4 and btns[4].pressed:
                 gripper_close = True
             if len(btns) > 5 and btns[5].pressed:
                 gripper_open = True
+            if len(axes) >= 2:
+                right_stick_x = float(axes[-2])
+                right_stick_y = float(axes[-1])
+
+        gripper_velocity_axis = -right_stick_y
 
         (filtered_pos, filtered_quat) = self._filter_pose(
             arm_enabled=arm_enabled,
@@ -309,44 +319,11 @@ class VRInputReader:
             save_pressed=save_pressed,
             gripper_close=gripper_close,
             gripper_open=gripper_open,
+            right_stick_x=right_stick_x,
+            right_stick_y=right_stick_y,
+            gripper_velocity_axis=gripper_velocity_axis,
             timestamp=now,
         )
-
-
-def _vr_worker(
-    shm: mp.Array,
-    host: str,
-    port: int,
-    long_press_s: float,
-    position_alpha: float,
-    rotation_alpha: float,
-) -> None:
-    """Child-process entry point.  Has its own GIL — teleop_xr runs free."""
-    reader = VRInputReader(
-        host=host,
-        port=port,
-        long_press_s=long_press_s,
-        position_alpha=position_alpha,
-        rotation_alpha=rotation_alpha,
-    )
-    t = threading.Thread(target=reader.run, daemon=True)
-    t.start()
-    while True:
-        v = reader.latest
-        shm[0] = 1.0 if v.arm_enabled else 0.0
-        shm[1] = v.pos_x
-        shm[2] = v.pos_y
-        shm[3] = v.pos_z
-        shm[4] = v.quat_x
-        shm[5] = v.quat_y
-        shm[6] = v.quat_z
-        shm[7] = v.quat_w
-        shm[8] = 1.0 if v.x_pressed else 0.0
-        shm[9] = 1.0 if v.y_pressed else 0.0
-        shm[10] = 1.0 if v.gripper_close else 0.0
-        shm[11] = 1.0 if v.gripper_open else 0.0
-        shm[12] = v.timestamp
-        time.sleep(0.001)  # 1 kHz — <1 ms latency, negligible CPU
 
 
 class VRInputProcess:
@@ -372,7 +349,7 @@ class VRInputProcess:
         self._shm: mp.Array = mp.Array("d", _SHM_SIZE, lock=False)
         self._shm[7] = 1.0  # quat_w default
         self._proc = mp.Process(
-            target=_vr_worker,
+            target=self._vr_worker,
             args=(
                 self._shm,
                 host,
@@ -392,6 +369,45 @@ class VRInputProcess:
             self._proc.terminate()
             self._proc.join(timeout=2.0)
 
+    def _vr_worker(
+        self,
+        shm: mp.Array,
+        host: str,
+        port: int,
+        long_press_s: float,
+        position_alpha: float,
+        rotation_alpha: float,
+    ) -> None:
+        """Child-process entry point.  Has its own GIL — teleop_xr runs free."""
+        reader = VRInputReader(
+            host=host,
+            port=port,
+            long_press_s=long_press_s,
+            position_alpha=position_alpha,
+            rotation_alpha=rotation_alpha,
+        )
+        t = threading.Thread(target=reader.run, daemon=True)
+        t.start()
+        while True:
+            v = reader.latest
+            shm[0] = 1.0 if v.arm_enabled else 0.0
+            shm[1] = v.pos_x
+            shm[2] = v.pos_y
+            shm[3] = v.pos_z
+            shm[4] = v.quat_x
+            shm[5] = v.quat_y
+            shm[6] = v.quat_z
+            shm[7] = v.quat_w
+            shm[8] = 1.0 if v.x_pressed else 0.0
+            shm[9] = 1.0 if v.y_pressed else 0.0
+            shm[10] = 1.0 if v.gripper_close else 0.0
+            shm[11] = 1.0 if v.gripper_open else 0.0
+            shm[12] = v.right_stick_x
+            shm[13] = v.right_stick_y
+            shm[14] = v.gripper_velocity_axis
+            shm[15] = v.timestamp
+            time.sleep(0.001)  # 1 kHz — <1 ms latency, negligible CPU
+
     @property
     def latest(self) -> VRInput:
         s = self._shm
@@ -409,7 +425,10 @@ class VRInputProcess:
             save_pressed=(s[8] > 0.5) or (s[9] > 0.5),
             gripper_close=s[10] > 0.5,
             gripper_open=s[11] > 0.5,
-            timestamp=s[12],
+            right_stick_x=s[12],
+            right_stick_y=s[13],
+            gripper_velocity_axis=s[14],
+            timestamp=s[15],
         )
 
 
@@ -422,10 +441,11 @@ def main() -> None:
             v = vr.latest
             print(
                 f"enabled={v.arm_enabled}  "
-                f"pos=({v.pos_x:+.3f}, {v.pos_y:+.3f}, {v.pos_z:+.3f})  "
                 f"quat=({v.quat_x:+.3f}, {v.quat_y:+.3f}, {v.quat_z:+.3f}, {v.quat_w:+.3f})  "
                 f"x={v.x_pressed}  y={v.y_pressed}  save={v.save_pressed}  "
-                f"grip_close={v.gripper_close}  grip_open={v.gripper_open}",
+                f"grip_close={v.gripper_close}  grip_open={v.gripper_open}  "
+                f"right_stick=({v.right_stick_x:+.3f}, {v.right_stick_y:+.3f})  "
+                f"grip_vel_axis={v.gripper_velocity_axis:+.3f}",
                 end="\r",
             )
             time.sleep(0.1)

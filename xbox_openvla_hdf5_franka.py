@@ -13,13 +13,44 @@ from typing import Optional
 import h5py
 import numpy as np
 
+from control.img_util import center_crop_and_resize_rgb_uint8
 from control.pygame_gamepad import PygameGamepadTeleop
 from control.robotic_arm_controller import (
     RoboticArmControler,
     _LatestFrameBuffer,
-    _camera_capture_worker,
 )
 from control.dual_camera_manager import RealSenseConnector
+
+
+def _camera_capture_worker(
+    *,
+    camera: RealSenseConnector,
+    buf: _LatestFrameBuffer,
+    stop_event: threading.Event,
+    timeout_ms: int,
+    crop_scale: float,
+    out_hw: int,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            ok = camera.update(timeout=int(timeout_ms))
+        except Exception:
+            ok = False
+        if not ok:
+            continue
+
+        rgb = camera.img
+        if rgb is None:
+            continue
+        try:
+            rgb224 = center_crop_and_resize_rgb_uint8(
+                np.asarray(rgb, dtype=np.uint8),
+                crop_scale=float(crop_scale),
+                out_hw=int(out_hw),
+            )
+        except Exception:
+            continue
+        buf.set(rgb224)
 
 
 def _get_gamepad_inputs(teleop: PygameGamepadTeleop) -> tuple[dict, dict]:
@@ -185,6 +216,12 @@ def main() -> None:
 
         print("Moving to start position...")
         arm.move_to_start()
+        if not arm.wait_until_stopped():
+            max_vel = float(np.max(np.abs(np.asarray(arm.panda.get_state().dq))))
+            print(
+                "[Warning] Robot did not fully stop after move_to_start: "
+                f"max_vel={max_vel:.4f} rad/s"
+            )
 
         print("\nInitialization complete.")
         print("\nControl mapping:")

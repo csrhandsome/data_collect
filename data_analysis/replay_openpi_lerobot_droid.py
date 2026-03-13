@@ -348,6 +348,12 @@ def main() -> None:
         arm = RoboticArmControler()
         if not args.no_init:
             arm.move_to_start()
+            if not arm.wait_until_stopped():
+                max_vel = float(np.max(np.abs(np.asarray(arm.panda.get_state().dq))))
+                print(
+                    "[Warning] Robot did not fully stop after move_to_start: "
+                    f"max_vel={max_vel:.4f} rad/s"
+                )
         action_freq = float(fps * args.speed)
         control_freq = max(action_freq * 10.0, 200.0)
         MAX_JOINT_DELTA = 0.2  # rad/step, matches DROID

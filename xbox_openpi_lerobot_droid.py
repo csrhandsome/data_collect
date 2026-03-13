@@ -31,11 +31,9 @@ import numpy as np
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 from control.pygame_gamepad import PygameGamepadTeleop
-from control.dual_camera_manager import RealSenseConnector
+from control.dual_camera_manager import DualRealsenseManager
 from ik_solver import DroidIKSolver
 from control.robotic_arm_controller import RoboticArmControler
-from control.robotic_arm_controller import _camera_capture_worker
-from control.robotic_arm_controller import _LatestFrameBuffer
 
 
 def _get_gamepad_inputs(teleop: PygameGamepadTeleop) -> tuple[dict, dict]:
@@ -238,7 +236,7 @@ def _load_or_create_dataset(
                 "Failed to load existing LeRobot dataset. "
                 "Refusing to modify/recreate automatically. "
                 "If the last episode is incomplete, prune it manually with: "
-                f".venv/bin/python data_analysis/delete_latest_episode.py --dataset {root} --apply"
+                f".venv/bin/python data_analysis/delete_latest_episode.py --dataset {root}"
             ) from exc
 
     return _create_dataset(repo_id, fps=fps, image_hw=image_hw, root=root)
@@ -348,22 +346,19 @@ def main() -> None:
     arm = RoboticArmControler()
 
     print("Initializing RealSense cameras...")
-    external_cam = RealSenseConnector(
-        serial=args.external_camera_serial,
+    camera_manager = DualRealsenseManager(
+        external_serial=args.external_camera_serial,
+        wrist_serial=args.wrist_camera_serial,
         width=args.camera_width,
         height=args.camera_height,
         fps=args.camera_fps,
         enable_depth=not args.color_only,
+        background_poll=True,
+        background_timeout_ms=int(args.camera_timeout_ms),
+        crop_scale=float(args.crop_scale),
+        out_hw=int(args.image_hw),
     )
-    wrist_cam = RealSenseConnector(
-        serial=args.wrist_camera_serial,
-        width=args.camera_width,
-        height=args.camera_height,
-        fps=args.camera_fps,
-        enable_depth=not args.color_only,
-    )
-    external_cam.connect()
-    wrist_cam.connect()
+    camera_manager.connect()
 
     dataset = None
     if enable_logging:
@@ -380,64 +375,20 @@ def main() -> None:
         else:
             print(f"LeRobot dataset path: {dataset_root}")
 
-    external_buf = _LatestFrameBuffer()
-    wrist_buf = _LatestFrameBuffer()
-    external_stop = threading.Event()
-    wrist_stop = threading.Event()
-
-    external_thread = threading.Thread(
-        target=_camera_capture_worker,
-        kwargs={
-            "camera": external_cam,
-            "buf": external_buf,
-            "stop_event": external_stop,
-            "timeout_ms": int(args.camera_timeout_ms),
-            "crop_scale": float(args.crop_scale),
-            "out_hw": int(args.image_hw),
-            "label": "external",
-        },
-        daemon=True,
-    )
-    wrist_thread = threading.Thread(
-        target=_camera_capture_worker,
-        kwargs={
-            "camera": wrist_cam,
-            "buf": wrist_buf,
-            "stop_event": wrist_stop,
-            "timeout_ms": int(args.camera_timeout_ms),
-            "crop_scale": float(args.crop_scale),
-            "out_hw": int(args.image_hw),
-            "label": "wrist",
-        },
-        daemon=True,
-    )
-
-    external_thread.start()
-    wrist_thread.start()
-
     print("[Camera] Waiting for first frames...")
-    wait_start = time.time()
-    while external_buf.get_latest() is None or wrist_buf.get_latest() is None:
-        elapsed = time.time() - wait_start
-        if (
-            args.camera_startup_timeout_s > 0
-            and elapsed > args.camera_startup_timeout_s
-        ):
-            if external_buf.get_latest() is None:
-                print("  Waiting for external camera frame...")
-            if wrist_buf.get_latest() is None:
-                print("  Waiting for wrist camera frame...")
-            raise RuntimeError(
-                "Camera timeout: failed to get first frames within "
-                f"{args.camera_startup_timeout_s:.1f}s."
-            )
-        time.sleep(0.01)
+    camera_manager.wait_for_frames(timeout_s=float(args.camera_startup_timeout_s))
     print("[Camera] First frames acquired, ready to record!")
 
     print("Opening gripper...")
     arm.gripper_open()
     print("Moving to start position...")
     arm.move_to_start()
+    if not arm.wait_until_stopped():
+        max_vel = float(np.max(np.abs(np.asarray(arm.panda.get_state().dq))))
+        print(
+            "[Warning] Robot did not fully stop after move_to_start: "
+            f"max_vel={max_vel:.4f} rad/s"
+        )
 
     # --- DROID IK solver (replaces simple Jacobian pseudoinverse) ---
     print("Initializing DROID IK solver (dm_control)...")
@@ -640,8 +591,7 @@ def main() -> None:
                 if not enable_logging:
                     continue
 
-                external_img = external_buf.get_latest()
-                wrist_img = wrist_buf.get_latest()
+                external_img, wrist_img = camera_manager.get_images()
                 if external_img is None or wrist_img is None:
                     continue
 
@@ -698,17 +648,8 @@ def main() -> None:
         except Exception:
             pass
 
-        external_stop.set()
-        wrist_stop.set()
-        external_thread.join(timeout=2.0)
-        wrist_thread.join(timeout=2.0)
-
         try:
-            external_cam.close()
-        except Exception:
-            pass
-        try:
-            wrist_cam.close()
+            camera_manager.close()
         except Exception:
             pass
 

@@ -18,7 +18,7 @@ import argparse
 import cv2
 import numpy as np
 
-from realsense_connector import RealSenseConnector
+from control.camera_connector import RealSenseConnector
 
 
 def main():

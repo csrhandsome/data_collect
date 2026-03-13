@@ -8,15 +8,21 @@ Dual camera managers for DROID-style deployment.
 
 from __future__ import annotations
 
+from collections import deque
 import glob
+import threading
+import time
 from typing import Optional, Tuple
+import zlib
 
 import numpy as np
 
 try:
     from control.camera_connector import RGBCameraConnector, RealSenseConnector
+    from control.img_util import center_crop_and_resize_rgb_uint8
 except ModuleNotFoundError:
     from camera_connector import RGBCameraConnector, RealSenseConnector
+    from img_util import center_crop_and_resize_rgb_uint8
 
 
 class DualRealsenseManager:
@@ -36,6 +42,13 @@ class DualRealsenseManager:
         width: int = 640,
         height: int = 480,
         fps: int = 30,
+        enable_depth: bool = True,
+        align_depth_to_color: bool = True,
+        background_poll: bool = False,
+        background_poll_interval_s: float = 0.0,
+        background_timeout_ms: int = 1000,
+        crop_scale: float = 0.9,
+        out_hw: Optional[int] = None,
     ) -> None:
         print("[DualCameraManager] 初始化双 RealSense 系统...")
 
@@ -47,7 +60,8 @@ class DualRealsenseManager:
             width=width,
             height=height,
             fps=fps,
-            align_depth_to_color=True,
+            enable_depth=enable_depth,
+            align_depth_to_color=align_depth_to_color,
         )
 
         print(
@@ -58,14 +72,30 @@ class DualRealsenseManager:
             width=width,
             height=height,
             fps=fps,
-            align_depth_to_color=True,
+            enable_depth=enable_depth,
+            align_depth_to_color=align_depth_to_color,
         )
 
         self._connected = False
+        self._background_poll = bool(background_poll)
+        self._background_poll_interval_s = max(float(background_poll_interval_s), 0.0)
+        self._background_timeout_ms = int(background_timeout_ms)
+        self._crop_scale = float(crop_scale)
+        self._out_hw = int(out_hw) if out_hw is not None else None
+        self._image_lock = threading.Lock()
+        self._background_stop_event = threading.Event()
+        self._background_thread: Optional[threading.Thread] = None
+        self._background_error: Optional[Exception] = None
+        self._external_ok = False
+        self._wrist_ok = False
+        self._external_img: Optional[np.ndarray] = None
+        self._wrist_img: Optional[np.ndarray] = None
+        self._external_depth: Optional[np.ndarray] = None
+        self._wrist_depth: Optional[np.ndarray] = None
 
-    def connect(self) -> "DualRealsenseManager":
+    def _connect_cameras(self) -> None:
         if self._connected:
-            return self
+            return
 
         print("[DualCameraManager] 连接外部相机...")
         self.external_camera.connect()
@@ -74,22 +104,133 @@ class DualRealsenseManager:
         self.wrist_camera.connect()
 
         self._connected = True
+        self._background_error = None
         print("[DualCameraManager] 双 RealSense 系统已连接")
-        return self
 
-    def update(self, timeout_ms: int = 1000) -> Tuple[bool, bool]:
+    def _prepare_image(self, rgb: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if rgb is None:
+            return None
+        rgb = np.asarray(rgb, dtype=np.uint8)
+        if self._out_hw is None:
+            return rgb
+        return center_crop_and_resize_rgb_uint8(
+            rgb,
+            crop_scale=self._crop_scale,
+            out_hw=self._out_hw,
+        )
+
+    def _cache_frames(self, external_ok: bool, wrist_ok: bool) -> None:
+        external_img = self._prepare_image(self.external_camera.img)
+        wrist_img = self._prepare_image(self.wrist_camera.img)
+        external_depth = self.external_camera.depth
+        wrist_depth = self.wrist_camera.depth
+        with self._image_lock:
+            self._external_ok = bool(external_ok)
+            self._wrist_ok = bool(wrist_ok)
+            if external_img is not None:
+                self._external_img = external_img
+            if wrist_img is not None:
+                self._wrist_img = wrist_img
+            if external_depth is not None:
+                self._external_depth = external_depth
+            if wrist_depth is not None:
+                self._wrist_depth = wrist_depth
+
+    def _update_once(self, timeout_ms: int) -> Tuple[bool, bool]:
         external_ok = self.external_camera.update(timeout=timeout_ms)
         wrist_ok = self.wrist_camera.update(timeout=timeout_ms)
+        self._cache_frames(external_ok, wrist_ok)
         return external_ok, wrist_ok
 
+    def _background_worker(self) -> None:
+        try:
+            self._connect_cameras()
+        except Exception as exc:
+            self._background_error = exc
+            return
+
+        while not self._background_stop_event.is_set():
+            try:
+                self._update_once(timeout_ms=self._background_timeout_ms)
+                self._background_error = None
+            except Exception as exc:
+                self._background_error = exc
+            if self._background_stop_event.wait(self._background_poll_interval_s):
+                break
+
+    def _start_background_thread(self) -> None:
+        if self._background_thread is not None and self._background_thread.is_alive():
+            return
+
+        self._background_stop_event.clear()
+        self._background_thread = threading.Thread(
+            target=self._background_worker,
+            name="dual-realsense-manager",
+            daemon=True,
+        )
+        self._background_thread.start()
+
+    def connect(self) -> "DualRealsenseManager":
+        if self._background_poll:
+            self._start_background_thread()
+            return self
+
+        self._connect_cameras()
+        return self
+
+    def wait_for_frames(self, timeout_s: float = 10.0) -> Tuple[np.ndarray, np.ndarray]:
+        if not self._connected and not self._background_poll:
+            self._connect_cameras()
+
+        start = time.time()
+        while True:
+            if self._background_error is not None:
+                raise RuntimeError(
+                    f"DualRealsenseManager background polling failed: {self._background_error}"
+                ) from self._background_error
+
+            if not self._background_poll:
+                self._update_once(timeout_ms=self._background_timeout_ms)
+
+            external_img, wrist_img = self.get_images()
+            if external_img is not None and wrist_img is not None:
+                return external_img, wrist_img
+
+            if timeout_s > 0 and (time.time() - start) > timeout_s:
+                raise RuntimeError(
+                    f"Camera timeout: Failed to get both frames after {timeout_s:.1f} seconds."
+                )
+            time.sleep(0.01)
+
+    def update(self, timeout_ms: int = 1000) -> Tuple[bool, bool]:
+        if self._background_poll:
+            with self._image_lock:
+                return self._external_ok, self._wrist_ok
+
+        if not self._connected:
+            self._connect_cameras()
+        return self._update_once(timeout_ms=timeout_ms)
+
     def get_images(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        return self.external_camera.img, self.wrist_camera.img
+        with self._image_lock:
+            return self._external_img, self._wrist_img
 
     def get_depths(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        return self.external_camera.depth, self.wrist_camera.depth
+        with self._image_lock:
+            return self._external_depth, self._wrist_depth
+
+    @property
+    def background_error(self) -> Optional[Exception]:
+        return self._background_error
 
     def close(self) -> None:
         print("[DualCameraManager] 关闭相机...")
+        self._background_stop_event.set()
+        if self._background_thread is not None:
+            self._background_thread.join(
+                timeout=max(self._background_timeout_ms / 1000.0, 1.0)
+            )
+            self._background_thread = None
         self.external_camera.close()
         self.wrist_camera.close()
         self._connected = False
@@ -120,6 +261,9 @@ class DualRGBCameraManager:
         height: int = 480,
         fps: int = 30,
         backend: Optional[int] = None,
+        background_poll: bool = False,
+        background_poll_interval_s: float = 0.01,
+        background_timeout_ms: int = 1000,
     ) -> None:
         print("[DualRGBCameraManager] 初始化双 RGB 相机系统...")
 
@@ -146,10 +290,21 @@ class DualRGBCameraManager:
         )
 
         self._connected = False
+        self._background_poll = bool(background_poll)
+        self._background_poll_interval_s = max(float(background_poll_interval_s), 0.0)
+        self._background_timeout_ms = int(background_timeout_ms)
+        self._image_lock = threading.Lock()
+        self._background_stop_event = threading.Event()
+        self._background_thread: Optional[threading.Thread] = None
+        self._background_error: Optional[Exception] = None
+        self._external_ok = False
+        self._wrist_ok = False
+        self._external_img: Optional[np.ndarray] = None
+        self._wrist_img: Optional[np.ndarray] = None
 
-    def connect(self) -> "DualRGBCameraManager":
+    def _connect_cameras(self) -> None:
         if self._connected:
-            return self
+            return
 
         print("[DualRGBCameraManager] 连接外部相机...")
         self.external_camera.connect()
@@ -158,22 +313,90 @@ class DualRGBCameraManager:
         self.wrist_camera.connect()
 
         self._connected = True
+        self._background_error = None
         print("[DualRGBCameraManager] 双 RGB 相机系统已连接")
+
+    def _cache_images(self, external_ok: bool, wrist_ok: bool) -> None:
+        external_img = self.external_camera.img
+        wrist_img = self.wrist_camera.img
+        with self._image_lock:
+            self._external_ok = bool(external_ok)
+            self._wrist_ok = bool(wrist_ok)
+            if external_img is not None:
+                self._external_img = external_img
+            if wrist_img is not None:
+                self._wrist_img = wrist_img
+
+    def _update_once(self, timeout_ms: int) -> Tuple[bool, bool]:
+        external_ok = self.external_camera.update(timeout=timeout_ms)
+        wrist_ok = self.wrist_camera.update(timeout=timeout_ms)
+        self._cache_images(external_ok, wrist_ok)
+        return external_ok, wrist_ok
+
+    def _background_worker(self) -> None:
+        try:
+            self._connect_cameras()
+        except Exception as exc:
+            self._background_error = exc
+            return
+
+        while not self._background_stop_event.is_set():
+            try:
+                self._update_once(timeout_ms=self._background_timeout_ms)
+                self._background_error = None
+            except Exception as exc:
+                self._background_error = exc
+            if self._background_stop_event.wait(self._background_poll_interval_s):
+                break
+
+    def _start_background_thread(self) -> None:
+        if self._background_thread is not None and self._background_thread.is_alive():
+            return
+
+        self._background_stop_event.clear()
+        self._background_thread = threading.Thread(
+            target=self._background_worker,
+            name="dual-rgb-camera-manager",
+            daemon=True,
+        )
+        self._background_thread.start()
+
+    def connect(self) -> "DualRGBCameraManager":
+        if self._background_poll:
+            self._start_background_thread()
+            return self
+
+        self._connect_cameras()
         return self
 
     def update(self, timeout_ms: int = 1000) -> Tuple[bool, bool]:
-        external_ok = self.external_camera.update(timeout=timeout_ms)
-        wrist_ok = self.wrist_camera.update(timeout=timeout_ms)
-        return external_ok, wrist_ok
+        if self._background_poll:
+            with self._image_lock:
+                return self._external_ok, self._wrist_ok
+
+        if not self._connected:
+            self._connect_cameras()
+        return self._update_once(timeout_ms=timeout_ms)
 
     def get_images(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        return self.external_camera.img, self.wrist_camera.img
+        with self._image_lock:
+            return self._external_img, self._wrist_img
 
     def get_depths(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         return None, None
 
+    @property
+    def background_error(self) -> Optional[Exception]:
+        return self._background_error
+
     def close(self) -> None:
         print("[DualRGBCameraManager] 关闭相机...")
+        self._background_stop_event.set()
+        if self._background_thread is not None:
+            self._background_thread.join(
+                timeout=max(self._background_timeout_ms / 1000.0, 1.0)
+            )
+            self._background_thread = None
         self.external_camera.close()
         self.wrist_camera.close()
         self._connected = False
@@ -253,6 +476,76 @@ def parse_camera_device(value: str) -> int | str:
     return value
 
 
+class _FPSWindow:
+    """Track recent per-stream frame rate over a short sliding window."""
+
+    def __init__(self, window_s: float = 1.5) -> None:
+        self._window_s = max(float(window_s), 0.2)
+        self._timestamps: deque[float] = deque()
+        self._fps = 0.0
+
+    def tick(self, now: Optional[float] = None) -> float:
+        now = time.monotonic() if now is None else float(now)
+        self._timestamps.append(now)
+        cutoff = now - self._window_s
+        while self._timestamps and self._timestamps[0] < cutoff:
+            self._timestamps.popleft()
+
+        if len(self._timestamps) >= 2:
+            duration = max(self._timestamps[-1] - self._timestamps[0], 1e-6)
+            self._fps = (len(self._timestamps) - 1) / duration
+        else:
+            self._fps = 0.0
+        return self._fps
+
+    @property
+    def fps(self) -> float:
+        return self._fps
+
+
+class _FrameStreamStats:
+    """Track read FPS and approximate fresh-frame FPS using frame fingerprints."""
+
+    def __init__(self, window_s: float = 1.5, sample_step: int = 16) -> None:
+        self._read_meter = _FPSWindow(window_s=window_s)
+        self._fresh_meter = _FPSWindow(window_s=window_s)
+        self._sample_step = max(int(sample_step), 1)
+        self._last_signature: Optional[int] = None
+
+    def _signature(self, frame: np.ndarray) -> int:
+        sampled = np.ascontiguousarray(frame[:: self._sample_step, :: self._sample_step])
+        return int(zlib.crc32(sampled.tobytes()) & 0xFFFFFFFF)
+
+    def tick(
+        self,
+        *,
+        frame: Optional[np.ndarray],
+        ok: bool,
+        now: Optional[float] = None,
+    ) -> tuple[float, float, bool]:
+        now = time.monotonic() if now is None else float(now)
+        if not ok or frame is None:
+            return self.read_fps, self.fresh_fps, False
+
+        self._read_meter.tick(now)
+
+        signature = self._signature(frame)
+        is_fresh = signature != self._last_signature
+        if is_fresh:
+            self._last_signature = signature
+            self._fresh_meter.tick(now)
+
+        return self.read_fps, self.fresh_fps, is_fresh
+
+    @property
+    def read_fps(self) -> float:
+        return self._read_meter.fps
+
+    @property
+    def fresh_fps(self) -> float:
+        return self._fresh_meter.fps
+
+
 def main():
     """测试双相机系统。"""
     import argparse
@@ -283,63 +576,31 @@ def main():
         default="2",
         help="腕部 RGB 相机设备，支持索引或设备路径",
     )
-    parser.add_argument("--list-devices", action="store_true", help="列出所有相机设备")
-    parser.add_argument(
-        "--max-rgb-devices", type=int, default=10, help="RGB 相机扫描最大索引"
-    )
     parser.add_argument("--width", type=int, default=640, help="图像宽度")
     parser.add_argument("--height", type=int, default=480, help="图像高度")
-    parser.add_argument("--fps", type=int, default=30, help="目标帧率")
     parser.add_argument(
-        "--frames", type=int, default=None, help="采集帧数（不指定则持续显示）"
+        "--fps",
+        type=int,
+        default=120,
+        help="目标帧率；RGB 相机默认通过 OpenCV 尝试设置为 120 FPS",
     )
-    parser.add_argument("--no-display", action="store_true", help="不显示图像窗口")
     args = parser.parse_args()
 
-    if args.list_devices:
-        if args.camera_type == "realsense":
-            print("\n可用的 RealSense 设备：")
-            devices = list_realsense_devices()
-            if not devices:
-                print("  未找到设备")
-            for i, dev in enumerate(devices):
-                print(f"  [{i}] {dev['name']} (序列号: {dev['serial']})")
-        else:
-            print("\n可用的 RGB 相机：")
-            devices = list_rgb_devices(max_index=args.max_rgb_devices)
-            if not devices:
-                print("  未找到设备")
-            for i, dev in enumerate(devices):
-                print(
-                    f"  [{i}] index={dev['index']} path={dev['path']} "
-                    f"size=({dev['width']}, {dev['height']}) fps={dev['fps']:.2f}"
-                )
-        return
-
     if args.camera_type == "realsense":
-        if args.external_serial is None or args.wrist_serial is None:
+        external_serial = args.external_serial
+        wrist_serial = args.wrist_serial
+        if external_serial is None or wrist_serial is None:
             devices = list_realsense_devices()
             if len(devices) < 2:
-                print(
-                    f"[错误] 需要至少 2 个 RealSense 相机，但只找到 {len(devices)} 个"
+                raise RuntimeError(
+                    f"需要至少 2 个 RealSense 相机，但只找到 {len(devices)} 个"
                 )
-                return
-
-            if args.external_serial is None:
-                args.external_serial = devices[0]["serial"]
-                print(
-                    f"[自动选择] 外部相机: {devices[0]['name']} ({args.external_serial})"
-                )
-
-            if args.wrist_serial is None:
-                args.wrist_serial = devices[1]["serial"]
-                print(
-                    f"[自动选择] 腕部相机: {devices[1]['name']} ({args.wrist_serial})"
-                )
+            external_serial = external_serial or devices[0]["serial"]
+            wrist_serial = wrist_serial or devices[1]["serial"]
 
         manager = DualRealsenseManager(
-            external_serial=args.external_serial,
-            wrist_serial=args.wrist_serial,
+            external_serial=external_serial,
+            wrist_serial=wrist_serial,
             width=args.width,
             height=args.height,
             fps=args.fps,
@@ -353,56 +614,124 @@ def main():
             fps=args.fps,
         )
 
+    def _draw_overlay(
+        frame_bgr: np.ndarray,
+        *,
+        camera_name: str,
+        read_fps: float,
+        fresh_fps: float,
+        reported_fps: Optional[float],
+        ok: bool,
+    ) -> np.ndarray:
+        overlay = frame_bgr.copy()
+        lines = [
+            camera_name,
+            f"read fps: {read_fps:5.1f}",
+            f"fresh fps: {fresh_fps:5.1f}",
+            (
+                f"reported fps: {reported_fps:5.1f}"
+                if reported_fps is not None
+                else "reported fps: n/a"
+            ),
+            f"status: {'OK' if ok else 'NO FRAME'}",
+        ]
+
+        y = 30
+        for line in lines:
+            cv2.putText(
+                overlay,
+                line,
+                (12, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0) if ok else (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            y += 28
+        return overlay
+
     with manager:
-        if not args.no_display:
-            cv2.namedWindow("External Camera", cv2.WINDOW_NORMAL)
-            cv2.namedWindow("Wrist Camera", cv2.WINDOW_NORMAL)
-            print("\n按 'q' 或 ESC 退出，按 's' 保存当前帧")
+        cv2.namedWindow("External Camera", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("Wrist Camera", cv2.WINDOW_NORMAL)
+        print(f"\n实时显示中，按 'q' 或 ESC 退出。当前请求帧率: {args.fps} FPS")
+        print("窗口中的 `read fps` 是读取频率，`fresh fps` 是基于帧变化估算的新帧频率。")
 
-        frame_count = 0
-        max_frames = args.frames if args.frames else float("inf")
-        print(f"\n开始采集{'持续' if args.frames is None else f'{args.frames} 帧'}...")
+        external_stats = _FrameStreamStats()
+        wrist_stats = _FrameStreamStats()
+        last_report_at = 0.0
 
-        while frame_count < max_frames:
-            external_ok, wrist_ok = manager.update(timeout_ms=1000)
+        try:
+            while True:
+                external_ok, wrist_ok = manager.update(timeout_ms=1000)
+                loop_now = time.monotonic()
 
-            if external_ok and wrist_ok:
                 external_img, wrist_img = manager.get_images()
-                if external_img is not None and wrist_img is not None:
-                    print(
-                        f"[{frame_count:3d}] ✓ External: {external_img.shape}, Wrist: {wrist_img.shape}"
-                    )
+                if external_img is None or wrist_img is None:
+                    continue
 
-                    if not args.no_display:
-                        external_bgr = cv2.cvtColor(external_img, cv2.COLOR_RGB2BGR)
-                        wrist_bgr = cv2.cvtColor(wrist_img, cv2.COLOR_RGB2BGR)
-
-                        cv2.imshow("External Camera", external_bgr)
-                        cv2.imshow("Wrist Camera", wrist_bgr)
-
-                        key = cv2.waitKey(1) & 0xFF
-                        if key == ord("q") or key == 27:
-                            print("\n用户退出")
-                            break
-                        if key == ord("s"):
-                            cv2.imwrite(f"external_{frame_count:04d}.png", external_bgr)
-                            cv2.imwrite(f"wrist_{frame_count:04d}.png", wrist_bgr)
-                            print(
-                                f"  已保存: external_{frame_count:04d}.png, wrist_{frame_count:04d}.png"
-                            )
-                else:
-                    print(f"[{frame_count:3d}] ✗ 图像为 None")
-            else:
-                print(
-                    f"[{frame_count:3d}] ✗ External: {external_ok}, Wrist: {wrist_ok}"
+                external_read_fps, external_fresh_fps, _ = external_stats.tick(
+                    frame=external_img,
+                    ok=external_ok,
+                    now=loop_now,
+                )
+                wrist_read_fps, wrist_fresh_fps, _ = wrist_stats.tick(
+                    frame=wrist_img,
+                    ok=wrist_ok,
+                    now=loop_now,
                 )
 
-            frame_count += 1
+                external_reported_fps = None
+                wrist_reported_fps = None
+                if hasattr(manager, "external_camera") and hasattr(
+                    manager.external_camera, "fps"
+                ):
+                    external_reported_fps = float(manager.external_camera.fps)
+                if hasattr(manager, "wrist_camera") and hasattr(
+                    manager.wrist_camera, "fps"
+                ):
+                    wrist_reported_fps = float(manager.wrist_camera.fps)
 
-        if not args.no_display:
+                external_bgr = cv2.cvtColor(external_img, cv2.COLOR_RGB2BGR)
+                wrist_bgr = cv2.cvtColor(wrist_img, cv2.COLOR_RGB2BGR)
+
+                external_bgr = _draw_overlay(
+                    external_bgr,
+                    camera_name="External Camera",
+                    read_fps=external_read_fps,
+                    fresh_fps=external_fresh_fps,
+                    reported_fps=external_reported_fps,
+                    ok=external_ok,
+                )
+                wrist_bgr = _draw_overlay(
+                    wrist_bgr,
+                    camera_name="Wrist Camera",
+                    read_fps=wrist_read_fps,
+                    fresh_fps=wrist_fresh_fps,
+                    reported_fps=wrist_reported_fps,
+                    ok=wrist_ok,
+                )
+
+                cv2.imshow("External Camera", external_bgr)
+                cv2.imshow("Wrist Camera", wrist_bgr)
+
+                if loop_now - last_report_at >= 1.0:
+                    print(
+                        "[FPS] "
+                        f"external read={external_read_fps:5.1f}, "
+                        f"fresh={external_fresh_fps:5.1f}, "
+                        f"reported={external_reported_fps if external_reported_fps is not None else float('nan'):5.1f} | "
+                        f"wrist read={wrist_read_fps:5.1f}, "
+                        f"fresh={wrist_fresh_fps:5.1f}, "
+                        f"reported={wrist_reported_fps if wrist_reported_fps is not None else float('nan'):5.1f}"
+                    )
+                    last_report_at = loop_now
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q") or key == 27:
+                    break
+        finally:
             cv2.destroyAllWindows()
-
-    print("\n测试完成")
 
 
 if __name__ == "__main__":
