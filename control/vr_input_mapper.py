@@ -140,6 +140,7 @@ class VREEPoseMapper:
         self._enable_rotation = bool(enable_rotation)
         self._translation_alpha = 0.35
         self._dbg_count = 0
+        self._state_lock = threading.Lock()
         self.reset()
 
     @staticmethod
@@ -167,13 +168,14 @@ class VREEPoseMapper:
         )
 
     def reset(self) -> None:
-        self._prev_vr_pos: np.ndarray | None = None
-        self._prev_vr_rot: Rotation | None = None
-        self._filtered_vr_pos: np.ndarray | None = None
-        self._cmd_ee_pos: np.ndarray | None = None
-        self._cmd_ee_quat: np.ndarray | None = None
-        self._anchor_ee_pos: np.ndarray | None = None
-        self._anchor_ee_quat: np.ndarray | None = None
+        with self._state_lock:
+            self._prev_vr_pos: np.ndarray | None = None
+            self._prev_vr_rot: Rotation | None = None
+            self._filtered_vr_pos: np.ndarray | None = None
+            self._cmd_ee_pos: np.ndarray | None = None
+            self._cmd_ee_quat: np.ndarray | None = None
+            self._anchor_ee_pos: np.ndarray | None = None
+            self._anchor_ee_quat: np.ndarray | None = None
 
     def map(
         self,
@@ -191,67 +193,75 @@ class VREEPoseMapper:
         vr_pos = np.array([vr.pos_x, vr.pos_y, vr.pos_z], dtype=np.float64)
         vr_rot = Rotation.from_quat([vr.quat_x, vr.quat_y, vr.quat_z, vr.quat_w])
 
-        if self._cmd_ee_pos is None:
-            self._prev_vr_pos = vr_pos.copy()
-            self._prev_vr_rot = vr_rot
-            self._filtered_vr_pos = vr_pos.copy()
-            self._cmd_ee_pos = current_pos.copy()
-            self._cmd_ee_quat = current_quat.copy()
-            self._anchor_ee_pos = current_pos.copy()
-            self._anchor_ee_quat = current_quat.copy()
-            return current_pos.copy(), current_quat.copy()
+        with self._state_lock:
+            if (
+                self._prev_vr_pos is None
+                or self._filtered_vr_pos is None
+                or self._cmd_ee_pos is None
+                or self._cmd_ee_quat is None
+                or self._anchor_ee_pos is None
+                or self._anchor_ee_quat is None
+            ):
+                self._prev_vr_pos = vr_pos.copy()
+                self._prev_vr_rot = vr_rot
+                self._filtered_vr_pos = vr_pos.copy()
+                self._cmd_ee_pos = current_pos.copy()
+                self._cmd_ee_quat = current_quat.copy()
+                self._anchor_ee_pos = current_pos.copy()
+                self._anchor_ee_quat = current_quat.copy()
+                return current_pos.copy(), current_quat.copy()
 
-        self._filtered_vr_pos = (
-            (1.0 - self._translation_alpha) * self._filtered_vr_pos
-            + self._translation_alpha * vr_pos
-        )
-        pos_delta = self._filtered_vr_pos - self._prev_vr_pos
-        scaled_translation = np.clip(
-            pos_delta / self._translation_scale,
-            -1.0,
-            1.0,
-        )
-        ee_step = scaled_translation * self._max_translation_step * self._sensitivity
-        target_pos = self._cmd_ee_pos + ee_step
-        if self._translation_limit > 0.0:
-            target_offset = np.clip(
-                target_pos - self._anchor_ee_pos,
-                -self._translation_limit,
-                self._translation_limit,
+            self._filtered_vr_pos = (
+                (1.0 - self._translation_alpha) * self._filtered_vr_pos
+                + self._translation_alpha * vr_pos
             )
-            target_pos = self._anchor_ee_pos + target_offset
-
-        target_quat = self._cmd_ee_quat.copy()
-        rot_cmd = np.zeros(3, dtype=np.float64)
-        if self._enable_rotation and self._prev_vr_rot is not None:
-            rot_delta = (vr_rot * self._prev_vr_rot.inv()).as_rotvec()
-            scaled_rotation = np.clip(
-                rot_delta / self._rotation_scale,
+            pos_delta = self._filtered_vr_pos - self._prev_vr_pos
+            scaled_translation = np.clip(
+                pos_delta / self._translation_scale,
                 -1.0,
                 1.0,
             )
-            rot_cmd = scaled_rotation * self._max_rotation_step * self._sensitivity
-
-            cmd_rot = Rotation.from_quat(self._quat_wxyz_to_xyzw(self._cmd_ee_quat))
-            target_rot = Rotation.from_rotvec(rot_cmd) * cmd_rot
-            if self._rotation_limit > 0.0:
-                anchor_rot = Rotation.from_quat(
-                    self._quat_wxyz_to_xyzw(self._anchor_ee_quat)
+            ee_step = scaled_translation * self._max_translation_step * self._sensitivity
+            target_pos = self._cmd_ee_pos + ee_step
+            if self._translation_limit > 0.0:
+                target_offset = np.clip(
+                    target_pos - self._anchor_ee_pos,
+                    -self._translation_limit,
+                    self._translation_limit,
                 )
-                rel_rotvec = (target_rot * anchor_rot.inv()).as_rotvec()
-                rel_rotvec = np.clip(
-                    rel_rotvec,
-                    -self._rotation_limit,
-                    self._rotation_limit,
+                target_pos = self._anchor_ee_pos + target_offset
+
+            target_quat = self._cmd_ee_quat.copy()
+            rot_cmd = np.zeros(3, dtype=np.float64)
+            if self._enable_rotation and self._prev_vr_rot is not None:
+                rot_delta = (vr_rot * self._prev_vr_rot.inv()).as_rotvec()
+                scaled_rotation = np.clip(
+                    rot_delta / self._rotation_scale,
+                    -1.0,
+                    1.0,
                 )
-                target_rot = Rotation.from_rotvec(rel_rotvec) * anchor_rot
+                rot_cmd = scaled_rotation * self._max_rotation_step * self._sensitivity
 
-            target_quat = self._quat_xyzw_to_wxyz(target_rot.as_quat())
+                cmd_rot = Rotation.from_quat(self._quat_wxyz_to_xyzw(self._cmd_ee_quat))
+                target_rot = Rotation.from_rotvec(rot_cmd) * cmd_rot
+                if self._rotation_limit > 0.0:
+                    anchor_rot = Rotation.from_quat(
+                        self._quat_wxyz_to_xyzw(self._anchor_ee_quat)
+                    )
+                    rel_rotvec = (target_rot * anchor_rot.inv()).as_rotvec()
+                    rel_rotvec = np.clip(
+                        rel_rotvec,
+                        -self._rotation_limit,
+                        self._rotation_limit,
+                    )
+                    target_rot = Rotation.from_rotvec(rel_rotvec) * anchor_rot
 
-        self._cmd_ee_pos = target_pos.copy()
-        self._cmd_ee_quat = target_quat.copy()
-        self._prev_vr_pos = self._filtered_vr_pos.copy()
-        self._prev_vr_rot = vr_rot
+                target_quat = self._quat_xyzw_to_wxyz(target_rot.as_quat())
+
+            self._cmd_ee_pos = target_pos.copy()
+            self._cmd_ee_quat = target_quat.copy()
+            self._prev_vr_pos = self._filtered_vr_pos.copy()
+            self._prev_vr_rot = vr_rot
 
         self._dbg_count += 1
         if self._dbg_count % 15 == 0:

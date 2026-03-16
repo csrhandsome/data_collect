@@ -13,13 +13,44 @@ from typing import Optional
 import h5py
 import numpy as np
 
+from control.img_util import center_crop_and_resize_rgb_uint8
 from control.pygame_gamepad import PygameGamepadTeleop
 from control.robotic_arm_controller import (
     RoboticArmControler,
     _LatestFrameBuffer,
-    _camera_capture_worker,
 )
-from realsense_connector import RealSenseConnector
+from control.dual_camera_manager import RealSenseConnector
+
+
+def _camera_capture_worker(
+    *,
+    camera: RealSenseConnector,
+    buf: _LatestFrameBuffer,
+    stop_event: threading.Event,
+    timeout_ms: int,
+    crop_scale: float,
+    out_hw: int,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            ok = camera.update(timeout=int(timeout_ms))
+        except Exception:
+            ok = False
+        if not ok:
+            continue
+
+        rgb = camera.img
+        if rgb is None:
+            continue
+        try:
+            rgb224 = center_crop_and_resize_rgb_uint8(
+                np.asarray(rgb, dtype=np.uint8),
+                crop_scale=float(crop_scale),
+                out_hw=int(out_hw),
+            )
+        except Exception:
+            continue
+        buf.set(rgb224)
 
 
 def _get_gamepad_inputs(teleop: PygameGamepadTeleop) -> tuple[dict, dict]:
@@ -185,6 +216,12 @@ def main() -> None:
 
         print("Moving to start position...")
         arm.move_to_start()
+        if not arm.wait_until_stopped():
+            max_vel = float(np.max(np.abs(np.asarray(arm.panda.get_state().dq))))
+            print(
+                "[Warning] Robot did not fully stop after move_to_start: "
+                f"max_vel={max_vel:.4f} rad/s"
+            )
 
         print("\nInitialization complete.")
         print("\nControl mapping:")
@@ -257,7 +294,7 @@ def _xbox_control(
 
     def euler_to_quat(roll, pitch, yaw):
         """欧拉角转四元数，返回 [x,y,z,w] 格式"""
-        r = R.from_euler('xyz', [roll, pitch, yaw])
+        r = R.from_euler("xyz", [roll, pitch, yaw])
         return r.as_quat()  # 返回 [x,y,z,w]
 
     def quat_inverse(q):
@@ -268,7 +305,7 @@ def _xbox_control(
     def quat_to_euler(q):
         """四元数转欧拉角，输入 [x,y,z,w] 格式"""
         r = R.from_quat(q)
-        return r.as_euler('xyz')
+        return r.as_euler("xyz")
 
     running = [True]
 
@@ -455,11 +492,17 @@ def _xbox_control(
                         gripper_state = 0.0
 
                     target_position = arm.panda.get_position().astype(np.float64)
-                    target_orientation = arm.panda.get_orientation().astype(np.float64)  # [x,y,z,w]
+                    target_orientation = arm.panda.get_orientation().astype(
+                        np.float64
+                    )  # [x,y,z,w]
 
                     gripper_drift_delta[:3] = target_position - pos_before
-                    delta_quat_gripper = quat_multiply(target_orientation, quat_inverse(ori_before))  # [x,y,z,w]
-                    gripper_drift_delta[3:] = quat_to_euler(delta_quat_gripper)  # 转为欧拉角
+                    delta_quat_gripper = quat_multiply(
+                        target_orientation, quat_inverse(ori_before)
+                    )  # [x,y,z,w]
+                    gripper_drift_delta[3:] = quat_to_euler(
+                        delta_quat_gripper
+                    )  # 转为欧拉角
 
                     arm.panda.start_controller(ctrl)
                     last_gripper_cmd = gripper_cmd
@@ -513,13 +556,19 @@ def _xbox_control(
                     target_orientation_new = target_orientation
                     if np.any(delta[3:] != 0):
                         # 欧拉角增量转为四元数，使用 [x,y,z,w] 格式
-                        delta_quat = euler_to_quat(delta[3], delta[4], delta[5])  # [x,y,z,w]
-                        target_orientation_new = quat_multiply(target_orientation, delta_quat)  # [x,y,z,w]
+                        delta_quat = euler_to_quat(
+                            delta[3], delta[4], delta[5]
+                        )  # [x,y,z,w]
+                        target_orientation_new = quat_multiply(
+                            target_orientation, delta_quat
+                        )  # [x,y,z,w]
 
                     target_position = target_position_new
                     target_orientation = target_orientation_new
 
-                    ctrl.set_control(target_position, target_orientation)  # 传入 [x,y,z,w] 格式
+                    ctrl.set_control(
+                        target_position, target_orientation
+                    )  # 传入 [x,y,z,w] 格式
 
                 if (
                     h5_file is not None

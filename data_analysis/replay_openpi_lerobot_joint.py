@@ -4,6 +4,8 @@ Replay or inspect LeRobot joint-position datasets collected for OpenPI.
 
 Default behavior: print summary and optionally show recorded images.
 Use --execute to actually send recorded joint-position actions to the robot.
+
+uv run -m data_analysis.replay_openpi_lerobot_joint
 夹爪抓的时候会导致控制器停止，视频也会停止一下
 """
 
@@ -355,6 +357,12 @@ def main() -> None:
         if not args.no_init:
             print("Moving to first recorded joint target...")
             arm.panda.move_to_joint_position(first_action[:7])
+            if not arm.wait_until_stopped():
+                max_vel = float(np.max(np.abs(np.asarray(arm.panda.get_state().dq))))
+                print(
+                    "[Warning] Robot did not fully stop after move_to_joint_position: "
+                    f"max_vel={max_vel:.4f} rad/s"
+                )
 
     try:
         for loop_idx in range(int(args.loop)):

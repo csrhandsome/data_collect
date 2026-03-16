@@ -8,26 +8,20 @@ Collect Franka teleop data into a LeRobot dataset using VR (teleop_xr) input.
 - Output: LeRobot dataset (no intermediate HDF5)
 
 Deadman: hold both VR triggers (long press) to enable arm movement.
+X (left controller): switch to the second prompt.
 Recording: start automatically when motion begins.
 Y (left controller): save current episode and return to the start pose.
 A (right controller): gripper close.  B: gripper open.
 
-uv run vr_openpi_lerobot_joint.py \
+uv run vr_openpi_lerobot_joint_force.py \
   --instruction "Pick up the wide-mouth bottle" \
+  --second-instruction "Pick up the narrow-mouth bottle" \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only
-
-uv run vr_openpi_lerobot_joint.py \
-  --instruction "Stack the yellow cup on the blue cup" \
-  --external-camera-serial 825412070292 \
-  --wrist-camera-serial 825412070487 \
-  --color-only \
-  --date "3_13"
 """
 
 import argparse
-import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -35,6 +29,8 @@ import sys
 import numpy as np
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
+from control.img_util import center_crop_and_resize_rgb_uint8
+from control.soft_gripper_control import DH5Gripper
 from control.vr_input import VRInputProcess
 from control.vr_input_mapper import VREEPoseMapper
 from control.dual_camera_manager import DualRealsenseManager
@@ -62,6 +58,16 @@ def _create_dataset(
                 "names": ["height", "width", "channel"],
             },
             "wrist_image_left": {
+                "dtype": "image",
+                "shape": (image_hw, image_hw, 3),
+                "names": ["height", "width", "channel"],
+            },
+            "gripper_image_left": {
+                "dtype": "image",
+                "shape": (image_hw, image_hw, 3),
+                "names": ["height", "width", "channel"],
+            },
+            "gripper_image_right": {
                 "dtype": "image",
                 "shape": (image_hw, image_hw, 3),
                 "names": ["height", "width", "channel"],
@@ -176,14 +182,48 @@ def _prepare_episode_for_save(dataset: LeRobotDataset) -> None:
     ]
 
 
+def _wait_for_soft_gripper_frames(
+    soft_gripper: DH5Gripper, *, timeout_s: float
+) -> tuple[np.ndarray, np.ndarray]:
+    start = time.time()
+    while True:
+        right_img, left_img = soft_gripper.dual_camera_manager.get_images()
+        if left_img is not None and right_img is not None:
+            return left_img, right_img
+        if timeout_s > 0 and (time.time() - start) > timeout_s:
+            raise RuntimeError(
+                f"Soft gripper camera timeout after {timeout_s:.1f} seconds."
+            )
+        time.sleep(0.01)
+
+
+def _get_soft_gripper_images(
+    soft_gripper: DH5Gripper, *, crop_scale: float, image_hw: int
+) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    right_img, left_img = soft_gripper.dual_camera_manager.get_images()
+    if left_img is None or right_img is None:
+        return None, None
+    left_rgb = center_crop_and_resize_rgb_uint8(
+        left_img,
+        crop_scale=crop_scale,
+        out_hw=image_hw,
+    )
+    right_rgb = center_crop_and_resize_rgb_uint8(
+        right_img,
+        crop_scale=crop_scale,
+        out_hw=image_hw,
+    )
+    return left_rgb, right_rgb
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Collect Franka data into LeRobot via VR (teleop_xr)"
     )
     parser.add_argument("--repo-id", type=str, default="openpi/franka_franka_lerobot")
-    parser.add_argument("--date", type=str, default="3_10")
     parser.add_argument("--instruction", type=str, default="")
-    parser.add_argument("--control-frequency", type=float, default=20.0)
+    parser.add_argument("--second-instruction", type=str, default="")
+    parser.add_argument("--control-frequency", type=float, default=30.0)
     parser.add_argument(
         "--sensitivity",
         type=float,
@@ -212,6 +252,48 @@ def main() -> None:
     parser.add_argument("--max-duration", type=float, default=3600.0)
     parser.add_argument("--external-camera-serial", type=str, default=None)
     parser.add_argument("--wrist-camera-serial", type=str, default=None)
+    parser.add_argument(
+        "--soft-gripper-port",
+        type=str,
+        default="/dev/ttyUSB0",
+        help="Serial port for the DH soft gripper controller.",
+    )
+    parser.add_argument(
+        "--gripper-right-camera-device",
+        type=str,
+        default="1",
+        help="OpenCV device index/path for the right soft-gripper camera.",
+    )
+    parser.add_argument(
+        "--gripper-left-camera-device",
+        type=str,
+        default="2",
+        help="OpenCV device index/path for the left soft-gripper camera.",
+    )
+    parser.add_argument(
+        "--soft-gripper-force",
+        type=int,
+        default=50,
+        help="DH soft-gripper force in [20, 100].",
+    )
+    parser.add_argument(
+        "--soft-gripper-velocity",
+        type=int,
+        default=100,
+        help="DH soft-gripper velocity in [0, 1000].",
+    )
+    parser.add_argument(
+        "--soft-gripper-axis-threshold",
+        type=float,
+        default=0.55,
+        help="Thumbstick threshold used by `DH5Gripper.update_from_vr()`.",
+    )
+    parser.add_argument(
+        "--soft-gripper-step-interval",
+        type=float,
+        default=0.08,
+        help="Minimum interval between adjacent soft-gripper level steps.",
+    )
     parser.add_argument("--image-hw", type=int, default=224)
     parser.add_argument("--crop-scale", type=float, default=0.9)
     parser.add_argument("--no-logging", action="store_true")
@@ -302,6 +384,17 @@ def main() -> None:
         raise ValueError("--max-joint-delta must be >= 0")
     if args.joint_velocity_limit < 0:
         raise ValueError("--joint-velocity-limit must be >= 0")
+    if not 20 <= args.soft_gripper_force <= 100:
+        raise ValueError("--soft-gripper-force must be in [20, 100]")
+    if not 0 <= args.soft_gripper_velocity <= 1000:
+        raise ValueError("--soft-gripper-velocity must be in [0, 1000]")
+    if not 0.0 < args.soft_gripper_axis_threshold <= 1.0:
+        raise ValueError("--soft-gripper-axis-threshold must be in (0, 1]")
+    if args.soft_gripper_step_interval <= 0.0:
+        raise ValueError("--soft-gripper-step-interval must be > 0")
+
+    def _parse_camera_device(device: str) -> int | str:
+        return int(device) if str(device).lstrip("-").isdigit() else device
 
     enable_logging = not args.no_logging
     if enable_logging and not args.instruction.strip():
@@ -348,10 +441,23 @@ def main() -> None:
     print(f"VR server: {args.vr_host}:{args.vr_port}")
     print(f"External camera serial: {args.external_camera_serial}")
     print(f"Wrist camera serial: {args.wrist_camera_serial}")
+    print(
+        "Soft gripper: "
+        f"port={args.soft_gripper_port}, "
+        f"left_cam={args.gripper_left_camera_device}, "
+        f"right_cam={args.gripper_right_camera_device}, "
+        f"force={args.soft_gripper_force}, "
+        f"velocity={args.soft_gripper_velocity}, "
+        f"axis_threshold={args.soft_gripper_axis_threshold:.2f}, "
+        f"step_interval={args.soft_gripper_step_interval:.2f}s"
+    )
     if enable_logging:
-        args.repo_id = f"{args.repo_id}_{args.date}"
+        date = "3_8"
+        args.repo_id = f"{args.repo_id}_{date}"
         print(f"Logging: enabled (max {args.max_duration} s)")
         print(f"Instruction: {args.instruction}")
+        if args.second_instruction.strip():
+            print(f"Second instruction: {args.second_instruction}")
         print(f"LeRobot repo_id: {args.repo_id}")
     else:
         print("Logging: disabled")
@@ -388,6 +494,21 @@ def main() -> None:
     print("Initializing Franka arm...")
     arm = RoboticArmControler()
 
+    print("Initializing DH soft gripper...")
+    soft_gripper = DH5Gripper(
+        com=args.soft_gripper_port,
+        right_camera_device=_parse_camera_device(args.gripper_right_camera_device),
+        left_camera_device=_parse_camera_device(args.gripper_left_camera_device),
+        camera_width=args.camera_width,
+        camera_height=args.camera_height,
+        camera_fps=args.camera_fps,
+        camera_timeout_ms=args.camera_timeout_ms,
+        vr_axis_threshold=float(args.soft_gripper_axis_threshold),
+        vr_step_interval_s=float(args.soft_gripper_step_interval),
+    )
+    soft_gripper.set_force(args.soft_gripper_force)
+    soft_gripper.set_velocity(args.soft_gripper_velocity)
+
     # --- Cameras ---
     print("Initializing RealSense cameras...")
     camera_manager = DualRealsenseManager(
@@ -423,6 +544,23 @@ def main() -> None:
     camera_manager.wait_for_frames(timeout_s=float(args.camera_startup_timeout_s))
     print("[Camera] First frames acquired, ready to record!")
 
+    print("[SoftGripper] Waiting for first gripper-camera frames...")
+    _wait_for_soft_gripper_frames(
+        soft_gripper, timeout_s=float(args.camera_startup_timeout_s)
+    )
+    print("[SoftGripper] First gripper-camera frames acquired, ready to record!")
+
+    print("Opening gripper...")
+    soft_gripper.set_position(0, wait=True)
+    print("Moving to start position...")
+    arm.move_to_start()
+    if not arm.wait_until_stopped():
+        max_vel = float(np.max(np.abs(np.asarray(arm.panda.get_state().dq))))
+        print(
+            "[Warning] Robot did not fully stop after move_to_start: "
+            f"max_vel={max_vel:.4f} rad/s"
+        )
+
     # --- EE pose IK solver ---
     print("Initializing Franka EE pose IK solver (dm_control)...")
     ik_solver = FrankaJointIKSolver(
@@ -451,7 +589,31 @@ def main() -> None:
         _hold_current_joint_position(controller)
         return controller
 
-    def _move_robot_to_start_pose() -> None:
+    ctrl = _start_joint_position_controller(settle_s=0.5)
+
+    active_instruction = args.instruction
+    gripper_state = float(soft_gripper.gripper_open_ratio.reshape(-1)[0])
+
+    recording_started = False
+    recording_started_at: Optional[float] = None
+    frame_count = 0
+    motion_start_threshold = max(float(args.action_epsilon), 1e-3)
+    reflex_error_occurred = False
+    prev_x_pressed = False
+    prev_y_pressed = False
+    last_ik_warning_at = 0.0
+
+    def _reset_robot_to_start() -> None:
+        nonlocal ctrl, gripper_state
+
+        _hold_current_joint_position(ctrl)
+        arm.panda.stop_controller()
+        try:
+            soft_gripper.set_gripper_level(0)
+        except Exception as exc:
+            print(f"[Warning] Failed to open soft gripper during reset: {exc}")
+        gripper_state = float(soft_gripper.gripper_open_ratio.reshape(-1)[0])
+        print("[Control] Moving to start position...")
         arm.move_to_start()
         if not arm.wait_until_stopped():
             max_vel = float(np.max(np.abs(np.asarray(arm.panda.get_state().dq))))
@@ -459,38 +621,6 @@ def main() -> None:
                 "[Warning] Robot did not fully stop after move_to_start: "
                 f"max_vel={max_vel:.4f} rad/s"
             )
-
-    print("Opening gripper...")
-    arm.gripper_open()
-    print("Moving to start position...")
-    _move_robot_to_start_pose()
-    ctrl = _start_joint_position_controller(settle_s=0.5)
-
-    active_instruction = args.instruction
-    gripper_state = 1.0
-    last_gripper_cmd = 1.0
-
-    recording_started = False
-    recording_started_at: Optional[float] = None
-    frame_count = 0
-    motion_start_threshold = max(float(args.action_epsilon), 1e-3)
-    last_gripper_switch_time = 0.0
-    gripper_busy = False
-    gripper_switch_cooldown_s = 0.12
-    reflex_error_occurred = False
-    prev_y_pressed = False
-    last_ik_warning_at = 0.0
-
-    def _reset_robot_to_start() -> None:
-        nonlocal ctrl, gripper_state, last_gripper_cmd
-
-        _hold_current_joint_position(ctrl)
-        arm.panda.stop_controller()
-        arm.gripper_open()
-        gripper_state = 1.0
-        last_gripper_cmd = 1.0
-        print("[Control] Moving to start position...")
-        _move_robot_to_start_pose()
         ctrl = _start_joint_position_controller(settle_s=0.0)
         vr_mapper.reset()
 
@@ -527,7 +657,9 @@ def main() -> None:
         "  Right controller pose: snapshot-based EE pose control -> IK -> joint position"
     )
     print("  Release / re-hold triggers: re-anchor the VR neutral pose")
-    print("  A (right): gripper close | B (right): gripper open")
+    print("  Right stick Y: step soft gripper close/open")
+    print("  A (right): gripper fully close | B (right): gripper fully open")
+    print("  X (left): switch to second prompt")
     print("  Recording: starts automatically when motion begins")
     print("  Y (left): save current episode and return to start")
 
@@ -540,8 +672,6 @@ def main() -> None:
                     and recording_started_at is not None
                     and (time.time() - recording_started_at) > args.max_duration
                 ):
-                    if gripper_busy:
-                        continue
                     _finish_episode(
                         save_episode=frame_count > 0,
                         message="\n[Recording] Max duration reached, saving episode and returning to start...",
@@ -550,17 +680,34 @@ def main() -> None:
 
                 vr = vr_reader.latest
 
+                x_pressed = bool(getattr(vr, "x_pressed", False))
                 y_pressed = bool(getattr(vr, "y_pressed", False))
+                x_edge = x_pressed and not prev_x_pressed
                 y_edge = y_pressed and not prev_y_pressed
+                prev_x_pressed = x_pressed
                 prev_y_pressed = y_pressed
+
+                if x_edge:
+                    if not enable_logging:
+                        print("\n[Prompt] Ignored X press because logging is disabled.")
+                    elif not args.second_instruction.strip():
+                        print(
+                            "\n[Prompt] X pressed, but --second-instruction is empty; keeping current prompt."
+                        )
+                    elif active_instruction == args.second_instruction:
+                        print("\n[Prompt] Second prompt is already active.")
+                    else:
+                        active_instruction = args.second_instruction
+                        print(
+                            f"\n[Prompt] Switched active prompt to second prompt: {active_instruction}"
+                        )
+                    continue
 
                 if y_edge:
                     if not enable_logging:
                         print(
                             "\n[Recording] Ignored Y press because logging is disabled."
                         )
-                    elif gripper_busy:
-                        print("\n[Recording] Ignored Y press because gripper is busy.")
                     else:
                         _finish_episode(
                             save_episode=frame_count > 0,
@@ -582,7 +729,7 @@ def main() -> None:
                 qpos_cmd = qpos.copy()
                 qvel_cmd = np.zeros(7, dtype=np.float64)
 
-                if vr.arm_enabled and not gripper_busy:
+                if vr.arm_enabled:
                     target_qpos = ik_solver.solve_pose(
                         target_ee_pos,
                         target_ee_quat,
@@ -622,67 +769,56 @@ def main() -> None:
                         normalized_action[small_mask] = 0.0
                         joint_delta[small_mask] = 0.0
 
-                if not gripper_busy:
-                    qpos_cmd = np.clip(
-                        qpos + joint_delta,
-                        joint_limits[:, 0],
-                        joint_limits[:, 1],
+                qpos_cmd = np.clip(
+                    qpos + joint_delta,
+                    joint_limits[:, 0],
+                    joint_limits[:, 1],
+                )
+                if args.joint_velocity_limit > 0.0:
+                    qvel_cmd = np.clip(
+                        joint_delta * float(args.control_frequency),
+                        -float(args.joint_velocity_limit),
+                        float(args.joint_velocity_limit),
                     )
-                    if args.joint_velocity_limit > 0.0:
-                        qvel_cmd = np.clip(
-                            joint_delta * float(args.control_frequency),
-                            -float(args.joint_velocity_limit),
-                            float(args.joint_velocity_limit),
-                        )
-                    else:
-                        qvel_cmd = np.zeros(7, dtype=np.float64)
-                    ctrl.set_control(qpos_cmd, qvel_cmd)
+                else:
+                    qvel_cmd = np.zeros(7, dtype=np.float64)
+                ctrl.set_control(qpos_cmd, qvel_cmd)
 
                 # --- Gripper ---
-                gripper_cmd = last_gripper_cmd
-                if vr.gripper_close:
-                    gripper_cmd = 0.0
-                elif vr.gripper_open:
-                    gripper_cmd = 1.0
-
-                now = time.time()
-                if now - last_gripper_switch_time < gripper_switch_cooldown_s:
-                    gripper_cmd = last_gripper_cmd
-
                 gripper_changed = False
-                if gripper_cmd != last_gripper_cmd and not gripper_busy:
-                    gripper_changed = True
-                    last_gripper_switch_time = now
-                    gripper_state = 1.0 if gripper_cmd > 0.5 else 0.0
-                    last_gripper_cmd = gripper_cmd
-                    gripper_busy = True
+                if vr.gripper_close:
+                    gripper_changed = soft_gripper.set_gripper_level(
+                        soft_gripper.max_gripper_level,
+                        wait=False,
+                    )
+                elif vr.gripper_open:
+                    gripper_changed = soft_gripper.set_gripper_level(0, wait=False)
+                else:
+                    gripper_changed = soft_gripper.update_from_vr(vr, wait=False)
 
-                    def _do_gripper(cmd):
-                        nonlocal gripper_busy, ctrl
-                        _hold_current_joint_position(ctrl)
-                        arm.panda.stop_controller()
-                        if cmd > 0.5:
-                            arm.gripper_open()
-                        else:
-                            arm.gripper_close()
-                        ctrl = _start_joint_position_controller()
-                        vr_mapper.reset()
-                        gripper_busy = False
-
-                    threading.Thread(
-                        target=_do_gripper, args=(gripper_cmd,), daemon=True
-                    ).start()
+                gripper_state = float(soft_gripper.gripper_open_ratio.reshape(-1)[0])
 
                 if not enable_logging:
                     continue
 
                 external_img, wrist_img = camera_manager.get_images()
+                gripper_left_img, gripper_right_img = _get_soft_gripper_images(
+                    soft_gripper,
+                    crop_scale=float(args.crop_scale),
+                    image_hw=int(args.image_hw),
+                )
                 if external_img is None or wrist_img is None:
+                    continue
+                if gripper_left_img is None or gripper_right_img is None:
                     continue
 
                 if external_img.shape != (args.image_hw, args.image_hw, 3):
                     continue
                 if wrist_img.shape != (args.image_hw, args.image_hw, 3):
+                    continue
+                if gripper_left_img.shape != (args.image_hw, args.image_hw, 3):
+                    continue
+                if gripper_right_img.shape != (args.image_hw, args.image_hw, 3):
                     continue
 
                 motion_norm = float(np.linalg.norm(joint_delta))
@@ -715,6 +851,8 @@ def main() -> None:
                             "exterior_image_1_left": external_img,
                             "exterior_image_2_left": blank,
                             "wrist_image_left": wrist_img,
+                            "gripper_image_left": gripper_left_img,
+                            "gripper_image_right": gripper_right_img,
                             "joint_position": joint_pos,
                             "gripper_position": gripper_pos,
                             "actions": actions,
@@ -748,6 +886,11 @@ def main() -> None:
 
         try:
             camera_manager.close()
+        except Exception:
+            pass
+
+        try:
+            soft_gripper.close()
         except Exception:
             pass
 
