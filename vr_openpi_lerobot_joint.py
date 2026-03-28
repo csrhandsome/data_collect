@@ -19,11 +19,11 @@ uv run vr_openpi_lerobot_joint.py \
   --color-only
 
 uv run vr_openpi_lerobot_joint.py \
-  --instruction "Stack the yellow cup on the blue cup" \
+  --instruction "Place the object into the basket" \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only \
-  --date "3_13"
+  --date "3_24_final"
 """
 
 import argparse
@@ -461,7 +461,7 @@ def main() -> None:
             )
 
     print("Opening gripper...")
-    arm.gripper_open()
+    arm.safe_open()
     print("Moving to start position...")
     _move_robot_to_start_pose()
     ctrl = _start_joint_position_controller(settle_s=0.5)
@@ -486,7 +486,7 @@ def main() -> None:
 
         _hold_current_joint_position(ctrl)
         arm.panda.stop_controller()
-        arm.gripper_open()
+        arm.safe_open()
         gripper_state = 1.0
         last_gripper_cmd = 1.0
         print("[Control] Moving to start position...")
@@ -665,9 +665,9 @@ def main() -> None:
                             arm.gripper_open()
                         else:
                             arm.gripper_close()
-                        ctrl = _start_joint_position_controller()
-                        vr_mapper.reset()
-                        gripper_busy = False
+                            ctrl = _start_joint_position_controller()
+                            vr_mapper.reset()
+                            gripper_busy = False
 
                     threading.Thread(
                         target=_do_gripper, args=(gripper_cmd,), daemon=True
