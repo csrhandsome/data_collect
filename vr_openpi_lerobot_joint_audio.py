@@ -1,82 +1,50 @@
 #!/usr/bin/env python3
 """
-Collect Franka teleop data into a LeRobot dataset using VR (teleop_xr) input.
+Collect Franka teleop data into a LeRobot dataset using VR input, with episode audio.
 
 - Cameras: external + wrist (2x RealSense)
+- Audio: per-episode microphone WAV + audio metadata sidecar
 - Control: VR end-effector pose -> IK -> joint position controller
-- Actions: absolute joint target + gripper state
-- Output: LeRobot dataset (no intermediate HDF5)
+- Output: LeRobot dataset + audio sync JSON
 
 Deadman: hold both VR triggers (long press) to enable arm movement.
-X (left controller): switch to the second prompt.
 Recording: start automatically when motion begins.
 Y (left controller): save current episode and return to the start pose.
 A (right controller): gripper close.  B: gripper open.
-
-uv run vr_openpi_lerobot_joint_force.py \
-  --instruction "Pick up the wide-mouth bottle" \
-  --second-instruction "Pick up the narrow-mouth bottle" \
-  --external-camera-serial 825412070292 \
-  --wrist-camera-serial 825412070487 \
-  --color-only
 """
 
+import json
+import threading
 import time
 from pathlib import Path
 from typing import Optional
 import sys
+
 import numpy as np
 
-from control.collect_args import build_vr_lerobot_joint_force_parser
-from control.util.img_util import center_crop_and_resize_rgb_uint8
-from control.util.lerobot_util import (
-    _load_or_create_dataset_force,
-    _prepare_episode_for_save_force,
-)
-from control.soft_gripper_control import DH5Gripper
+from control.collect_args import build_vr_lerobot_joint_audio_parser
+from control.dual_camera_manager import DualRealsenseManager
+from control.util.lerobot_util import _load_or_create_dataset, _prepare_episode_for_save
+from control.microphone_connector import MicrophoneRecorder
+from control.robotic_arm_controller import RoboticArmControler
 from control.vr_input import VRInputProcess
 from control.vr_input_mapper import VREEPoseMapper
-from control.dual_camera_manager import DualRealsenseManager
 from ik_solver import FrankaJointIKSolver
-from control.robotic_arm_controller import RoboticArmControler
 
 
-def _wait_for_soft_gripper_frames(
-    soft_gripper: DH5Gripper, *, timeout_s: float
-) -> tuple[np.ndarray, np.ndarray]:
-    start = time.time()
-    while True:
-        right_img, left_img = soft_gripper.dual_camera_manager.get_images()
-        if left_img is not None and right_img is not None:
-            return left_img, right_img
-        if timeout_s > 0 and (time.time() - start) > timeout_s:
-            raise RuntimeError(
-                f"Soft gripper camera timeout after {timeout_s:.1f} seconds."
-            )
-        time.sleep(0.01)
-
-
-def _get_soft_gripper_images(
-    soft_gripper: DH5Gripper, *, crop_scale: float, image_hw: int
-) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    right_img, left_img = soft_gripper.dual_camera_manager.get_images()
-    if left_img is None or right_img is None:
-        return None, None
-    left_rgb = center_crop_and_resize_rgb_uint8(
-        left_img,
-        crop_scale=crop_scale,
-        out_hw=image_hw,
-    )
-    right_rgb = center_crop_and_resize_rgb_uint8(
-        right_img,
-        crop_scale=crop_scale,
-        out_hw=image_hw,
-    )
-    return left_rgb, right_rgb
+def _path_for_json(path: Optional[Path], root: Optional[Path] = None) -> Optional[str]:
+    if path is None:
+        return None
+    if root is not None:
+        try:
+            return str(path.relative_to(root))
+        except ValueError:
+            pass
+    return str(path)
 
 
 def main() -> None:
-    parser = build_vr_lerobot_joint_force_parser()
+    parser = build_vr_lerobot_joint_audio_parser()
     args = parser.parse_args()
     sys.setswitchinterval(0.0005)
     if args.control_frequency <= 0:
@@ -101,24 +69,17 @@ def main() -> None:
         raise ValueError("--max-joint-delta must be >= 0")
     if args.joint_velocity_limit < 0:
         raise ValueError("--joint-velocity-limit must be >= 0")
-    if not 20 <= args.soft_gripper_force <= 100:
-        raise ValueError("--soft-gripper-force must be in [20, 100]")
-    if not 0 <= args.soft_gripper_velocity <= 1000:
-        raise ValueError("--soft-gripper-velocity must be in [0, 1000]")
-    if not 0.0 < args.soft_gripper_axis_threshold <= 1.0:
-        raise ValueError("--soft-gripper-axis-threshold must be in (0, 1]")
-    if args.soft_gripper_step_interval <= 0.0:
-        raise ValueError("--soft-gripper-step-interval must be > 0")
-
-    def _parse_camera_device(device: str) -> int | str:
-        return int(device) if str(device).lstrip("-").isdigit() else device
+    if args.audio_sample_rate <= 0:
+        raise ValueError("--audio-sample-rate must be > 0")
+    if args.audio_channels <= 0:
+        raise ValueError("--audio-channels must be > 0")
 
     enable_logging = not args.no_logging
     if enable_logging and not args.instruction.strip():
         raise ValueError("--instruction is required when logging is enabled")
 
     print("=" * 70)
-    print("Franka LeRobot data collection (VR teleop)")
+    print("Franka LeRobot data collection (VR teleop + audio)")
     print("=" * 70)
     dq_clip_str = (
         "off" if args.max_joint_delta <= 0 else f"{args.max_joint_delta:.3f}rad/step"
@@ -155,32 +116,22 @@ def main() -> None:
         f"Camera stream: {args.camera_width}x{args.camera_height}@{args.camera_fps} "
         f"(depth={'off' if args.color_only else 'on'})"
     )
+    print(
+        f"Audio stream: {args.audio_sample_rate} Hz, "
+        f"{args.audio_channels} channel(s), int16 PCM"
+    )
     print(f"VR server: {args.vr_host}:{args.vr_port}")
     print(f"External camera serial: {args.external_camera_serial}")
     print(f"Wrist camera serial: {args.wrist_camera_serial}")
-    print(
-        "Soft gripper: "
-        f"port={args.soft_gripper_port}, "
-        f"left_cam={args.gripper_left_camera_device}, "
-        f"right_cam={args.gripper_right_camera_device}, "
-        f"force={args.soft_gripper_force}, "
-        f"velocity={args.soft_gripper_velocity}, "
-        f"axis_threshold={args.soft_gripper_axis_threshold:.2f}, "
-        f"step_interval={args.soft_gripper_step_interval:.2f}s"
-    )
     if enable_logging:
-        date = "3_8"
-        args.repo_id = f"{args.repo_id}_{date}"
+        args.repo_id = f"{args.repo_id}_{args.date}"
         print(f"Logging: enabled (max {args.max_duration} s)")
         print(f"Instruction: {args.instruction}")
-        if args.second_instruction.strip():
-            print(f"Second instruction: {args.second_instruction}")
         print(f"LeRobot repo_id: {args.repo_id}")
     else:
         print("Logging: disabled")
     print("=" * 70)
 
-    # --- VR input (separate process — immune to main-process GIL) ---
     print("Starting VR input reader (separate process)...")
     vr_reader = VRInputProcess(
         host=args.vr_host,
@@ -207,26 +158,9 @@ def main() -> None:
         sensitivity=args.sensitivity,
     )
 
-    # --- Franka arm ---
     print("Initializing Franka arm...")
     arm = RoboticArmControler()
 
-    print("Initializing DH soft gripper...")
-    soft_gripper = DH5Gripper(
-        com=args.soft_gripper_port,
-        right_camera_device=_parse_camera_device(args.gripper_right_camera_device),
-        left_camera_device=_parse_camera_device(args.gripper_left_camera_device),
-        camera_width=args.camera_width,
-        camera_height=args.camera_height,
-        camera_fps=args.camera_fps,
-        camera_timeout_ms=args.camera_timeout_ms,
-        vr_axis_threshold=float(args.soft_gripper_axis_threshold),
-        vr_step_interval_s=float(args.soft_gripper_step_interval),
-    )
-    soft_gripper.set_force(args.soft_gripper_force)
-    soft_gripper.set_velocity(args.soft_gripper_velocity)
-
-    # --- Cameras ---
     print("Initializing RealSense cameras...")
     camera_manager = DualRealsenseManager(
         external_serial=args.external_camera_serial,
@@ -243,42 +177,35 @@ def main() -> None:
     camera_manager.connect()
 
     dataset = None
+    dataset_root: Optional[Path] = None
+    audio_dir: Optional[Path] = None
+    microphone_recorder: Optional[MicrophoneRecorder] = None
     if enable_logging:
         dataset_root = Path(__file__).resolve().parent / "data" / args.repo_id
         resume_existing = dataset_root.exists()
-        dataset = _load_or_create_dataset_force(
+        dataset = _load_or_create_dataset(
             args.repo_id,
             fps=args.control_frequency,
             image_hw=args.image_hw,
             root=dataset_root,
         )
+        audio_dir = dataset_root / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        microphone_recorder = MicrophoneRecorder(
+            sample_rate=int(args.audio_sample_rate),
+            channels=int(args.audio_channels),
+            dtype=np.int16,
+        )
         if resume_existing:
             print(f"LeRobot dataset exists, resuming: {dataset_root}")
         else:
             print(f"LeRobot dataset path: {dataset_root}")
+        print(f"Audio path: {audio_dir}")
 
     print("[Camera] Waiting for first frames...")
     camera_manager.wait_for_frames(timeout_s=float(args.camera_startup_timeout_s))
     print("[Camera] First frames acquired, ready to record!")
 
-    print("[SoftGripper] Waiting for first gripper-camera frames...")
-    _wait_for_soft_gripper_frames(
-        soft_gripper, timeout_s=float(args.camera_startup_timeout_s)
-    )
-    print("[SoftGripper] First gripper-camera frames acquired, ready to record!")
-
-    print("Opening gripper...")
-    soft_gripper.set_position(0, wait=True)
-    print("Moving to start position...")
-    arm.move_to_start()
-    if not arm.wait_until_stopped():
-        max_vel = float(np.max(np.abs(np.asarray(arm.panda.get_state().dq))))
-        print(
-            "[Warning] Robot did not fully stop after move_to_start: "
-            f"max_vel={max_vel:.4f} rad/s"
-        )
-
-    # --- EE pose IK solver ---
     print("Initializing Franka EE pose IK solver (dm_control)...")
     ik_solver = FrankaJointIKSolver(
         linear_tol=2e-3,
@@ -306,31 +233,7 @@ def main() -> None:
         _hold_current_joint_position(controller)
         return controller
 
-    ctrl = _start_joint_position_controller(settle_s=0.5)
-
-    active_instruction = args.instruction
-    gripper_state = float(soft_gripper.gripper_open_ratio.reshape(-1)[0])
-
-    recording_started = False
-    recording_started_at: Optional[float] = None
-    frame_count = 0
-    motion_start_threshold = max(float(args.action_epsilon), 1e-3)
-    reflex_error_occurred = False
-    prev_x_pressed = False
-    prev_y_pressed = False
-    last_ik_warning_at = 0.0
-
-    def _reset_robot_to_start() -> None:
-        nonlocal ctrl, gripper_state
-
-        _hold_current_joint_position(ctrl)
-        arm.panda.stop_controller()
-        try:
-            soft_gripper.set_gripper_level(0)
-        except Exception as exc:
-            print(f"[Warning] Failed to open soft gripper during reset: {exc}")
-        gripper_state = float(soft_gripper.gripper_open_ratio.reshape(-1)[0])
-        print("[Control] Moving to start position...")
+    def _move_robot_to_start_pose() -> None:
         arm.move_to_start()
         if not arm.wait_until_stopped():
             max_vel = float(np.max(np.abs(np.asarray(arm.panda.get_state().dq))))
@@ -338,34 +241,173 @@ def main() -> None:
                 "[Warning] Robot did not fully stop after move_to_start: "
                 f"max_vel={max_vel:.4f} rad/s"
             )
-        ctrl = _start_joint_position_controller(settle_s=0.0)
-        vr_mapper.reset()
 
-    def _finish_episode(*, save_episode: bool, message: str) -> None:
-        nonlocal frame_count, recording_started, recording_started_at
+    print("Opening gripper...")
+    arm.safe_open()
+    print("Moving to start position...")
+    _move_robot_to_start_pose()
+    ctrl = _start_joint_position_controller(settle_s=0.5)
 
-        print(message)
-        if dataset is not None:
-            if save_episode and frame_count > 0:
-                try:
-                    _prepare_episode_for_save_force(dataset)
-                    dataset.save_episode()
-                    print(f"[Recording] Saved episode with {frame_count} frames")
-                except Exception as exc:
-                    print(f"[Error] Failed to save episode: {exc}")
-                    try:
-                        dataset.clear_episode_buffer()
-                    except Exception:
-                        pass
-            else:
-                try:
-                    dataset.clear_episode_buffer()
-                except Exception:
-                    pass
+    active_instruction = args.instruction
+    gripper_state = 1.0
+    last_gripper_cmd = 1.0
+
+    recording_started = False
+    recording_started_at: Optional[float] = None
+    episode_start_monotonic_ns: Optional[int] = None
+    current_episode_index: Optional[int] = None
+    current_audio_path: Optional[Path] = None
+    frame_records: list[dict] = []
+    frame_count = 0
+    motion_start_threshold = max(float(args.action_epsilon), 1e-3)
+    last_gripper_switch_time = 0.0
+    gripper_busy = False
+    gripper_switch_cooldown_s = 0.12
+    reflex_error_occurred = False
+    prev_y_pressed = False
+    last_ik_warning_at = 0.0
+
+    def _reset_episode_state() -> None:
+        nonlocal frame_count
+        nonlocal recording_started
+        nonlocal recording_started_at
+        nonlocal episode_start_monotonic_ns
+        nonlocal current_episode_index
+        nonlocal current_audio_path
+        nonlocal frame_records
 
         frame_count = 0
         recording_started = False
         recording_started_at = None
+        episode_start_monotonic_ns = None
+        current_episode_index = None
+        current_audio_path = None
+        frame_records = []
+        if microphone_recorder is not None:
+            microphone_recorder.default_output_path = None
+            if not microphone_recorder.is_recording:
+                microphone_recorder.reset()
+
+    def _cleanup_episode_files(*paths: Optional[Path]) -> None:
+        for path in paths:
+            if path is None:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _write_episode_sync_json(audio_path: Path) -> Path:
+        if (
+            audio_dir is None
+            or dataset_root is None
+            or current_episode_index is None
+            or microphone_recorder is None
+        ):
+            raise RuntimeError(
+                "Episode sync JSON cannot be written without logging state"
+            )
+
+        sync_path = audio_dir / f"episode_{current_episode_index:06d}.sync.json"
+        payload = {
+            "episode_index": current_episode_index,
+            "task": active_instruction,
+            "control_frequency": float(args.control_frequency),
+            "audio_path": _path_for_json(audio_path, dataset_root),
+            "audio_metadata_path": _path_for_json(
+                microphone_recorder.last_metadata_path, dataset_root
+            ),
+            "audio_start_monotonic_ns": microphone_recorder.audio_start_monotonic_ns,
+            "audio_stop_monotonic_ns": microphone_recorder.audio_stop_monotonic_ns,
+            "episode_start_monotonic_ns": episode_start_monotonic_ns,
+            "video_frames": frame_count,
+            "frame_records": frame_records,
+            "camera_serials": {
+                "external": camera_manager.external_camera.serial,
+                "wrist": camera_manager.wrist_camera.serial,
+            },
+        }
+        sync_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return sync_path
+
+    def _finalize_episode_data(*, save_episode: bool) -> None:
+        nonlocal frame_count
+
+        should_persist = (
+            bool(save_episode)
+            and frame_count > 0
+            and dataset is not None
+            and microphone_recorder is not None
+            and current_episode_index is not None
+            and current_audio_path is not None
+        )
+
+        audio_path: Optional[Path] = None
+        audio_metadata_path: Optional[Path] = None
+        sync_path: Optional[Path] = None
+
+        if microphone_recorder is not None:
+            microphone_recorder.default_output_path = (
+                current_audio_path if should_persist else None
+            )
+            try:
+                audio_path = microphone_recorder.stop_recording()
+                audio_metadata_path = microphone_recorder.last_metadata_path
+            except Exception as exc:
+                print(f"[Error] Failed to stop microphone recorder: {exc}")
+                should_persist = False
+
+        if not should_persist:
+            if dataset is not None:
+                try:
+                    dataset.clear_episode_buffer()
+                except Exception:
+                    pass
+            _reset_episode_state()
+            return
+
+        try:
+            if audio_path is None:
+                audio_path = microphone_recorder.save_recording(current_audio_path)
+                audio_metadata_path = microphone_recorder.last_metadata_path
+
+            sync_path = _write_episode_sync_json(audio_path)
+            _prepare_episode_for_save(dataset)
+            dataset.save_episode()
+            print(
+                f"[Recording] Saved episode {current_episode_index:06d} with {frame_count} frames"
+            )
+            print(f"[Recording] Saved audio: {audio_path}")
+            print(f"[Recording] Saved sync metadata: {sync_path}")
+        except Exception as exc:
+            print(f"[Error] Failed to save episode: {exc}")
+            _cleanup_episode_files(audio_path, audio_metadata_path, sync_path)
+            try:
+                dataset.clear_episode_buffer()
+            except Exception:
+                pass
+        finally:
+            _reset_episode_state()
+
+    def _reset_robot_to_start() -> None:
+        nonlocal ctrl, gripper_state, last_gripper_cmd
+
+        _hold_current_joint_position(ctrl)
+        arm.panda.stop_controller()
+        arm.safe_open()
+        gripper_state = 1.0
+        last_gripper_cmd = 1.0
+        print("[Control] Moving to start position...")
+        _move_robot_to_start_pose()
+        ctrl = _start_joint_position_controller(settle_s=0.0)
+        vr_mapper.reset()
+
+    def _finish_episode(*, save_episode: bool, message: str) -> None:
+        print(message)
+        _finalize_episode_data(save_episode=save_episode)
         _reset_robot_to_start()
 
     print("\nControl mapping (VR):")
@@ -374,10 +416,9 @@ def main() -> None:
         "  Right controller pose: snapshot-based EE pose control -> IK -> joint position"
     )
     print("  Release / re-hold triggers: re-anchor the VR neutral pose")
-    print("  Right stick Y: step soft gripper close/open")
-    print("  A (right): gripper fully close | B (right): gripper fully open")
-    print("  X (left): switch to second prompt")
+    print("  A (right): gripper close | B (right): gripper open")
     print("  Recording: starts automatically when motion begins")
+    print("  Audio: starts with the first recorded motion and saves per episode")
     print("  Y (left): save current episode and return to start")
 
     try:
@@ -389,6 +430,8 @@ def main() -> None:
                     and recording_started_at is not None
                     and (time.time() - recording_started_at) > args.max_duration
                 ):
+                    if gripper_busy:
+                        continue
                     _finish_episode(
                         save_episode=frame_count > 0,
                         message="\n[Recording] Max duration reached, saving episode and returning to start...",
@@ -397,34 +440,17 @@ def main() -> None:
 
                 vr = vr_reader.latest
 
-                x_pressed = bool(getattr(vr, "x_pressed", False))
                 y_pressed = bool(getattr(vr, "y_pressed", False))
-                x_edge = x_pressed and not prev_x_pressed
                 y_edge = y_pressed and not prev_y_pressed
-                prev_x_pressed = x_pressed
                 prev_y_pressed = y_pressed
-
-                if x_edge:
-                    if not enable_logging:
-                        print("\n[Prompt] Ignored X press because logging is disabled.")
-                    elif not args.second_instruction.strip():
-                        print(
-                            "\n[Prompt] X pressed, but --second-instruction is empty; keeping current prompt."
-                        )
-                    elif active_instruction == args.second_instruction:
-                        print("\n[Prompt] Second prompt is already active.")
-                    else:
-                        active_instruction = args.second_instruction
-                        print(
-                            f"\n[Prompt] Switched active prompt to second prompt: {active_instruction}"
-                        )
-                    continue
 
                 if y_edge:
                     if not enable_logging:
                         print(
                             "\n[Recording] Ignored Y press because logging is disabled."
                         )
+                    elif gripper_busy:
+                        print("\n[Recording] Ignored Y press because gripper is busy.")
                     else:
                         _finish_episode(
                             save_episode=frame_count > 0,
@@ -446,7 +472,7 @@ def main() -> None:
                 qpos_cmd = qpos.copy()
                 qvel_cmd = np.zeros(7, dtype=np.float64)
 
-                if vr.arm_enabled:
+                if vr.arm_enabled and not gripper_busy:
                     target_qpos = ik_solver.solve_pose(
                         target_ee_pos,
                         target_ee_quat,
@@ -486,71 +512,117 @@ def main() -> None:
                         normalized_action[small_mask] = 0.0
                         joint_delta[small_mask] = 0.0
 
-                qpos_cmd = np.clip(
-                    qpos + joint_delta,
-                    joint_limits[:, 0],
-                    joint_limits[:, 1],
-                )
-                if args.joint_velocity_limit > 0.0:
-                    qvel_cmd = np.clip(
-                        joint_delta * float(args.control_frequency),
-                        -float(args.joint_velocity_limit),
-                        float(args.joint_velocity_limit),
+                if not gripper_busy:
+                    qpos_cmd = np.clip(
+                        qpos + joint_delta,
+                        joint_limits[:, 0],
+                        joint_limits[:, 1],
                     )
-                else:
-                    qvel_cmd = np.zeros(7, dtype=np.float64)
-                ctrl.set_control(qpos_cmd, qvel_cmd)
+                    if args.joint_velocity_limit > 0.0:
+                        qvel_cmd = np.clip(
+                            joint_delta * float(args.control_frequency),
+                            -float(args.joint_velocity_limit),
+                            float(args.joint_velocity_limit),
+                        )
+                    else:
+                        qvel_cmd = np.zeros(7, dtype=np.float64)
+                    ctrl.set_control(qpos_cmd, qvel_cmd)
 
-                # --- Gripper ---
-                gripper_changed = False
+                gripper_cmd = last_gripper_cmd
                 if vr.gripper_close:
-                    gripper_changed = soft_gripper.set_gripper_level(
-                        soft_gripper.max_gripper_level,
-                        wait=False,
-                    )
+                    gripper_cmd = 0.0
                 elif vr.gripper_open:
-                    gripper_changed = soft_gripper.set_gripper_level(0, wait=False)
-                else:
-                    gripper_changed = soft_gripper.update_from_vr(vr, wait=False)
+                    gripper_cmd = 1.0
 
-                gripper_state = float(soft_gripper.gripper_open_ratio.reshape(-1)[0])
+                now = time.time()
+                if now - last_gripper_switch_time < gripper_switch_cooldown_s:
+                    gripper_cmd = last_gripper_cmd
+
+                gripper_changed = False
+                if gripper_cmd != last_gripper_cmd and not gripper_busy:
+                    gripper_changed = True
+                    last_gripper_switch_time = now
+                    gripper_state = 1.0 if gripper_cmd > 0.5 else 0.0
+                    last_gripper_cmd = gripper_cmd
+                    gripper_busy = True
+
+                    def _do_gripper(cmd):
+                        nonlocal gripper_busy, ctrl
+                        _hold_current_joint_position(ctrl)
+                        arm.panda.stop_controller()
+                        if cmd > 0.5:
+                            arm.gripper_open()
+                        else:
+                            arm.gripper_close()
+                            ctrl = _start_joint_position_controller()
+                            vr_mapper.reset()
+                            gripper_busy = False
+
+                    threading.Thread(
+                        target=_do_gripper, args=(gripper_cmd,), daemon=True
+                    ).start()
 
                 if not enable_logging:
                     continue
 
-                external_img, wrist_img = camera_manager.get_images()
-                gripper_left_img, gripper_right_img = _get_soft_gripper_images(
-                    soft_gripper,
-                    crop_scale=float(args.crop_scale),
-                    image_hw=int(args.image_hw),
+                external_img, wrist_img, external_ts, wrist_ts = (
+                    camera_manager.get_frames()
                 )
-                if external_img is None or wrist_img is None:
-                    continue
-                if gripper_left_img is None or gripper_right_img is None:
+                if (
+                    external_img is None
+                    or wrist_img is None
+                    or external_ts is None
+                    or wrist_ts is None
+                ):
                     continue
 
                 if external_img.shape != (args.image_hw, args.image_hw, 3):
                     continue
                 if wrist_img.shape != (args.image_hw, args.image_hw, 3):
                     continue
-                if gripper_left_img.shape != (args.image_hw, args.image_hw, 3):
-                    continue
-                if gripper_right_img.shape != (args.image_hw, args.image_hw, 3):
-                    continue
 
                 motion_norm = float(np.linalg.norm(joint_delta))
                 has_action = motion_norm >= motion_start_threshold or gripper_changed
 
                 if has_action and not recording_started:
+                    if (
+                        dataset is None
+                        or audio_dir is None
+                        or microphone_recorder is None
+                    ):
+                        raise RuntimeError(
+                            "Logging state is not initialized for audio capture"
+                        )
+
+                    current_episode_index = int(dataset.episode_buffer["episode_index"])
+                    current_audio_path = (
+                        audio_dir / f"episode_{current_episode_index:06d}.wav"
+                    )
+                    episode_start_monotonic_ns = time.monotonic_ns()
+                    microphone_recorder.default_output_path = current_audio_path
+                    if not microphone_recorder.start_recording():
+                        microphone_recorder.default_output_path = None
+                        current_episode_index = None
+                        current_audio_path = None
+                        episode_start_monotonic_ns = None
+                        print(
+                            "\n[Error] Failed to start microphone recording; skipping episode start."
+                        )
+                        continue
+
                     recording_started = True
                     recording_started_at = time.time()
+                    frame_records = []
                     print(
-                        f"\n[Recording] First motion detected, start logging with prompt: {active_instruction}"
+                        "\n[Recording] First motion detected, start audio/video logging "
+                        f"for episode {current_episode_index:06d} with prompt: {active_instruction}"
                     )
 
                 if recording_started:
                     joint_pos = np.asarray(robot_state.q, dtype=np.float32)
-
+                    gripper_pos = np.asarray(
+                        [np.float32(gripper_state)], dtype=np.float32
+                    )
                     actions = np.concatenate(
                         [
                             qpos_cmd.astype(np.float32),
@@ -558,24 +630,37 @@ def main() -> None:
                         ],
                         dtype=np.float32,
                     )
-                    gripper_pos = np.asarray(
-                        [np.float32(gripper_state)], dtype=np.float32
-                    )
                     blank = np.zeros_like(external_img)
+
+                    frame_record = {
+                        "frame_index": frame_count,
+                        "host_frame_monotonic_ns": time.monotonic_ns(),
+                        "external_camera_timestamp": float(
+                            external_ts.camera_timestamp
+                        ),
+                        "wrist_camera_timestamp": float(wrist_ts.camera_timestamp),
+                        "external_host_capture_monotonic_ns": int(
+                            external_ts.host_capture_monotonic_ns
+                        ),
+                        "wrist_host_capture_monotonic_ns": int(
+                            wrist_ts.host_capture_monotonic_ns
+                        ),
+                        "joint_position": joint_pos.tolist(),
+                        "gripper_position": float(gripper_pos[0]),
+                    }
 
                     dataset.add_frame(
                         {
                             "exterior_image_1_left": external_img,
                             "exterior_image_2_left": blank,
                             "wrist_image_left": wrist_img,
-                            "gripper_image_left": gripper_left_img,
-                            "gripper_image_right": gripper_right_img,
                             "joint_position": joint_pos,
                             "gripper_position": gripper_pos,
                             "actions": actions,
                             "task": active_instruction,
                         }
                     )
+                    frame_records.append(frame_record)
                     frame_count += 1
                     if frame_count % 50 == 0:
                         print(f"[Recording] {frame_count} frames", end="\r")
@@ -601,13 +686,19 @@ def main() -> None:
         except Exception:
             pass
 
-        try:
-            camera_manager.close()
-        except Exception:
-            pass
+        if enable_logging and not reflex_error_occurred:
+            try:
+                _finalize_episode_data(save_episode=frame_count > 0)
+            except Exception as exc:
+                print(f"\n[Error] Failed to finalize current episode: {exc}")
+        elif enable_logging and reflex_error_occurred:
+            try:
+                _finalize_episode_data(save_episode=False)
+            except Exception:
+                pass
 
         try:
-            soft_gripper.close()
+            camera_manager.close()
         except Exception:
             pass
 
@@ -621,29 +712,7 @@ def main() -> None:
         except Exception:
             pass
 
-        if enable_logging and dataset is not None and not reflex_error_occurred:
-            try:
-                if frame_count > 0:
-                    try:
-                        _prepare_episode_for_save_force(dataset)
-                        dataset.save_episode()
-                        print(f"\n[Recording] Saved episode with {frame_count} frames")
-                    except Exception as exc:
-                        print(f"\n[Error] Failed to save last episode: {exc}")
-                        try:
-                            dataset.clear_episode_buffer()
-                        except Exception:
-                            pass
-            finally:
-                try:
-                    dataset.stop_image_writer()
-                except Exception:
-                    pass
-        elif enable_logging and dataset is not None and reflex_error_occurred:
-            try:
-                dataset.clear_episode_buffer()
-            except Exception:
-                pass
+        if enable_logging and dataset is not None:
             try:
                 dataset.stop_image_writer()
             except Exception:

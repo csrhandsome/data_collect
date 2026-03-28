@@ -452,6 +452,14 @@ class RealSenseConnector:
     def intrinsics(self) -> Optional[np.ndarray]:
         return self._sensor_data.intrinsics
 
+    @property
+    def timestamp(self) -> float:
+        return self._sensor_data.timestamp
+
+    @property
+    def serial(self) -> Optional[str]:
+        return self._serial
+
     def _init_yolo_model(self):
         """初始化 YOLO 手部检测模型"""
         if self._yolo_model is None:

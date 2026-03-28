@@ -12,10 +12,9 @@ uv run -m data_analysis.replay_openpi_lerobot_joint
 from __future__ import annotations
 
 import argparse
+import json
 import sys
-import textwrap
 import time
-from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +22,12 @@ import numpy as np
 import datasets as _hf_datasets
 
 from control.robotic_arm_controller import RoboticArmControler
+from control.util.audio_util import (
+    load_episode_audio_segment,
+    start_audio_playback,
+    stop_audio_playback,
+)
+from control.util.img_util import decode_image, show_image
 
 
 def _default_data_root() -> Path:
@@ -90,84 +95,6 @@ def _as_text(value: object) -> str:
     return str(value).strip()
 
 
-def _draw_prompt_overlay(bgr: np.ndarray, prompt: str) -> np.ndarray:
-    prompt = prompt.strip()
-    if not prompt:
-        return bgr
-
-    try:
-        import cv2
-    except Exception:
-        return bgr
-
-    annotated = bgr.copy()
-    height, width = annotated.shape[:2]
-    margin = max(8, width // 50)
-    font_scale = max(0.45, min(0.8, width / 960.0))
-    thickness = 1 if width < 960 else 2
-    line_height = max(20, int(26 * font_scale))
-    max_chars = max(24, width // 12)
-    lines = textwrap.wrap(f"Prompt: {prompt}", width=max_chars)[:4]
-    box_height = margin * 2 + line_height * len(lines)
-
-    overlay = annotated.copy()
-    cv2.rectangle(
-        overlay,
-        (margin, margin),
-        (width - margin, min(height - margin, margin + box_height)),
-        (0, 0, 0),
-        -1,
-    )
-    cv2.addWeighted(overlay, 0.45, annotated, 0.55, 0.0, annotated)
-
-    y = margin + line_height
-    for line in lines:
-        cv2.putText(
-            annotated,
-            line,
-            (margin * 2, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            font_scale,
-            (255, 255, 255),
-            thickness,
-            cv2.LINE_AA,
-        )
-        y += line_height
-
-    return annotated
-
-
-def show_image(
-    frame: np.ndarray,
-    *,
-    win_name: str,
-    scale: float = 1.0,
-    prompt: str = "",
-) -> None:
-    try:
-        import cv2
-    except Exception:
-        return
-    if frame is None:
-        return
-    img = np.asarray(frame)
-    if img.ndim == 3 and img.shape[0] == 3 and img.shape[-1] != 3:
-        img = np.transpose(img, (1, 2, 0))
-    if np.issubdtype(img.dtype, np.floating):
-        img = np.clip(img, 0.0, 1.0)
-        img = (img * 255.0).astype(np.uint8)
-    if img.ndim == 3 and img.shape[-1] == 3:
-        bgr = img[..., ::-1]
-        bgr = _draw_prompt_overlay(bgr, prompt)
-    else:
-        return
-    if scale != 1.0:
-        h, w = bgr.shape[:2]
-        bgr = cv2.resize(bgr, (int(w * scale), int(h * scale)))
-    cv2.imshow(win_name, bgr)
-    cv2.waitKey(1)
-
-
 def _as_int(value: object) -> int | None:
     if isinstance(value, np.ndarray):
         try:
@@ -179,65 +106,10 @@ def _as_int(value: object) -> int | None:
     return None
 
 
-def _decode_image(
-    value: object,
-    *,
-    root: Path,
-    image_key: str,
-    episode_index: int | None,
-    frame_index: int | None,
-) -> np.ndarray | None:
-    if value is None:
-        return None
-    if isinstance(value, np.ndarray):
-        return value
-    try:
-        import torch
-    except Exception:
-        torch = None
-    if torch is not None and isinstance(value, torch.Tensor):
-        return value.detach().cpu().numpy()
-    try:
-        from PIL import Image
-    except Exception:
-        return None
-
-    if isinstance(value, Image.Image):
-        return np.asarray(value.convert("RGB"))
-
-    if isinstance(value, (bytes, bytearray)):
-        try:
-            return np.asarray(Image.open(BytesIO(value)).convert("RGB"))
-        except Exception:
-            return None
-
-    if isinstance(value, dict):
-        bytes_data = value.get("bytes")
-        if bytes_data:
-            try:
-                return np.asarray(Image.open(BytesIO(bytes_data)).convert("RGB"))
-            except Exception:
-                return None
-        path = value.get("path")
-        if path:
-            candidate = Path(path)
-            if not candidate.is_absolute():
-                if episode_index is not None and frame_index is not None:
-                    candidate = (
-                        root
-                        / "images"
-                        / image_key
-                        / f"episode-{episode_index:06d}"
-                        / Path(path).name
-                    )
-                else:
-                    candidate = root / Path(path)
-            if candidate.exists():
-                try:
-                    return np.asarray(Image.open(candidate).convert("RGB"))
-                except Exception:
-                    return None
-    return None
+def _sleep_until(target_time: float) -> None:
+    remaining = float(target_time) - time.monotonic()
+    if remaining > 0.0:
+        time.sleep(remaining)
 
 
 def main() -> None:
@@ -278,6 +150,11 @@ def main() -> None:
     parser.add_argument("--loop", type=int, default=1, help="Number of loops")
     parser.add_argument("--no-show", action="store_true", help="Hide recorded images")
     parser.add_argument(
+        "--audio-data",
+        action="store_true",
+        help="If the dataset has audio sidecars under audio/, replay the episode audio too.",
+    )
+    parser.add_argument(
         "--execute",
         action="store_true",
         help="Execute joint-position actions on the robot",
@@ -300,7 +177,7 @@ def main() -> None:
     repo_id = args.repo_id
     if not repo_id:
         openpi_root = _default_data_root() / "openpi"
-        repo_id = _find_latest_repo_id(openpi_root, prefix="franka_droid_lerobot_")
+        repo_id = _find_latest_repo_id(openpi_root, prefix="franka_franka_lerobot_")
         print(f"Auto-selected latest dataset: {repo_id}")
 
     ds, ds_root = _load_dataset(repo_id, args.root)
@@ -327,12 +204,18 @@ def main() -> None:
         print("Empty frame range after applying start/end.")
         sys.exit(1)
 
-    # Read fps from meta/info.json
-    import json
-
     _info = json.loads((ds_root / "meta" / "info.json").read_text())
     fps = float(_info.get("fps", 15.0))
     episode_prompt = _as_text(ds[int(ep_indices[0])].get("task"))
+    audio_segment = None
+    if args.audio_data:
+        audio_segment = load_episode_audio_segment(
+            ds_root=ds_root,
+            episode_index=episode_index,
+            start_frame_index=start,
+            end_frame_index=end,
+            fps=fps,
+        )
     print("=" * 70)
     print("LeRobot replay (joint position)")
     print("=" * 70)
@@ -342,6 +225,14 @@ def main() -> None:
     print(f"Frames: {len(ep_indices)} (start={start}, end={end})")
     print(f"FPS: {fps:.2f}")
     print(f"Speed: {args.speed}x")
+    print(f"Audio: {'enabled' if args.audio_data else 'disabled'}")
+    if audio_segment is not None:
+        print(
+            "Audio clip: "
+            f"{audio_segment.audio_path} "
+            f"({audio_segment.duration_s:.2f}s, "
+            f"samples {audio_segment.start_sample}:{audio_segment.end_sample})"
+        )
     print(f"Execute: {args.execute}")
     if episode_prompt:
         print(f"Prompt: {episode_prompt}")
@@ -368,6 +259,7 @@ def main() -> None:
         for loop_idx in range(int(args.loop)):
             print(f"\n[Replay] Loop {loop_idx + 1}/{args.loop}")
             if args.execute and arm is not None:
+                start_audio_playback(audio_segment, speed=float(args.speed))
                 ctrl = controllers.JointPosition()
                 arm.panda.start_controller(ctrl)
                 with arm.panda.create_context(frequency=action_freq) as ctx:
@@ -400,14 +292,14 @@ def main() -> None:
                         if not args.no_show:
                             ep_idx = _as_int(item.get("episode_index"))
                             fr_idx = _as_int(item.get("frame_index"))
-                            ext = _decode_image(
+                            ext = decode_image(
                                 item.get("exterior_image_1_left"),
                                 root=ds_root,
                                 image_key="exterior_image_1_left",
                                 episode_index=ep_idx,
                                 frame_index=fr_idx,
                             )
-                            wrist = _decode_image(
+                            wrist = decode_image(
                                 item.get("wrist_image_left"),
                                 root=ds_root,
                                 image_key="wrist_image_left",
@@ -426,21 +318,24 @@ def main() -> None:
                             )
             else:
                 dt = (1.0 / fps) / float(args.speed)
-                for frame_idx in ep_indices:
+                loop_start_time = time.monotonic()
+                start_audio_playback(audio_segment, speed=float(args.speed))
+                for offset, frame_idx in enumerate(ep_indices):
+                    _sleep_until(loop_start_time + (offset * dt))
                     item = ds[int(frame_idx)]
                     action = np.asarray(item["actions"], dtype=np.float32)
                     prompt = _as_text(item.get("task"))
                     if not args.no_show:
                         ep_idx = _as_int(item.get("episode_index"))
                         fr_idx = _as_int(item.get("frame_index"))
-                        ext = _decode_image(
+                        ext = decode_image(
                             item.get("exterior_image_1_left"),
                             root=ds_root,
                             image_key="exterior_image_1_left",
                             episode_index=ep_idx,
                             frame_index=fr_idx,
                         )
-                        wrist = _decode_image(
+                        wrist = decode_image(
                             item.get("wrist_image_left"),
                             root=ds_root,
                             image_key="wrist_image_left",
@@ -449,10 +344,10 @@ def main() -> None:
                         )
                         show_image(ext, win_name="Recorded External", prompt=prompt)
                         show_image(wrist, win_name="Recorded Wrist", prompt=prompt)
-                    time.sleep(dt)
     except KeyboardInterrupt:
         print("\n[Replay] Interrupted")
     finally:
+        stop_audio_playback()
         if args.execute and arm is not None:
             try:
                 arm.panda.stop_controller()

@@ -18,209 +18,24 @@ uv run vr_lerobot_franka.py \
   --color-only
 """
 
-import argparse
 import threading
 import time
 from pathlib import Path
 from typing import Optional
 import sys
 import numpy as np
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
+from control.collect_args import build_vr_lerobot_droid_parser
 from control.vr_input import VRInputProcess
 from control.vr_input_mapper import VRInputMapper
 from control.dual_camera_manager import DualRealsenseManager
+from control.util.lerobot_util import _load_or_create_dataset, _prepare_episode_for_save
 from ik_solver import DroidIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 
 
-def _create_dataset(
-    repo_id: str, *, fps: float, image_hw: int, root: Path
-) -> LeRobotDataset:
-    return LeRobotDataset.create(
-        repo_id=repo_id,
-        robot_type="panda",
-        fps=float(fps),
-        root=root,
-        features={
-            "exterior_image_1_left": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "exterior_image_2_left": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "wrist_image_left": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "joint_position": {
-                "dtype": "float32",
-                "shape": (7,),
-                "names": ["joint_position"],
-            },
-            "gripper_position": {
-                "dtype": "float32",
-                "shape": (1,),
-                "names": ["gripper_position"],
-            },
-            "actions": {
-                "dtype": "float32",
-                "shape": (8,),
-                "names": ["actions"],
-            },
-        },
-        image_writer_threads=6,
-        image_writer_processes=0,
-    )
-
-
-def _load_or_create_dataset(
-    repo_id: str, *, fps: float, image_hw: int, root: Path
-) -> LeRobotDataset:
-    def looks_like_lerobot_dataset(path: Path) -> bool:
-        return (path / "meta" / "info.json").is_file() and (
-            path / "meta" / "episodes.jsonl"
-        ).is_file()
-
-    def resume_existing_dataset_for_recording(path: Path) -> LeRobotDataset:
-        from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
-        from lerobot.common.datasets.video_utils import get_safe_default_codec
-
-        meta = LeRobotDatasetMetadata(repo_id=repo_id, root=path)
-
-        missing: list[Path] = []
-        for ep_idx in range(meta.total_episodes):
-            fpath = meta.root / meta.get_data_file_path(ep_idx)
-            if not fpath.is_file():
-                missing.append(fpath)
-        if missing:
-            preview = "\n".join(f"  - {p}" for p in missing[:10])
-            more = "" if len(missing) <= 10 else f"\n  ... and {len(missing) - 10} more"
-            raise RuntimeError(
-                "Cannot resume: dataset is missing episode parquet files:\n"
-                f"{preview}{more}\n"
-                "Fix the dataset first, then retry."
-            )
-
-        next_ep = meta.total_episodes
-        images_dir = meta.root / "images"
-        if images_dir.is_dir():
-            leftover = list(images_dir.rglob(f"episode_{next_ep:06d}"))
-            if leftover:
-                raise RuntimeError(
-                    "Cannot resume: found leftover temporary images for the next episode. "
-                    f"Please remove '{images_dir}' (or the episode_{next_ep:06d} folder) and retry."
-                )
-
-        dataset = LeRobotDataset.__new__(LeRobotDataset)
-        dataset.meta = meta
-        dataset.repo_id = meta.repo_id
-        dataset.root = meta.root
-        dataset.revision = None
-        dataset.tolerance_s = 1e-4
-        dataset.image_writer = None
-        dataset.episode_buffer = dataset.create_episode_buffer()
-        dataset.episodes = None
-        dataset.hf_dataset = dataset.create_hf_dataset()
-        dataset.image_transforms = None
-        dataset.delta_timestamps = None
-        dataset.delta_indices = None
-        dataset.episode_data_index = None
-        dataset.video_backend = get_safe_default_codec()
-        dataset.start_image_writer(num_processes=0, num_threads=6)
-        return dataset
-
-    if root.exists():
-        if not root.is_dir():
-            raise RuntimeError(f"Dataset path exists and is not a directory: {root}")
-        if not looks_like_lerobot_dataset(root):
-            raise RuntimeError(
-                "Dataset directory exists but doesn't look like a LeRobot dataset "
-                f"(missing meta/info.json): {root}"
-            )
-        try:
-            return resume_existing_dataset_for_recording(root)
-        except Exception as exc:
-            raise RuntimeError(
-                "Failed to load existing LeRobot dataset. "
-                "Refusing to modify/recreate automatically. "
-                "If the last episode is incomplete, prune it manually with: "
-                f".venv/bin/python data_analysis/delete_latest_episode.py --dataset {root}"
-            ) from exc
-
-    return _create_dataset(repo_id, fps=fps, image_hw=image_hw, root=root)
-
-
-def _prepare_episode_for_save(dataset: LeRobotDataset) -> None:
-    if dataset.episode_buffer is None:
-        return
-    gripper_values = dataset.episode_buffer.get("gripper_position")
-    if not isinstance(gripper_values, list) or not gripper_values:
-        return
-    dataset.episode_buffer["gripper_position"] = [
-        float(v.reshape(-1)[0]) if isinstance(v, np.ndarray) else float(v)
-        for v in gripper_values
-    ]
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Collect Franka data into LeRobot via VR (teleop_xr)"
-    )
-    parser.add_argument("--repo-id", type=str, default="openpi/franka_droid_lerobot")
-    parser.add_argument("--instruction", type=str, default="")
-    parser.add_argument("--control-frequency", type=float, default=15.0)
-    parser.add_argument(
-        "--sensitivity",
-        type=float,
-        default=1.0,
-        help="Cartesian velocity multiplier (0-1]. 1.0 = full DROID speed.",
-    )
-    parser.add_argument("--action-epsilon", type=float, default=1e-6)
-    parser.add_argument("--camera-width", type=int, default=640)
-    parser.add_argument("--camera-height", type=int, default=480)
-    parser.add_argument("--camera-fps", type=int, default=30)
-    parser.add_argument("--color-only", action="store_true")
-    parser.add_argument("--camera-startup-timeout-s", type=float, default=10.0)
-    parser.add_argument("--camera-timeout-ms", type=int, default=1000)
-    parser.add_argument("--max-duration", type=float, default=3600.0)
-    parser.add_argument("--external-camera-serial", type=str, default=None)
-    parser.add_argument("--wrist-camera-serial", type=str, default=None)
-    parser.add_argument("--image-hw", type=int, default=224)
-    parser.add_argument("--crop-scale", type=float, default=0.9)
-    parser.add_argument("--no-logging", action="store_true")
-    # VR-specific
-    parser.add_argument("--vr-host", type=str, default="0.0.0.0")
-    parser.add_argument("--vr-port", type=int, default=4443)
-    parser.add_argument(
-        "--vr-long-press-s",
-        type=float,
-        default=0.5,
-        help="Seconds both triggers must be held to enable arm movement.",
-    )
-    parser.add_argument(
-        "--vr-translation-scale",
-        type=float,
-        default=0.05,
-        help="VR displacement (m) from neutral that maps to full speed. 0.05 = 5cm.",
-    )
-    parser.add_argument(
-        "--vr-rotation-scale",
-        type=float,
-        default=0.8,
-        help="VR rotation (rad) from neutral that maps to full speed. 0.35 ≈ 20 deg.",
-    )
-    parser.add_argument(
-        "--vr-enable-rotation",
-        action="store_true",
-        help="Enable rotation control from VR wrist. Off by default to avoid IK chaos.",
-    )
-
+    parser = build_vr_lerobot_droid_parser()
     args = parser.parse_args()
     sys.setswitchinterval(0.0005)
     if args.control_frequency <= 0:
