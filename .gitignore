@@ -10,3 +10,4 @@ wheels/
 .venv
 data/
 data_analysis/quality_reports
+.codex

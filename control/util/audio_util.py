@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import shutil
 import wave
 
 import numpy as np
@@ -17,6 +19,393 @@ class EpisodeAudioSegment:
     start_sample: int
     end_sample: int
     duration_s: float
+
+
+def default_microphone_output_path(*, base_dir: Path | None = None) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    root = Path.cwd() if base_dir is None else Path(base_dir)
+    return root / "recordings" / f"microphone_{timestamp}.wav"
+
+
+def block_frames_for_sample_rate(sample_rate: int, *, block_duration_s: float = 0.05) -> int:
+    return max(256, int(round(int(sample_rate) * float(block_duration_s))))
+
+
+def metadata_path_for_audio_output(output_path: Path) -> Path:
+    if output_path.suffix:
+        return output_path.with_suffix(".audio.json")
+    return output_path.with_name(f"{output_path.name}.audio.json")
+
+
+def empty_audio_normalization_info(
+    *,
+    target_peak_ratio: float,
+    reason: str,
+) -> dict:
+    return {
+        "applied": False,
+        "reason": reason,
+        "gain": None,
+        "original_peak": None,
+        "target_peak": None,
+        "target_peak_ratio": float(target_peak_ratio),
+    }
+
+
+def build_audio_recording_metadata(
+    *,
+    output_path: Path,
+    sample_rate: int,
+    channels: int,
+    dtype: np.dtype,
+    input_device: int | str | None,
+    normalize_audio: bool,
+    normalization_target_peak_ratio: float,
+    audio_start_monotonic_ns: int | None,
+    audio_stop_monotonic_ns: int | None,
+    chunk_timestamps_ns: list[int],
+    input_buffer_adc_times: list[float | None],
+    input_overflow_timestamps_ns: list[int],
+    num_samples: int,
+    normalization_info: dict | None = None,
+) -> dict:
+    info = normalization_info or empty_audio_normalization_info(
+        target_peak_ratio=normalization_target_peak_ratio,
+        reason="unknown",
+    )
+    return {
+        "audio_path": str(output_path),
+        "sample_rate": int(sample_rate),
+        "channels": int(channels),
+        "dtype": np.dtype(dtype).name,
+        "input_device": input_device,
+        "normalize_audio": bool(normalize_audio),
+        "normalization_applied": info.get("applied"),
+        "normalization_reason": info.get("reason"),
+        "normalization_gain": info.get("gain"),
+        "normalization_original_peak": info.get("original_peak"),
+        "normalization_target_peak": info.get("target_peak"),
+        "normalization_target_peak_ratio": info.get("target_peak_ratio"),
+        "audio_start_monotonic_ns": audio_start_monotonic_ns,
+        "audio_stop_monotonic_ns": audio_stop_monotonic_ns,
+        "num_chunks": len(chunk_timestamps_ns),
+        "num_samples": int(num_samples),
+        "read_block_frames": block_frames_for_sample_rate(sample_rate),
+        "num_input_overflows": len(input_overflow_timestamps_ns),
+        "chunk_timestamps_ns": list(chunk_timestamps_ns),
+        "input_buffer_adc_times": list(input_buffer_adc_times),
+        "input_overflow_timestamps_ns": list(input_overflow_timestamps_ns),
+    }
+
+
+def write_audio_recording_metadata(
+    *,
+    output_path: Path,
+    sample_rate: int,
+    channels: int,
+    dtype: np.dtype,
+    input_device: int | str | None,
+    normalize_audio: bool,
+    normalization_target_peak_ratio: float,
+    audio_start_monotonic_ns: int | None,
+    audio_stop_monotonic_ns: int | None,
+    chunk_timestamps_ns: list[int],
+    input_buffer_adc_times: list[float | None],
+    input_overflow_timestamps_ns: list[int],
+    num_samples: int,
+    normalization_info: dict | None = None,
+) -> tuple[Path, dict]:
+    metadata_path = metadata_path_for_audio_output(output_path)
+    payload = build_audio_recording_metadata(
+        output_path=output_path,
+        sample_rate=sample_rate,
+        channels=channels,
+        dtype=dtype,
+        input_device=input_device,
+        normalize_audio=normalize_audio,
+        normalization_target_peak_ratio=normalization_target_peak_ratio,
+        audio_start_monotonic_ns=audio_start_monotonic_ns,
+        audio_stop_monotonic_ns=audio_stop_monotonic_ns,
+        chunk_timestamps_ns=chunk_timestamps_ns,
+        input_buffer_adc_times=input_buffer_adc_times,
+        input_overflow_timestamps_ns=input_overflow_timestamps_ns,
+        num_samples=num_samples,
+        normalization_info=normalization_info,
+    )
+    metadata_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return metadata_path, payload
+
+
+def write_normalized_wav_from_existing(
+    *,
+    source_path: Path,
+    output_path: Path,
+    sample_rate: int,
+    channels: int,
+    dtype: np.dtype,
+    normalization_target_peak_ratio: float,
+) -> dict:
+    audio, _ = read_wav_pcm(source_path)
+    pcm = np.ascontiguousarray(audio.astype(dtype, copy=False))
+    normalized_pcm, normalization_info = normalize_pcm_audio(
+        pcm,
+        target_peak_ratio=normalization_target_peak_ratio,
+    )
+    with wave.open(str(output_path), "wb") as wav_file:
+        wav_file.setnchannels(int(channels))
+        wav_file.setsampwidth(np.dtype(dtype).itemsize)
+        wav_file.setframerate(int(sample_rate))
+        wav_file.writeframes(normalized_pcm.tobytes())
+    return normalization_info
+
+
+def discard_staged_audio_file(
+    staged_wav_path: Path | None,
+    *,
+    staged_is_temp: bool,
+) -> None:
+    if staged_wav_path is None or not staged_is_temp:
+        return
+    try:
+        staged_wav_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def save_staged_audio_recording(
+    *,
+    staged_wav_path: Path,
+    staged_is_temp: bool,
+    output_path: Path,
+    sample_rate: int,
+    channels: int,
+    dtype: np.dtype,
+    input_device: int | str | None,
+    normalize_audio: bool,
+    normalization_target_peak_ratio: float,
+    audio_start_monotonic_ns: int | None,
+    audio_stop_monotonic_ns: int | None,
+    chunk_timestamps_ns: list[int],
+    input_buffer_adc_times: list[float | None],
+    input_overflow_timestamps_ns: list[int],
+    num_samples: int,
+) -> tuple[Path, Path, dict]:
+    if not staged_wav_path.is_file():
+        raise FileNotFoundError(f"Staged WAV not found: {staged_wav_path}")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if normalize_audio:
+        normalization_info = write_normalized_wav_from_existing(
+            source_path=staged_wav_path,
+            output_path=output_path,
+            sample_rate=sample_rate,
+            channels=channels,
+            dtype=dtype,
+            normalization_target_peak_ratio=normalization_target_peak_ratio,
+        )
+        discard_staged_audio_file(staged_wav_path, staged_is_temp=staged_is_temp)
+    else:
+        if staged_is_temp:
+            shutil.move(str(staged_wav_path), str(output_path))
+        elif staged_wav_path != output_path:
+            shutil.copyfile(str(staged_wav_path), str(output_path))
+        normalization_info = empty_audio_normalization_info(
+            target_peak_ratio=normalization_target_peak_ratio,
+            reason="disabled",
+        )
+
+    metadata_path, metadata = write_audio_recording_metadata(
+        output_path=output_path,
+        sample_rate=sample_rate,
+        channels=channels,
+        dtype=dtype,
+        input_device=input_device,
+        normalize_audio=normalize_audio,
+        normalization_target_peak_ratio=normalization_target_peak_ratio,
+        audio_start_monotonic_ns=audio_start_monotonic_ns,
+        audio_stop_monotonic_ns=audio_stop_monotonic_ns,
+        chunk_timestamps_ns=chunk_timestamps_ns,
+        input_buffer_adc_times=input_buffer_adc_times,
+        input_overflow_timestamps_ns=input_overflow_timestamps_ns,
+        num_samples=num_samples,
+        normalization_info=normalization_info,
+    )
+    return output_path, metadata_path, metadata
+
+
+def _looks_like_usb_input_device(device_name: object) -> bool:
+    name = str(device_name).strip().lower()
+    if not name:
+        return False
+    usb_markers = ("usb", "mic", "microphone", "headset", "composite")
+    return any(marker in name for marker in usb_markers)
+
+
+def _resolve_preferred_input_device() -> int | str | None:
+    import sounddevice as sd
+
+    try:
+        default_input, _ = sd.default.device
+    except Exception:
+        default_input = None
+
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        return default_input if default_input not in (-1, None) else None
+
+    valid_default = default_input if default_input not in (-1, None) else None
+    if isinstance(valid_default, int):
+        try:
+            default_info = devices[valid_default]
+            if int(default_info.get("max_input_channels", 0)) > 0 and _looks_like_usb_input_device(
+                default_info.get("name")
+            ):
+                return valid_default
+        except Exception:
+            pass
+
+    for index, device_info in enumerate(devices):
+        try:
+            if int(device_info.get("max_input_channels", 0)) <= 0:
+                continue
+        except Exception:
+            continue
+        if _looks_like_usb_input_device(device_info.get("name")):
+            return index
+
+    return valid_default
+
+
+def _resolve_supported_input_sample_rate(
+    *,
+    input_device: int | str | None,
+    requested_sample_rate: int,
+    channels: int,
+    dtype_name: str,
+) -> int:
+    import sounddevice as sd
+
+    requested_rate = int(requested_sample_rate)
+    try:
+        sd.check_input_settings(
+            device=input_device,
+            samplerate=requested_rate,
+            channels=channels,
+            dtype=dtype_name,
+        )
+        return requested_rate
+    except Exception:
+        pass
+
+    try:
+        device_info = sd.query_devices(input_device)
+        fallback_rate = int(round(float(device_info["default_samplerate"])))
+    except Exception:
+        sd.check_input_settings(
+            device=input_device,
+            samplerate=requested_rate,
+            channels=channels,
+            dtype=dtype_name,
+        )
+        return requested_rate
+
+    if fallback_rate <= 0 or fallback_rate == requested_rate:
+        sd.check_input_settings(
+            device=input_device,
+            samplerate=requested_rate,
+            channels=channels,
+            dtype=dtype_name,
+        )
+        return requested_rate
+
+    sd.check_input_settings(
+        device=input_device,
+        samplerate=fallback_rate,
+        channels=channels,
+        dtype=dtype_name,
+    )
+    print(
+        "[MicrophoneRecorder] "
+        f"Requested sample rate {requested_rate} Hz unsupported on input device "
+        f"{input_device}; using {fallback_rate} Hz instead."
+    )
+    return fallback_rate
+
+
+def normalize_pcm_audio(
+    audio: np.ndarray,
+    *,
+    target_peak_ratio: float = 0.95,
+) -> tuple[np.ndarray, dict]:
+    pcm = np.ascontiguousarray(audio)
+    if pcm.dtype.kind not in {"i", "u"}:
+        raise ValueError("Peak normalization only supports integer PCM audio")
+
+    ratio = float(target_peak_ratio)
+    if not (0.0 < ratio <= 1.0):
+        raise ValueError("target_peak_ratio must be in (0, 1]")
+
+    if pcm.size == 0:
+        return pcm, {
+            "applied": False,
+            "reason": "empty",
+            "gain": None,
+            "original_peak": 0.0,
+            "target_peak": None,
+            "target_peak_ratio": ratio,
+        }
+
+    dtype_info = np.iinfo(pcm.dtype)
+    pcm_float = pcm.astype(np.float32, copy=False)
+    if pcm.dtype.kind == "u":
+        midpoint = float(dtype_info.max + 1) / 2.0
+        centered = pcm_float - midpoint
+        original_peak = float(np.max(np.abs(centered)))
+        target_peak = midpoint * ratio
+        if original_peak <= 0.0:
+            return pcm, {
+                "applied": False,
+                "reason": "silent",
+                "gain": None,
+                "original_peak": original_peak,
+                "target_peak": target_peak,
+                "target_peak_ratio": ratio,
+            }
+        gain = target_peak / original_peak
+        normalized = np.clip(
+            np.rint(centered * gain + midpoint), dtype_info.min, dtype_info.max
+        ).astype(pcm.dtype)
+    else:
+        original_peak = float(np.max(np.abs(pcm_float)))
+        target_peak = float(dtype_info.max) * ratio
+        if original_peak <= 0.0:
+            return pcm, {
+                "applied": False,
+                "reason": "silent",
+                "gain": None,
+                "original_peak": original_peak,
+                "target_peak": target_peak,
+                "target_peak_ratio": ratio,
+            }
+        gain = target_peak / original_peak
+        normalized = np.clip(
+            np.rint(pcm_float * gain), dtype_info.min, dtype_info.max
+        ).astype(pcm.dtype)
+
+    return np.ascontiguousarray(normalized), {
+        "applied": abs(gain - 1.0) > 1e-6,
+        "reason": "ok",
+        "gain": float(gain),
+        "original_peak": original_peak,
+        "target_peak": float(target_peak),
+        "target_peak_ratio": ratio,
+    }
 
 
 def _episode_audio_stem(episode_index: int) -> str:
@@ -191,7 +580,11 @@ def _frame_range_to_audio_samples(
         return fallback_start, max(fallback_start, fallback_end)
 
     start_ns = _safe_int(start_record.get("host_frame_monotonic_ns"))
-    end_ns = _safe_int(next_record.get("host_frame_monotonic_ns"))
+    end_ns = (
+        _safe_int(next_record.get("host_frame_monotonic_ns"))
+        if next_record is not None
+        else None
+    )
     if end_ns is None:
         last_ns = _safe_int(end_record.get("host_frame_monotonic_ns"))
         if last_ns is not None:

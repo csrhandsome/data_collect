@@ -104,6 +104,15 @@ def _add_camera_and_logging_args(
     parser.add_argument("--no-logging", action="store_true")
 
 
+def _add_realsense_rate_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--realsense-fps",
+        type=int,
+        default=20,
+        help="Sampling rate for the two slow RealSense cameras. Each control tick reuses the latest available RealSense frame.",
+    )
+
+
 def _add_vr_connection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--vr-host", type=str, default="0.0.0.0")
     parser.add_argument("--vr-port", type=int, default=4443)
@@ -263,7 +272,7 @@ def build_vr_lerobot_joint_parser() -> argparse.ArgumentParser:
     parser = _build_parser("Collect Franka data into LeRobot via VR (teleop_xr)")
     _add_repo_and_instruction_args(
         parser,
-        repo_id_default="openpi/franka_franka_lerobot",
+        repo_id_default="openpi/franka_lerobot",
         include_date=True,
         date_default="3_10",
     )
@@ -283,7 +292,7 @@ def build_vr_lerobot_joint_two_prompt_parser() -> argparse.ArgumentParser:
     parser = _build_parser("Collect Franka data into LeRobot via VR (teleop_xr)")
     _add_repo_and_instruction_args(
         parser,
-        repo_id_default="openpi/franka_franka_lerobot",
+        repo_id_default="openpi/franka_lerobot",
         include_date=True,
         date_default="3_10",
         include_second_instruction=True,
@@ -306,7 +315,7 @@ def build_vr_lerobot_joint_audio_parser() -> argparse.ArgumentParser:
     )
     _add_repo_and_instruction_args(
         parser,
-        repo_id_default="openpi/franka_franka_lerobot",
+        repo_id_default="openpi/franka_lerobot",
         include_date=True,
         date_default="3_10",
     )
@@ -327,16 +336,17 @@ def build_vr_lerobot_joint_force_parser() -> argparse.ArgumentParser:
     parser = _build_parser("Collect Franka data into LeRobot via VR (teleop_xr)")
     _add_repo_and_instruction_args(
         parser,
-        repo_id_default="openpi/franka_franka_lerobot",
+        repo_id_default="openpi/franka_lerobot",
         include_second_instruction=True,
     )
     _add_joint_control_args(
         parser,
-        control_frequency_default=30.0,
+        control_frequency_default=60.0,
         sensitivity_default=0.9,
         sensitivity_help="Global multiplier on the per-step EE command increments.",
     )
     _add_camera_and_logging_args(parser)
+    _add_realsense_rate_args(parser)
     _add_soft_gripper_args(parser)
     _add_vr_connection_args(parser)
     _add_vr_joint_mapping_args(parser)

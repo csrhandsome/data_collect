@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
 """
-Replay or inspect LeRobot joint-position datasets collected for OpenPI.
+Replay or inspect LeRobot joint-position datasets collected for OpenPI, with audio.
 
-Default behavior: print summary and optionally show recorded images.
+Default behavior: print summary, show recorded images, and replay the aligned
+episode audio segment.
 Use --execute to actually send recorded joint-position actions to the robot.
 
-uv run -m data_analysis.replay_openpi_lerobot_joint
-夹爪抓的时候会导致控制器停止，视频也会停止一下
+uv run -m data_analysis.replay_openpi_lerobot_joint_audio
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
-
-import datasets as _hf_datasets
 
 from control.robotic_arm_controller import RoboticArmControler
 from control.util.audio_util import (
@@ -29,112 +25,34 @@ from control.util.audio_util import (
     stop_audio_playback,
 )
 from control.util.img_util import decode_image, show_image
-
-
-def _default_data_root() -> Path:
-    return Path(__file__).resolve().parent.parent / "data"
-
-
-def _default_dataset_root(repo_id: str) -> Path:
-    return _default_data_root() / repo_id
-
-
-def _find_latest_repo_id(data_root: Path, *, prefix: str | None = None) -> str:
-    if not data_root.exists():
-        raise FileNotFoundError(f"Dataset root not found: {data_root}")
-
-    candidates = [p for p in data_root.iterdir() if p.is_dir()]
-    if prefix:
-        prefixed = [p for p in candidates if p.name.startswith(prefix)]
-        if prefixed:
-            candidates = prefixed
-
-    if not candidates:
-        raise FileNotFoundError(f"No datasets found under: {data_root}")
-
-    latest_dir = max(candidates, key=lambda p: p.stat().st_mtime)
-    return str(latest_dir.relative_to(_default_data_root()))
-
-
-def _load_dataset(repo_id: str, root: str | None) -> tuple[_hf_datasets.Dataset, Path]:
-    root_path = Path(root) if root else _default_dataset_root(repo_id)
-    parquet_files = sorted(root_path.glob("data/**/*.parquet"))
-    if not parquet_files:
-        raise FileNotFoundError(f"No parquet files found under: {root_path / 'data'}")
-    ds = _hf_datasets.Dataset.from_parquet([str(p) for p in parquet_files])
-    return ds, root_path
-
-
-def _get_episode_indices(ds: _hf_datasets.Dataset, episode_index: int) -> np.ndarray:
-    ep_all = np.asarray(ds["episode_index"], dtype=np.int64)
-    return np.flatnonzero(ep_all == int(episode_index))
-
-
-def _list_episodes(ds: _hf_datasets.Dataset) -> list[int]:
-    return sorted(set(ds["episode_index"]))
-
-
-def _as_text(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, np.ndarray):
-        if value.ndim == 0 or value.size == 1:
-            try:
-                return _as_text(value.item())
-            except Exception:
-                return ""
-        return ""
-    if isinstance(value, (list, tuple)):
-        if len(value) == 1:
-            return _as_text(value[0])
-        return " ".join(part for part in (_as_text(v) for v in value) if part)
-    if isinstance(value, bytes):
-        try:
-            return value.decode("utf-8", errors="ignore").strip()
-        except Exception:
-            return ""
-    return str(value).strip()
-
-
-def _as_int(value: object) -> int | None:
-    if isinstance(value, np.ndarray):
-        try:
-            return int(value.item())
-        except Exception:
-            return None
-    if isinstance(value, (int, np.integer)):
-        return int(value)
-    return None
-
-
-def _sleep_until(target_time: float) -> None:
-    remaining = float(target_time) - time.monotonic()
-    if remaining > 0.0:
-        time.sleep(remaining)
-
-
-def _can_show_images() -> bool:
-    if not sys.platform.startswith("linux"):
-        return True
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+from data_analysis.replay_openpi_lerobot_joint import (
+    _as_int,
+    _as_text,
+    _can_show_images,
+    _default_data_root,
+    _find_latest_repo_id,
+    _get_episode_indices,
+    _list_episodes,
+    _load_dataset,
+    _sleep_until,
+)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Replay/inspect LeRobot dataset (OpenPI joint-position actions)"
+        description="Replay/inspect LeRobot dataset (OpenPI joint-position actions + audio)"
     )
     parser.add_argument(
         "--repo-id",
         type=str,
         default=None,
-        help="LeRobot repo id (e.g. openpi/franka_droid_lerobot_YYYYmmdd_HHMMSS). "
-        "If omitted, use the newest dataset under data/openpi.",
+        help="LeRobot repo id. If omitted, use the newest dataset under data/openpi.",
     )
     parser.add_argument(
         "--root",
         type=str,
         default=None,
-        help="Optional dataset root (defaults to ./data/<repo_id>) ",
+        help="Optional dataset root (defaults to ./data/<repo_id>)",
     )
     parser.add_argument(
         "--episode",
@@ -156,11 +74,7 @@ def main() -> None:
     )
     parser.add_argument("--loop", type=int, default=1, help="Number of loops")
     parser.add_argument("--no-show", action="store_true", help="Hide recorded images")
-    parser.add_argument(
-        "--audio-data",
-        action="store_true",
-        help="If the dataset has audio sidecars under audio/, replay the episode audio too.",
-    )
+    parser.add_argument("--mute", action="store_true", help="Disable audio playback")
     parser.add_argument(
         "--execute",
         action="store_true",
@@ -218,11 +132,12 @@ def main() -> None:
         print("Empty frame range after applying start/end.")
         sys.exit(1)
 
-    _info = json.loads((ds_root / "meta" / "info.json").read_text())
-    fps = float(_info.get("fps", 15.0))
+    info = json.loads((ds_root / "meta" / "info.json").read_text())
+    fps = float(info.get("fps", 15.0))
     episode_prompt = _as_text(ds[int(ep_indices[0])].get("task"))
+
     audio_segment = None
-    if args.audio_data:
+    if not args.mute:
         audio_segment = load_episode_audio_segment(
             ds_root=ds_root,
             episode_index=episode_index,
@@ -230,8 +145,9 @@ def main() -> None:
             end_frame_index=end,
             fps=fps,
         )
+
     print("=" * 70)
-    print("LeRobot replay (joint position)")
+    print("LeRobot replay (joint position + audio)")
     print("=" * 70)
     print(f"Dataset: {repo_id}")
     print(f"Root: {ds_root}")
@@ -239,7 +155,7 @@ def main() -> None:
     print(f"Frames: {len(ep_indices)} (start={start}, end={end})")
     print(f"FPS: {fps:.2f}")
     print(f"Speed: {args.speed}x")
-    print(f"Audio: {'enabled' if args.audio_data else 'disabled'}")
+    print(f"Audio: {'muted' if args.mute else 'enabled'}")
     if audio_segment is not None:
         print(
             "Audio clip: "
@@ -247,6 +163,8 @@ def main() -> None:
             f"({audio_segment.duration_s:.2f}s, "
             f"samples {audio_segment.start_sample}:{audio_segment.end_sample})"
         )
+    elif not args.mute:
+        print("Audio clip: unavailable")
     print(f"Execute: {args.execute}")
     if episode_prompt:
         print(f"Prompt: {episode_prompt}")
@@ -320,16 +238,8 @@ def main() -> None:
                                 episode_index=ep_idx,
                                 frame_index=fr_idx,
                             )
-                            show_image(
-                                ext,
-                                win_name="Recorded External",
-                                prompt=prompt,
-                            )
-                            show_image(
-                                wrist,
-                                win_name="Recorded Wrist",
-                                prompt=prompt,
-                            )
+                            show_image(ext, win_name="Recorded External", prompt=prompt)
+                            show_image(wrist, win_name="Recorded Wrist", prompt=prompt)
             else:
                 dt = (1.0 / fps) / float(args.speed)
                 loop_start_time = time.monotonic()
@@ -337,7 +247,6 @@ def main() -> None:
                 for offset, frame_idx in enumerate(ep_indices):
                     _sleep_until(loop_start_time + (offset * dt))
                     item = ds[int(frame_idx)]
-                    action = np.asarray(item["actions"], dtype=np.float32)
                     prompt = _as_text(item.get("task"))
                     if show_images:
                         ep_idx = _as_int(item.get("episode_index"))

@@ -16,6 +16,8 @@ A (right controller): gripper close.  B: gripper open.
 uv run vr_openpi_lerobot_joint_force.py \
   --instruction "Pick up the wide-mouth bottle" \
   --second-instruction "Pick up the narrow-mouth bottle" \
+  --control-frequency 60 \
+  --realsense-fps 20 \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only
@@ -30,6 +32,7 @@ import numpy as np
 from control.collect_args import build_vr_lerobot_joint_force_parser
 from control.util.img_util import center_crop_and_resize_rgb_uint8
 from control.util.lerobot_util import (
+    _discard_unsaved_episode,
     _load_or_create_dataset_force,
     _prepare_episode_for_save_force,
 )
@@ -39,6 +42,14 @@ from control.vr_input_mapper import VREEPoseMapper
 from control.dual_camera_manager import DualRealsenseManager
 from ik_solver import FrankaJointIKSolver
 from control.robotic_arm_controller import RoboticArmControler
+
+
+CAMERA_TIMING_FEATURE_KEYS = {
+    "external_camera_timestamp_ms",
+    "wrist_camera_timestamp_ms",
+    "external_camera_frame_age_s",
+    "wrist_camera_frame_age_s",
+}
 
 
 def _wait_for_soft_gripper_frames(
@@ -75,12 +86,35 @@ def _get_soft_gripper_images(
     return left_rgb, right_rgb
 
 
+def _scalar_float32(value: float) -> np.ndarray:
+    return np.asarray([value], dtype=np.float32)
+
+
+def _get_dataset_feature_keys(dataset) -> set[str]:
+    features = getattr(dataset, "features", None)
+    if isinstance(features, dict):
+        return set(features)
+
+    meta = getattr(dataset, "meta", None)
+    meta_features = getattr(meta, "features", None)
+    if isinstance(meta_features, dict):
+        return set(meta_features)
+
+    return set()
+
+
 def main() -> None:
     parser = build_vr_lerobot_joint_force_parser()
     args = parser.parse_args()
     sys.setswitchinterval(0.0005)
     if args.control_frequency <= 0:
         raise ValueError("--control-frequency must be > 0")
+    if args.realsense_fps <= 0:
+        raise ValueError("--realsense-fps must be > 0")
+    if args.realsense_fps > args.control_frequency:
+        raise ValueError(
+            "--realsense-fps must be <= --control-frequency for slow-vision sample-and-hold logging."
+        )
     if args.vr_translation_scale <= 0:
         raise ValueError("--vr-translation-scale must be > 0")
     if args.vr_rotation_scale <= 0:
@@ -116,6 +150,15 @@ def main() -> None:
     enable_logging = not args.no_logging
     if enable_logging and not args.instruction.strip():
         raise ValueError("--instruction is required when logging is enabled")
+    realsense_hold_ratio = float(args.control_frequency) / float(args.realsense_fps)
+    realsense_hold_ratio_rounded = round(realsense_hold_ratio)
+    realsense_hold_ratio_is_integer = (
+        abs(realsense_hold_ratio - realsense_hold_ratio_rounded) < 1e-6
+    )
+    if realsense_hold_ratio_is_integer:
+        slow_vision_summary = f"{int(realsense_hold_ratio_rounded)} control ticks/frame"
+    else:
+        slow_vision_summary = f"{realsense_hold_ratio:.2f} control ticks/frame"
 
     print("=" * 70)
     print("Franka LeRobot data collection (VR teleop)")
@@ -152,12 +195,20 @@ def main() -> None:
         f"rot_alpha={args.vr_rotation_alpha:.2f}"
     )
     print(
-        f"Camera stream: {args.camera_width}x{args.camera_height}@{args.camera_fps} "
-        f"(depth={'off' if args.color_only else 'on'})"
+        f"RealSense stream: {args.camera_width}x{args.camera_height}@{args.realsense_fps} "
+        f"(depth={'off' if args.color_only else 'on'}, sample-and-hold={slow_vision_summary})"
+    )
+    print(
+        f"Soft gripper camera stream: {args.camera_width}x{args.camera_height}@{args.camera_fps}"
     )
     print(f"VR server: {args.vr_host}:{args.vr_port}")
     print(f"External camera serial: {args.external_camera_serial}")
     print(f"Wrist camera serial: {args.wrist_camera_serial}")
+    if not realsense_hold_ratio_is_integer:
+        print(
+            "[Warning] --control-frequency / --realsense-fps is not an integer; "
+            "RealSense frame reuse count will vary slightly across ticks."
+        )
     print(
         "Soft gripper: "
         f"port={args.soft_gripper_port}, "
@@ -233,7 +284,7 @@ def main() -> None:
         wrist_serial=args.wrist_camera_serial,
         width=args.camera_width,
         height=args.camera_height,
-        fps=args.camera_fps,
+        fps=args.realsense_fps,
         enable_depth=not args.color_only,
         background_poll=True,
         background_timeout_ms=int(args.camera_timeout_ms),
@@ -243,6 +294,7 @@ def main() -> None:
     camera_manager.connect()
 
     dataset = None
+    dataset_supports_camera_timing = False
     if enable_logging:
         dataset_root = Path(__file__).resolve().parent / "data" / args.repo_id
         resume_existing = dataset_root.exists()
@@ -256,6 +308,21 @@ def main() -> None:
             print(f"LeRobot dataset exists, resuming: {dataset_root}")
         else:
             print(f"LeRobot dataset path: {dataset_root}")
+        dataset_feature_keys = _get_dataset_feature_keys(dataset)
+        dataset_supports_camera_timing = CAMERA_TIMING_FEATURE_KEYS.issubset(
+            dataset_feature_keys
+        )
+        if resume_existing and not dataset_supports_camera_timing:
+            print(
+                "[Camera] Existing dataset schema has no RealSense timing fields; "
+                "resuming without camera timestamp/frame-age logging."
+            )
+        elif not resume_existing and not dataset_supports_camera_timing:
+            raise RuntimeError(
+                "New force dataset is missing RealSense timing features."
+            )
+        elif dataset_supports_camera_timing:
+            print("[Camera] RealSense timing fields enabled in dataset schema.")
 
     print("[Camera] Waiting for first frames...")
     camera_manager.wait_for_frames(timeout_s=float(args.camera_startup_timeout_s))
@@ -301,12 +368,13 @@ def main() -> None:
     def _start_joint_position_controller(settle_s: float = 0.0):
         controller = controllers.JointPosition()
         arm.panda.start_controller(controller)
+        _hold_current_joint_position(controller)
         if settle_s > 0.0:
             time.sleep(settle_s)
-        _hold_current_joint_position(controller)
         return controller
 
     ctrl = _start_joint_position_controller(settle_s=0.5)
+    hold_qpos_target = _current_qpos().copy()
 
     active_instruction = args.instruction
     gripper_state = float(soft_gripper.gripper_open_ratio.reshape(-1)[0])
@@ -319,9 +387,10 @@ def main() -> None:
     prev_x_pressed = False
     prev_y_pressed = False
     last_ik_warning_at = 0.0
+    camera_timing_warning_printed = False
 
     def _reset_robot_to_start() -> None:
-        nonlocal ctrl, gripper_state
+        nonlocal ctrl, gripper_state, hold_qpos_target
 
         _hold_current_joint_position(ctrl)
         arm.panda.stop_controller()
@@ -339,6 +408,7 @@ def main() -> None:
                 f"max_vel={max_vel:.4f} rad/s"
             )
         ctrl = _start_joint_position_controller(settle_s=0.0)
+        hold_qpos_target = _current_qpos().copy()
         vr_mapper.reset()
 
     def _finish_episode(*, save_episode: bool, message: str) -> None:
@@ -354,12 +424,12 @@ def main() -> None:
                 except Exception as exc:
                     print(f"[Error] Failed to save episode: {exc}")
                     try:
-                        dataset.clear_episode_buffer()
+                        _discard_unsaved_episode(dataset)
                     except Exception:
                         pass
             else:
                 try:
-                    dataset.clear_episode_buffer()
+                    _discard_unsaved_episode(dataset)
                 except Exception:
                     pass
 
@@ -443,8 +513,9 @@ def main() -> None:
 
                 joint_delta = np.zeros(7, dtype=np.float64)
                 normalized_action = np.zeros(7, dtype=np.float64)
-                qpos_cmd = qpos.copy()
+                qpos_cmd = hold_qpos_target.copy()
                 qvel_cmd = np.zeros(7, dtype=np.float64)
+                has_joint_motion_cmd = False
 
                 if vr.arm_enabled:
                     target_qpos = ik_solver.solve_pose(
@@ -486,12 +557,19 @@ def main() -> None:
                         normalized_action[small_mask] = 0.0
                         joint_delta[small_mask] = 0.0
 
-                qpos_cmd = np.clip(
-                    qpos + joint_delta,
-                    joint_limits[:, 0],
-                    joint_limits[:, 1],
-                )
-                if args.joint_velocity_limit > 0.0:
+                has_joint_motion_cmd = bool(np.any(np.abs(joint_delta) > 0.0))
+
+                if has_joint_motion_cmd:
+                    qpos_cmd = np.clip(
+                        qpos + joint_delta,
+                        joint_limits[:, 0],
+                        joint_limits[:, 1],
+                    )
+                    hold_qpos_target = qpos_cmd.copy()
+                else:
+                    qpos_cmd = hold_qpos_target.copy()
+
+                if has_joint_motion_cmd and args.joint_velocity_limit > 0.0:
                     qvel_cmd = np.clip(
                         joint_delta * float(args.control_frequency),
                         -float(args.joint_velocity_limit),
@@ -518,7 +596,12 @@ def main() -> None:
                 if not enable_logging:
                     continue
 
-                external_img, wrist_img = camera_manager.get_images()
+                (
+                    external_img,
+                    wrist_img,
+                    external_frame_timestamps,
+                    wrist_frame_timestamps,
+                ) = camera_manager.get_frames()
                 gripper_left_img, gripper_right_img = _get_soft_gripper_images(
                     soft_gripper,
                     crop_scale=float(args.crop_scale),
@@ -562,20 +645,76 @@ def main() -> None:
                         [np.float32(gripper_state)], dtype=np.float32
                     )
                     blank = np.zeros_like(external_img)
+                    frame = {
+                        "exterior_image_1_left": external_img,
+                        "exterior_image_2_left": blank,
+                        "wrist_image_left": wrist_img,
+                        "gripper_image_left": gripper_left_img,
+                        "gripper_image_right": gripper_right_img,
+                        "joint_position": joint_pos,
+                        "gripper_position": gripper_pos,
+                        "actions": actions,
+                        "task": active_instruction,
+                    }
 
-                    dataset.add_frame(
-                        {
-                            "exterior_image_1_left": external_img,
-                            "exterior_image_2_left": blank,
-                            "wrist_image_left": wrist_img,
-                            "gripper_image_left": gripper_left_img,
-                            "gripper_image_right": gripper_right_img,
-                            "joint_position": joint_pos,
-                            "gripper_position": gripper_pos,
-                            "actions": actions,
-                            "task": active_instruction,
-                        }
-                    )
+                    if dataset_supports_camera_timing:
+                        if (
+                            external_frame_timestamps is None
+                            or wrist_frame_timestamps is None
+                        ):
+                            if not camera_timing_warning_printed:
+                                print(
+                                    "[Warning] Missing RealSense frame timestamps; "
+                                    "writing NaN camera timing values for affected ticks."
+                                )
+                                camera_timing_warning_printed = True
+                            external_camera_timestamp_ms = np.nan
+                            wrist_camera_timestamp_ms = np.nan
+                            external_camera_frame_age_s = np.nan
+                            wrist_camera_frame_age_s = np.nan
+                        else:
+                            tick_monotonic_ns = time.monotonic_ns()
+                            external_camera_timestamp_ms = float(
+                                external_frame_timestamps.camera_timestamp
+                            )
+                            wrist_camera_timestamp_ms = float(
+                                wrist_frame_timestamps.camera_timestamp
+                            )
+                            external_camera_frame_age_s = max(
+                                0.0,
+                                (
+                                    tick_monotonic_ns
+                                    - external_frame_timestamps.host_capture_monotonic_ns
+                                )
+                                / 1e9,
+                            )
+                            wrist_camera_frame_age_s = max(
+                                0.0,
+                                (
+                                    tick_monotonic_ns
+                                    - wrist_frame_timestamps.host_capture_monotonic_ns
+                                )
+                                / 1e9,
+                            )
+
+                        frame.update(
+                            {
+                                "external_camera_timestamp_ms": _scalar_float32(
+                                    external_camera_timestamp_ms
+                                ),
+                                "wrist_camera_timestamp_ms": _scalar_float32(
+                                    wrist_camera_timestamp_ms
+                                ),
+                                "external_camera_frame_age_s": _scalar_float32(
+                                    external_camera_frame_age_s
+                                ),
+                                "wrist_camera_frame_age_s": _scalar_float32(
+                                    wrist_camera_frame_age_s
+                                ),
+                            }
+                        )
+
+                    dataset.add_frame(frame)
                     frame_count += 1
                     if frame_count % 50 == 0:
                         print(f"[Recording] {frame_count} frames", end="\r")
@@ -631,7 +770,7 @@ def main() -> None:
                     except Exception as exc:
                         print(f"\n[Error] Failed to save last episode: {exc}")
                         try:
-                            dataset.clear_episode_buffer()
+                            _discard_unsaved_episode(dataset)
                         except Exception:
                             pass
             finally:
@@ -641,7 +780,7 @@ def main() -> None:
                     pass
         elif enable_logging and dataset is not None and reflex_error_occurred:
             try:
-                dataset.clear_episode_buffer()
+                _discard_unsaved_episode(dataset)
             except Exception:
                 pass
             try:

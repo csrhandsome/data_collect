@@ -2,6 +2,7 @@
 
 特点：
 - 直接执行硬删除，不做 dry-run、备份或 .trash 中转。
+- 会同步删除对应的 parquet / mp4 / 音频 sidecar 文件。
 - 会同步更新 meta/episodes.jsonl、meta/episodes_stats.jsonl、meta/info.json。
 - 如果不传 --dataset，会在 data/openpi/ 下自动选择最近修改的一个数据集目录。
 
@@ -106,6 +107,21 @@ def _episode_video_paths(
     return sorted(videos_dir.rglob(pattern))
 
 
+def _episode_audio_paths(dataset_dir: Path, episode_index: int) -> List[Path]:
+    """返回该 episode 对应的音频文件及 sidecar（如果存在）。"""
+
+    audio_dir = dataset_dir / "audio"
+    if not audio_dir.exists():
+        return []
+
+    stem = f"episode_{episode_index:06d}"
+    return [
+        audio_dir / f"{stem}.wav",
+        audio_dir / f"{stem}.audio.json",
+        audio_dir / f"{stem}.sync.json",
+    ]
+
+
 def _update_splits_in_place(
     info: Dict[str, Any], old_total: int, new_total: int
 ) -> None:
@@ -163,6 +179,7 @@ def delete_latest_episode(dataset_dir: Path) -> int:
 
     parquet_path = _episode_parquet_path(info, dataset_dir, latest_index)
     video_paths = _episode_video_paths(info, dataset_dir, latest_index)
+    audio_paths = _episode_audio_paths(dataset_dir, latest_index)
 
     print(f"Dataset: {dataset_dir}")
     print(f"Latest episode_index: {latest_index}")
@@ -173,6 +190,13 @@ def delete_latest_episode(dataset_dir: Path) -> int:
             print(f"  - {p}")
     else:
         print("Videos: (none)")
+    existing_audio_paths = [p for p in audio_paths if p.exists()]
+    if existing_audio_paths:
+        print("Audio:")
+        for p in existing_audio_paths:
+            print(f"  - {p}")
+    else:
+        print("Audio: (none)")
 
     # 1) 硬删除数据文件
     def remove_file(path: Path) -> None:
@@ -183,6 +207,8 @@ def delete_latest_episode(dataset_dir: Path) -> int:
     remove_file(parquet_path)
     for vp in video_paths:
         remove_file(vp)
+    for ap in audio_paths:
+        remove_file(ap)
 
     # 2) 更新 episodes.jsonl（删掉 latest 那行）
     episodes_rows = _read_jsonl(episodes_path)

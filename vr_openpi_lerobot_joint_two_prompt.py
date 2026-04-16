@@ -38,7 +38,11 @@ from control.collect_args import build_vr_lerobot_joint_two_prompt_parser
 from control.vr_input import VRInputProcess
 from control.vr_input_mapper import VREEPoseMapper
 from control.dual_camera_manager import DualRealsenseManager
-from control.util.lerobot_util import _load_or_create_dataset, _prepare_episode_for_save
+from control.util.lerobot_util import (
+    _discard_unsaved_episode,
+    _load_or_create_dataset,
+    _prepare_episode_for_save,
+)
 from ik_solver import FrankaJointIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 
@@ -226,12 +230,13 @@ def main() -> None:
     def _start_joint_position_controller(settle_s: float = 0.0):
         controller = controllers.JointPosition()
         arm.panda.start_controller(controller)
+        _hold_current_joint_position(controller)
         if settle_s > 0.0:
             time.sleep(settle_s)
-        _hold_current_joint_position(controller)
         return controller
 
     ctrl = _start_joint_position_controller(settle_s=0.5)
+    hold_qpos_target = _current_qpos().copy()
 
     active_instruction = args.instruction
     gripper_state = 1.0
@@ -261,12 +266,12 @@ def main() -> None:
                 except Exception as exc:
                     print(f"[Error] Failed to save episode: {exc}")
                     try:
-                        dataset.clear_episode_buffer()
+                        _discard_unsaved_episode(dataset)
                     except Exception:
                         pass
             else:
                 try:
-                    dataset.clear_episode_buffer()
+                    _discard_unsaved_episode(dataset)
                 except Exception:
                     pass
 
@@ -355,8 +360,9 @@ def main() -> None:
 
                 joint_delta = np.zeros(7, dtype=np.float64)
                 normalized_action = np.zeros(7, dtype=np.float64)
-                qpos_cmd = qpos.copy()
+                qpos_cmd = hold_qpos_target.copy()
                 qvel_cmd = np.zeros(7, dtype=np.float64)
+                has_joint_motion_cmd = False
 
                 if vr.arm_enabled and not gripper_busy:
                     target_qpos = ik_solver.solve_pose(
@@ -398,13 +404,20 @@ def main() -> None:
                         normalized_action[small_mask] = 0.0
                         joint_delta[small_mask] = 0.0
 
+                has_joint_motion_cmd = bool(np.any(np.abs(joint_delta) > 0.0))
+
                 if not gripper_busy:
-                    qpos_cmd = np.clip(
-                        qpos + joint_delta,
-                        joint_limits[:, 0],
-                        joint_limits[:, 1],
-                    )
-                    if args.joint_velocity_limit > 0.0:
+                    if has_joint_motion_cmd:
+                        qpos_cmd = np.clip(
+                            qpos + joint_delta,
+                            joint_limits[:, 0],
+                            joint_limits[:, 1],
+                        )
+                        hold_qpos_target = qpos_cmd.copy()
+                    else:
+                        qpos_cmd = hold_qpos_target.copy()
+
+                    if has_joint_motion_cmd and args.joint_velocity_limit > 0.0:
                         qvel_cmd = np.clip(
                             joint_delta * float(args.control_frequency),
                             -float(args.joint_velocity_limit),
@@ -432,7 +445,7 @@ def main() -> None:
                     gripper_busy = True
 
                     def _do_gripper(cmd):
-                        nonlocal gripper_busy, ctrl
+                        nonlocal gripper_busy, ctrl, hold_qpos_target
                         _hold_current_joint_position(ctrl)
                         arm.panda.stop_controller()
                         if cmd > 0.5:
@@ -440,6 +453,7 @@ def main() -> None:
                         else:
                             arm.gripper_close()
                         ctrl = _start_joint_position_controller()
+                        hold_qpos_target = _current_qpos().copy()
                         vr_mapper.reset()
                         gripper_busy = False
 
@@ -535,7 +549,7 @@ def main() -> None:
                     except Exception as exc:
                         print(f"\n[Error] Failed to save last episode: {exc}")
                         try:
-                            dataset.clear_episode_buffer()
+                            _discard_unsaved_episode(dataset)
                         except Exception:
                             pass
             finally:
@@ -545,7 +559,7 @@ def main() -> None:
                     pass
         elif enable_logging and dataset is not None and reflex_error_occurred:
             try:
-                dataset.clear_episode_buffer()
+                _discard_unsaved_episode(dataset)
             except Exception:
                 pass
             try:

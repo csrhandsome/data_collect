@@ -208,7 +208,6 @@ class RoboticArmControler:
                 "Realtime control is disabled for this arm. Create `RoboticArmControler(..., realtime_control=True)` to use realtime APIs."
             )
 
-
     def _solve_joint_targets_from_poses(
         self, poses: Sequence[Sequence[float]]
     ) -> list[np.ndarray]:
@@ -331,7 +330,11 @@ class RoboticArmControler:
 
     def _pause_realtime_controller(self, timeout: float = 2.0) -> bool:
         del timeout
-        if not self.realtime_control or self._realtime_lock is None or self._realtime_paused is None:
+        if (
+            not self.realtime_control
+            or self._realtime_lock is None
+            or self._realtime_paused is None
+        ):
             return False
         with self._realtime_lock:
             controller = self._realtime_controller
@@ -345,7 +348,11 @@ class RoboticArmControler:
 
     def _resume_realtime_controller(self, timeout: float = 2.0) -> None:
         del timeout
-        if not self.realtime_control or self._realtime_lock is None or self._realtime_paused is None:
+        if (
+            not self.realtime_control
+            or self._realtime_lock is None
+            or self._realtime_paused is None
+        ):
             return
         with self._realtime_lock:
             controller = self._realtime_controller
@@ -501,9 +508,7 @@ class RoboticArmControler:
         if target_z is not None:
             target_z = float(target_z)
             if target_z < 0.0:
-                raise ValueError(
-                    f"release_height must be >= 0, got {target_z:.6f}"
-                )
+                raise ValueError(f"release_height must be >= 0, got {target_z:.6f}")
 
             current_pose = np.asarray(self.pose, dtype=np.float64)
             current_z = float(current_pose[2])
@@ -664,7 +669,6 @@ class RoboticArmControler:
 
         if settle_s > 0.0:
             time.sleep(max(0.0, float(settle_s)))
-
         qpos = self._hold_current_joint_position_with_controller(controller)
         with self._realtime_lock:
             self._realtime_controller = controller
@@ -860,7 +864,11 @@ class RoboticArmControler:
         raise_on_timeout: bool = True,
     ) -> None:
         del timeout, raise_on_timeout
-        if not self.realtime_control or self._realtime_lock is None or self._realtime_paused is None:
+        if (
+            not self.realtime_control
+            or self._realtime_lock is None
+            or self._realtime_paused is None
+        ):
             return
         with self._realtime_lock:
             controller = self._realtime_controller

@@ -31,7 +31,11 @@ import numpy as np
 from control.collect_args import build_xbox_lerobot_droid_parser
 from control.pygame_gamepad import PygameGamepadTeleop
 from control.dual_camera_manager import DualRealsenseManager
-from control.util.lerobot_util import _load_or_create_dataset, _prepare_episode_for_save
+from control.util.lerobot_util import (
+    _discard_unsaved_episode,
+    _load_or_create_dataset,
+    _prepare_episode_for_save,
+)
 from ik_solver import DroidIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 
@@ -234,12 +238,12 @@ def main() -> None:
                 except Exception as exc:
                     print(f"[Error] Failed to save episode: {exc}")
                     try:
-                        dataset.clear_episode_buffer()
+                        _discard_unsaved_episode(dataset)
                     except Exception:
                         pass
             else:
                 try:
-                    dataset.clear_episode_buffer()
+                    _discard_unsaved_episode(dataset)
                 except Exception:
                     pass
 
@@ -479,7 +483,7 @@ def main() -> None:
                     except Exception as exc:
                         print(f"\n[Error] Failed to save last episode: {exc}")
                         try:
-                            dataset.clear_episode_buffer()
+                            _discard_unsaved_episode(dataset)
                         except Exception:
                             pass
             finally:
@@ -489,7 +493,7 @@ def main() -> None:
                     pass
         elif enable_logging and dataset is not None and reflex_error_occurred:
             try:
-                dataset.clear_episode_buffer()
+                _discard_unsaved_episode(dataset)
             except Exception:
                 pass
             try:
