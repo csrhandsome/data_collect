@@ -1,5 +1,5 @@
 """删除 LeRobot 数据集中“最新一次”(最大 episode_index) 的 episode。
-
+# TODO: 在这里添加一个选项,可以完成asr的记录,asr来切换prompt,本地load whisper模型
 特点：
 - 直接执行硬删除，不做 dry-run、备份或 .trash 中转。
 - 会同步删除对应的 parquet / mp4 / 音频 sidecar 文件。
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,6 +120,7 @@ def _episode_audio_paths(dataset_dir: Path, episode_index: int) -> List[Path]:
         audio_dir / f"{stem}.wav",
         audio_dir / f"{stem}.audio.json",
         audio_dir / f"{stem}.sync.json",
+        audio_dir / "vad_segments" / stem,
     ]
 
 
@@ -201,6 +203,9 @@ def delete_latest_episode(dataset_dir: Path) -> int:
     # 1) 硬删除数据文件
     def remove_file(path: Path) -> None:
         if not path.exists():
+            return
+        if path.is_dir():
+            shutil.rmtree(path)
             return
         path.unlink()
 

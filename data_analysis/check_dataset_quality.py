@@ -436,6 +436,85 @@ def check_timestamps(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any]
     return results
 
 
+def _compute_voice_activity_ratio(
+    audio: np.ndarray,
+    frame_duration_ms: int = 30,
+    energy_threshold: float = 0.01,
+) -> Dict[str, Any]:
+    """计算音频中有声音部分占整体的比例（Voice Activity Ratio）
+
+    将音频按帧切分，计算每帧的 RMS 能量，超过阈值的帧视为有声音。
+
+    Args:
+        audio: PCM 音频数据 (samples,) 或 (samples, channels)
+        frame_duration_ms: 每帧时长（毫秒）
+        energy_threshold: RMS 能量阈值，归一化后低于此值视为静音
+
+    Returns:
+        包含 voice_ratio、num_frames、num_voice_frames、num_silence_frames 的字典
+    """
+    if audio.size == 0:
+        return {
+            "voice_ratio": 0.0,
+            "num_frames": 0,
+            "num_voice_frames": 0,
+            "num_silence_frames": 0,
+        }
+
+    # 归一化到 [-1, 1]
+    pcm = np.ascontiguousarray(audio)
+    if np.issubdtype(pcm.dtype, np.integer):
+        dtype_info = np.iinfo(pcm.dtype)
+        pcm_float = pcm.astype(np.float32, copy=False)
+        if pcm.dtype.kind == "u":
+            midpoint = float(dtype_info.max + 1) / 2.0
+            normalized = pcm_float - midpoint
+            scale = max(midpoint, 1.0)
+        else:
+            normalized = pcm_float
+            scale = max(float(dtype_info.max), float(-dtype_info.min), 1.0)
+        normalized = normalized / scale
+    else:
+        normalized = pcm.astype(np.float32, copy=False)
+
+    # 如果是多声道，取均值转为单声道
+    if normalized.ndim > 1:
+        normalized = normalized.mean(axis=1)
+
+    # 按帧切分
+    total_samples = normalized.shape[0]
+    frame_size = max(1, int(16000 * frame_duration_ms / 1000))
+    num_frames = total_samples // frame_size
+
+    if num_frames == 0:
+        return {
+            "voice_ratio": 0.0,
+            "num_frames": 0,
+            "num_voice_frames": 0,
+            "num_silence_frames": 0,
+        }
+
+    # 截取整数帧
+    trimmed = normalized[: num_frames * frame_size]
+    frames = trimmed.reshape(num_frames, frame_size)
+
+    # 计算每帧 RMS
+    frame_rms = np.sqrt(np.mean(frames ** 2, axis=1))
+
+    # 判断是否有声音
+    voice_frames = frame_rms >= energy_threshold
+    num_voice_frames = int(voice_frames.sum())
+    num_silence_frames = num_frames - num_voice_frames
+    voice_ratio = float(num_voice_frames / num_frames)
+
+    return {
+        "voice_ratio": voice_ratio,
+        "num_frames": num_frames,
+        "num_voice_frames": num_voice_frames,
+        "num_silence_frames": num_silence_frames,
+    }
+
+
 def check_audio_quality(
     dataset_path: Path,
     info: Dict[str, Any],
@@ -447,6 +526,8 @@ def check_audio_quality(
     quiet_peak_threshold: float = 0.01,
     quiet_rms_threshold: float = 0.003,
     clipping_ratio_threshold: float = 0.01,
+    voice_energy_threshold: float = 0.01,
+    voice_ratio_warning_threshold: float = 0.3,
 ) -> Dict[str, Any]:
     """检查音频录制质量和时序一致性"""
     print("\n" + "=" * 60)
@@ -470,6 +551,8 @@ def check_audio_quality(
         "rms_ratio": {},
         "clipping_ratio": {},
         "per_episode": [],
+        "voice_activity": {},
+        "low_voice_ratio_episodes": [],
     }
 
     audio_dir = dataset_path / "audio"
@@ -638,29 +721,68 @@ def check_audio_quality(
         rms_ratios.append(float(level_stats["rms_ratio"]))
         clipping_ratios.append(float(level_stats["clipping_ratio"]))
 
-        results["per_episode"].append(
-            {
-                "episode_index": episode_index,
-                "audio_path": str(wav_path),
-                "sample_rate": int(wav_sample_rate),
-                "channels": int(wav_channels),
-                "num_samples": int(wav_num_samples),
-                "wav_duration_s": duration_from_wav,
-                "monotonic_duration_s": monotonic_duration_s,
-                "duration_error_ratio": duration_error_ratio,
-                "effective_sample_rate": effective_sample_rate,
-                "num_input_overflows": int(overflow_count),
-                "peak_ratio": float(level_stats["peak_ratio"]),
-                "rms_ratio": float(level_stats["rms_ratio"]),
-                "clipping_ratio": float(level_stats["clipping_ratio"]),
-            }
+        # 对声音不过小的文件，计算有效语音占比
+        is_quiet = (
+            level_stats["peak_ratio"] < quiet_peak_threshold
+            or level_stats["rms_ratio"] < quiet_rms_threshold
         )
+        voice_stats = None
+        if not is_quiet:
+            voice_stats = _compute_voice_activity_ratio(
+                audio, energy_threshold=voice_energy_threshold
+            )
+            if voice_stats["voice_ratio"] < voice_ratio_warning_threshold:
+                results["low_voice_ratio_episodes"].append(
+                    {
+                        "episode_index": episode_index,
+                        "voice_ratio": voice_stats["voice_ratio"],
+                        "num_voice_frames": voice_stats["num_voice_frames"],
+                        "num_silence_frames": voice_stats["num_silence_frames"],
+                        "num_frames": voice_stats["num_frames"],
+                    }
+                )
+                results["warnings"].append(
+                    f"Episode {episode_index:06d}: 有声音部分占比过低 "
+                    f"({voice_stats['voice_ratio']*100:.1f}%, "
+                    f"{voice_stats['num_voice_frames']}/{voice_stats['num_frames']} 帧)"
+                )
+
+        per_episode_data = {
+            "episode_index": episode_index,
+            "audio_path": str(wav_path),
+            "sample_rate": int(wav_sample_rate),
+            "channels": int(wav_channels),
+            "num_samples": int(wav_num_samples),
+            "wav_duration_s": duration_from_wav,
+            "monotonic_duration_s": monotonic_duration_s,
+            "duration_error_ratio": duration_error_ratio,
+            "effective_sample_rate": effective_sample_rate,
+            "num_input_overflows": int(overflow_count),
+            "peak_ratio": float(level_stats["peak_ratio"]),
+            "rms_ratio": float(level_stats["rms_ratio"]),
+            "clipping_ratio": float(level_stats["clipping_ratio"]),
+            "is_quiet": is_quiet,
+        }
+        if voice_stats is not None:
+            per_episode_data["voice_ratio"] = voice_stats["voice_ratio"]
+            per_episode_data["num_voice_frames"] = voice_stats["num_voice_frames"]
+            per_episode_data["num_silence_frames"] = voice_stats["num_silence_frames"]
+            per_episode_data["num_frames"] = voice_stats["num_frames"]
+        results["per_episode"].append(per_episode_data)
 
     results["duration_alignment"] = _summarize_numeric(duration_errors)
     results["effective_sample_rate"] = _summarize_numeric(effective_rates)
     results["peak_ratio"] = _summarize_numeric(peak_ratios)
     results["rms_ratio"] = _summarize_numeric(rms_ratios)
     results["clipping_ratio"] = _summarize_numeric(clipping_ratios)
+
+    # 汇总有效语音占比统计（仅针对声音不过小的文件）
+    voice_ratios = [
+        ep["voice_ratio"]
+        for ep in results["per_episode"]
+        if "voice_ratio" in ep
+    ]
+    results["voice_activity"] = _summarize_numeric(voice_ratios)
 
     print(f"  期望 episode 数: {results['episodes_expected']}")
     print(f"  找到音频的 episode 数: {results['episodes_with_audio']}")
@@ -710,6 +832,34 @@ def check_audio_quality(
             f"  ⚠ 发现输入溢出: {len(results['overflow_episodes'])} 个 episodes, "
             f"共 {overflow_total} 次"
         )
+
+    # 有效语音占比统计
+    if voice_ratios:
+        print(
+            f"  有效语音占比（排除声音过小文件）: "
+            f"均值 {results['voice_activity']['mean']*100:.1f}%, "
+            f"最小 {results['voice_activity']['min']*100:.1f}%, "
+            f"最大 {results['voice_activity']['max']*100:.1f}% "
+            f"({len(voice_ratios)} 个文件)"
+        )
+    else:
+        print("  ⚠ 没有声音不过小的文件可用于有效语音占比分析")
+
+    if results["low_voice_ratio_episodes"]:
+        print(
+            f"  ⚠ 有声音部分占比过低的 episodes: "
+            f"{len(results['low_voice_ratio_episodes'])} 个"
+        )
+        for item in results["low_voice_ratio_episodes"][:10]:
+            print(
+                f"    - Episode {item['episode_index']:06d}: "
+                f"{item['voice_ratio']*100:.1f}% "
+                f"({item['num_voice_frames']}/{item['num_frames']} 帧)"
+            )
+        if len(results["low_voice_ratio_episodes"]) > 10:
+            print(
+                f"    ... 还有 {len(results['low_voice_ratio_episodes']) - 10} 个"
+            )
 
     if results["issues"]:
         print(f"\n  ✗ 发现 {len(results['issues'])} 个问题:")

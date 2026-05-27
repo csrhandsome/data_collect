@@ -146,6 +146,18 @@ def _add_vr_droid_mapping_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_vr_joint_mapping_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--ik-solver",
+        choices=("dm_control", "mink"),
+        default="dm_control",
+        help="Pose IK backend for joint teleop.",
+    )
+    parser.add_argument(
+        "--ik-attempts",
+        type=int,
+        default=3,
+        help="Number of IK attempts per target. Successful attempts are ranked by pose error and joint distance.",
+    )
+    parser.add_argument(
         "--vr-translation-scale",
         type=float,
         default=0.04,
@@ -203,6 +215,11 @@ def _add_vr_joint_mapping_args(parser: argparse.ArgumentParser) -> None:
 def _add_audio_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--audio-sample-rate", type=int, default=16000)
     parser.add_argument("--audio-channels", type=int, default=1)
+    parser.add_argument(
+        "--not_compute_vad",
+        action="store_true",
+        help="Skip offline Silero-VAD preprocessing after audio data collection.",
+    )
 
 
 def _add_soft_gripper_args(parser: argparse.ArgumentParser) -> None:

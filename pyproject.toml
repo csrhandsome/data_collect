@@ -19,4 +19,6 @@ dependencies = [
     "teleop-xr>=1.2.3",
     "transforms3d>=0.4.2",
     "sounddevice>=0.5.5",
+    "silero-vad>=6.2.1",
+    "mink>=0.0.13",
 ]

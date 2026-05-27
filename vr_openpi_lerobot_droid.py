@@ -34,7 +34,7 @@ from control.util.lerobot_util import (
     _load_or_create_dataset,
     _prepare_episode_for_save,
 )
-from ik_solver import DroidIKSolver
+from control.ik_solver.dm_control_ik_solver import DroidIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 
 

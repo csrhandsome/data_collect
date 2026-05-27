@@ -23,7 +23,7 @@ uv run vr_openpi_lerobot_joint.py \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only \
-  --date "4_1_final"
+  --date "5_1_test"
 """
 
 import threading
@@ -42,7 +42,8 @@ from control.util.lerobot_util import (
     _load_or_create_dataset,
     _prepare_episode_for_save,
 )
-from ik_solver import FrankaJointIKSolver
+from control.ik_solver.dm_control_ik_solver import FrankaJointIKSolver
+from control.ik_solver.mink_ik_solver import MinkFrankaJointIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 
 
@@ -72,6 +73,8 @@ def main() -> None:
         raise ValueError("--max-joint-delta must be >= 0")
     if args.joint_velocity_limit < 0:
         raise ValueError("--joint-velocity-limit must be >= 0")
+    if args.ik_attempts <= 0:
+        raise ValueError("--ik-attempts must be > 0")
 
     enable_logging = not args.no_logging
     if enable_logging and not args.instruction.strip():
@@ -96,6 +99,7 @@ def main() -> None:
     )
     print(f"Control frequency: {args.control_frequency} Hz")
     print(f"Sensitivity: {args.sensitivity}")
+    print(f"IK solver: {args.ik_solver} (attempts={args.ik_attempts})")
     print(
         "Joint control tuning: "
         f"step_xyz={args.max_ee_translation_step:.3f}m, "
@@ -194,12 +198,15 @@ def main() -> None:
     print("[Camera] First frames acquired, ready to record!")
 
     # --- EE pose IK solver ---
-    print("Initializing Franka EE pose IK solver (dm_control)...")
-    ik_solver = FrankaJointIKSolver(
+    print(f"Initializing Franka EE pose IK solver ({args.ik_solver})...")
+    ik_solver_cls = (
+        MinkFrankaJointIKSolver if args.ik_solver == "mink" else FrankaJointIKSolver
+    )
+    ik_solver = ik_solver_cls(
         linear_tol=2e-3,
         angular_tol=5e-3,
         max_steps=50,
-        num_attempts=1,
+        num_attempts=int(args.ik_attempts),
     )
     joint_limits = ik_solver.joint_limits
 
@@ -364,8 +371,8 @@ def main() -> None:
                         initial_joint_configuration=qpos,
                         nullspace_reference=qpos,
                         early_stop=True,
-                        num_attempts=1,
-                        stop_on_first_successful_attempt=True,
+                        num_attempts=int(args.ik_attempts),
+                        stop_on_first_successful_attempt=False,
                     )
                     if target_qpos is None:
                         now = time.time()

@@ -40,7 +40,7 @@ from control.soft_gripper_control import DH5Gripper
 from control.vr_input import VRInputProcess
 from control.vr_input_mapper import VREEPoseMapper
 from control.dual_camera_manager import DualRealsenseManager
-from ik_solver import FrankaJointIKSolver
+from control.ik_solver.dm_control_ik_solver import FrankaJointIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 
 

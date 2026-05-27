@@ -471,6 +471,21 @@ wheels = [
 ]
 
 [[package]]
+name = "daqp"
+version = "0.8.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/de/02ddf33b0de61788b3d7110febeb332837332ebdc4f1b83c1bf1f405efc4/daqp-0.8.5.tar.gz", hash = "sha256:71b0df979de85874bbed01c687a94e93926f445b4dddd236dcb3cea82431ab68", size = 38347, upload-time = "2026-03-25T15:35:31.093Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8e/59/3ce412d0fad98ab552eb0534c4f71e9cf4bb0990cb8394ccfb607aa6c691/daqp-0.8.5-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:b80844f088757544ab32bfd1db645fb4d7e4d6bf07b09ed3b44272a17887a537", size = 164293, upload-time = "2026-03-25T15:41:32.663Z" },
+    { url = "https://files.pythonhosted.org/packages/65/69/3c492c72005a55b8d8d2ccdaa0e0c2116946ab8f8516baa55aec083d20bf/daqp-0.8.5-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:3db2ef3f31047e55cee4e385b354ba1134d97f02e30aa4c3e7092c3cb622a6a9", size = 154790, upload-time = "2026-03-25T15:41:33.67Z" },
+    { url = "https://files.pythonhosted.org/packages/75/6a/20e6cd718b9bebe072864eff2f6e6a2fe157d6aef2cb6165477392db8ce3/daqp-0.8.5-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6af49ac12d315d9fac0894875d25f979469cc671136e193a9f06302ee42d56aa", size = 870373, upload-time = "2026-03-25T15:35:22.005Z" },
+    { url = "https://files.pythonhosted.org/packages/49/3b/e081dc67720169526d239481d7c12ad49d42c709df53fe6bb1cb74678632/daqp-0.8.5-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:f17d0dbe2545589c15a4525775be77edc20824a237f3c3f658d18f423ff077a0", size = 812948, upload-time = "2026-03-25T16:29:29.452Z" },
+    { url = "https://files.pythonhosted.org/packages/36/5c/1c1d75faea9f48ccd7ceb9c505889ad1dc84f32fcc3e131ed92ac12517cc/daqp-0.8.5-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:a824256d4eaabbced0ceaa7fcd906d391d6831e2babd5512b37b1527589711a0", size = 834720, upload-time = "2026-03-25T16:29:30.773Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/0f/7f59f587e0c41e61eba43592edb86bb4302716e5e85511e8eb6cc26c0aae/daqp-0.8.5-cp311-cp311-win32.whl", hash = "sha256:d053276876d394a6c45e922eb5165e7091a55d1ab519d80423d10fe790245163", size = 111231, upload-time = "2026-03-25T15:43:50.005Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/ba/3ee9a95d39ea5429a7c2a63ad0b6b7e83c5ab06707c5d842f7d879056efb/daqp-0.8.5-cp311-cp311-win_amd64.whl", hash = "sha256:73169f8b7b78539d733dfd4fdb574dcca40126ea450735d3d975fdb9fd0984e1", size = 134906, upload-time = "2026-03-25T15:43:51.078Z" },
+]
+
+[[package]]
 name = "data-collect"
 version = "0.1.0"
 source = { virtual = "." }
@@ -480,11 +495,13 @@ dependencies = [
     { name = "dm-robotics-moma" },
     { name = "langchain-openai" },
     { name = "lerobot" },
+    { name = "mink" },
     { name = "opencv-python" },
     { name = "panda-python" },
     { name = "pygame" },
     { name = "pyrealsense2" },
     { name = "pyserial" },
+    { name = "silero-vad" },
     { name = "sounddevice" },
     { name = "spatialmath-python" },
     { name = "teleop-xr" },
@@ -498,11 +515,13 @@ requires-dist = [
     { name = "dm-robotics-moma", specifier = ">=0.10.0" },
     { name = "langchain-openai", specifier = ">=1.1.10" },
     { name = "lerobot", git = "https://github.com/huggingface/lerobot?rev=0cf864870cf29f4738d3ade893e6fd13fbd7cdb5" },
+    { name = "mink", specifier = ">=0.0.13" },
     { name = "opencv-python", specifier = ">=4.13.0.92" },
     { name = "panda-python", specifier = ">=0.8.1" },
     { name = "pygame", specifier = ">=2.6.1" },
     { name = "pyrealsense2", specifier = ">=2.56.5.9235" },
     { name = "pyserial", specifier = ">=3.5" },
+    { name = "silero-vad", specifier = ">=6.2.1" },
     { name = "sounddevice", specifier = ">=0.5.5" },
     { name = "spatialmath-python", specifier = ">=1.1.15" },
     { name = "teleop-xr", specifier = ">=1.2.3" },
@@ -1650,6 +1669,21 @@ wheels = [
 ]
 
 [[package]]
+name = "mink"
+version = "0.0.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mujoco" },
+    { name = "numpy" },
+    { name = "qpsolvers", extra = ["daqp"] },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/a3/dcb9ba6099894bd5ae50a3edce4b5b5bdac42a648b919cd06a177f58b0d8/mink-0.0.13.tar.gz", hash = "sha256:481f6187dc3fd320e2c0b6e8393d79c52bc70272835d641ecdf6e5fdf0e6b835", size = 693562, upload-time = "2025-09-12T21:29:46.821Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/3e/3340943f4c614c584efd56ea2ac42cf5358f469a81b424e4acf4fccaa33e/mink-0.0.13-py3-none-any.whl", hash = "sha256:07b9e780f79937b082de01a0fea64b33aa43160ad088217998a212fc0bfb1173", size = 914736, upload-time = "2025-09-12T21:29:42.051Z" },
+]
+
+[[package]]
 name = "ml-dtypes"
 version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -2679,6 +2713,24 @@ wheels = [
 ]
 
 [[package]]
+name = "qpsolvers"
+version = "4.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/20/8d/d90b0aebb793d0e5093e7ed6b8b7c61bac0779a475e2c44ff312d30de871/qpsolvers-4.11.0.tar.gz", hash = "sha256:c6c036c775fb4f1048f586217412bbe67b5c128ece525ea2fe237b96eb3e29f2", size = 242117, upload-time = "2026-03-16T15:59:53.419Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/36/bb438a1ab5270be8a0d294a2734b31ebfabe8b1b41fde08f43966118b7e2/qpsolvers-4.11.0-py3-none-any.whl", hash = "sha256:02ced5690e17036802662f9054dcd8270fc8f4b8c3bddffbfcecd71a6353db00", size = 101875, upload-time = "2026-03-16T15:59:51.054Z" },
+]
+
+[package.optional-dependencies]
+daqp = [
+    { name = "daqp" },
+]
+
+[[package]]
 name = "regex"
 version = "2026.1.15"
 source = { registry = "https://pypi.org/simple" }
@@ -2850,6 +2902,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/76/95/faf61eb8363f26aa7e1d762267a8d602a1b26d4f3a1e758e92cb3cb8b054/setuptools-80.10.2.tar.gz", hash = "sha256:8b0e9d10c784bf7d262c4e5ec5d4ec94127ce206e8738f29a437945fbc219b70", size = 1200343, upload-time = "2026-01-25T22:38:17.252Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/94/b8/f1f62a5e3c0ad2ff1d189590bfa4c46b4f3b6e49cef6f26c6ee4e575394d/setuptools-80.10.2-py3-none-any.whl", hash = "sha256:95b30ddfb717250edb492926c92b5221f7ef3fbcc2b07579bcd4a27da21d0173", size = 1064234, upload-time = "2026-01-25T22:38:15.216Z" },
+]
+
+[[package]]
+name = "silero-vad"
+version = "6.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "torch" },
+    { name = "torchaudio" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/32/d3/e31f526482782764aa4f70e20fd4545cf2e4a81a60b6fb0f089f6d107991/silero_vad-6.2.1.tar.gz", hash = "sha256:b23062b0e39fad17b1266fc23c1e7b4290219dbe82ce08510889e32f681f4b3b", size = 28913811, upload-time = "2026-02-24T08:41:59.329Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0b/2b/48566f29a8b53d856ceb1994f209122749b3fda0a733a07e82047257de7a/silero_vad-6.2.1-py3-none-any.whl", hash = "sha256:09de93c4d874bb19c53e62a47dd38be5f163cedad2b5599583231f2a84ef79cb", size = 9146242, upload-time = "2026-02-24T08:41:56.955Z" },
 ]
 
 [[package]]
@@ -3063,6 +3129,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ae/30/a3a2120621bf9c17779b169fc17e3dc29b230c29d0f8222f499f5e159aa8/torch-2.10.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:a2f9edd8dbc99f62bc4dfb78af7bf89499bca3d753423ac1b4e06592e467b763", size = 915607863, upload-time = "2026-01-21T16:25:06.696Z" },
     { url = "https://files.pythonhosted.org/packages/6f/3d/c87b33c5f260a2a8ad68da7147e105f05868c281c63d65ed85aa4da98c66/torch-2.10.0-cp311-cp311-win_amd64.whl", hash = "sha256:29b7009dba4b7a1c960260fc8ac85022c784250af43af9fb0ebafc9883782ebd", size = 113723116, upload-time = "2026-01-21T16:25:21.916Z" },
     { url = "https://files.pythonhosted.org/packages/61/d8/15b9d9d3a6b0c01b883787bd056acbe5cc321090d4b216d3ea89a8fcfdf3/torch-2.10.0-cp311-none-macosx_11_0_arm64.whl", hash = "sha256:b7bd80f3477b830dd166c707c5b0b82a898e7b16f59a7d9d42778dd058272e8b", size = 79423461, upload-time = "2026-01-21T16:24:50.266Z" },
+]
+
+[[package]]
+name = "torchaudio"
+version = "2.11.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/77/0eec7f175d88f312296bd5b11c23bd58da37c1021f53da3db4df449ce3ee/torchaudio-2.11.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:492dd64645e9d0bb843e94f1d9a4d1e31426262ffc594fafecc1697df9df5eb9", size = 684142, upload-time = "2026-03-23T18:13:36.805Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/f9/6f7ebe071b44592c85269762b55b63ab0a091b5f479f73544738f7564a1e/torchaudio-2.11.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:73dab4841f94d888bc7c2aed7b5547c643edc974306919fe1adfb65d57cccf4b", size = 1626527, upload-time = "2026-03-23T18:13:39.011Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/70/17408e0d154d0c894537a88dcbadc48e8ad3b6e1ef4a1dabda5d40245ee0/torchaudio-2.11.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:1a07ec72fd6f26a588c39b5f029e0130d16bb40bc4221635580bf8fb18fcbc80", size = 1771930, upload-time = "2026-03-23T18:13:37.963Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/75/b6d03fc75b409bdaec597274d1bdd4213db716ed16f6801386b31d59c551/torchaudio-2.11.0-cp311-cp311-win_amd64.whl", hash = "sha256:bb59ba4452bbbe95d75ad3ef18df9824955625f36698ce9a5998a4a9f3c1ba1d", size = 328658, upload-time = "2026-03-23T18:13:44.545Z" },
 ]
 
 [[package]]

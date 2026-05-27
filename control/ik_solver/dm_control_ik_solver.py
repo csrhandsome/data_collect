@@ -22,7 +22,9 @@ class _FrankaArm(robot_arm.RobotArm):
     def _build(self):
         self._name = "franka"
         model_file = os.path.join(
-            os.path.dirname(os.path.realpath(__file__)), "franka_mjcf", "panda.xml"
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+            "franka_mjcf",
+            "panda.xml",
         )
         self._mjcf_root = mjcf.from_path(model_file)
         self._joints = self._mjcf_root.find_all("joint")
