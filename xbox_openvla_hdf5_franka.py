@@ -13,7 +13,7 @@ from typing import Optional
 import h5py
 import numpy as np
 
-from control.img_util import center_crop_and_resize_rgb_uint8
+from control.util.img_util import center_crop_and_resize_rgb_uint8
 from control.pygame_gamepad import PygameGamepadTeleop
 from control.robotic_arm_controller import (
     RoboticArmControler,

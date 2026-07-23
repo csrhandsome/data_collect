@@ -19,265 +19,36 @@ uv run vr_openpi_lerobot_joint.py \
   --color-only
 
 uv run vr_openpi_lerobot_joint.py \
-  --instruction "Stack the yellow cup on the blue cup" \
+  --instruction "Place the object into the basket" \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only \
-  --date "3_13"
+  --date "5_1_test"
 """
 
-import argparse
 import threading
 import time
 from pathlib import Path
 from typing import Optional
 import sys
 import numpy as np
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
+from control.collect_args import build_vr_lerobot_joint_parser
 from control.vr_input import VRInputProcess
 from control.vr_input_mapper import VREEPoseMapper
 from control.dual_camera_manager import DualRealsenseManager
-from ik_solver import FrankaJointIKSolver
+from control.util.lerobot_util import (
+    _discard_unsaved_episode,
+    _load_or_create_dataset,
+    _prepare_episode_for_save,
+)
+from control.ik_solver.dm_control_ik_solver import FrankaJointIKSolver
+from control.ik_solver.mink_ik_solver import MinkFrankaJointIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 
 
-def _create_dataset(
-    repo_id: str, *, fps: float, image_hw: int, root: Path
-) -> LeRobotDataset:
-    return LeRobotDataset.create(
-        repo_id=repo_id,
-        robot_type="panda",
-        fps=float(fps),
-        root=root,
-        features={
-            "exterior_image_1_left": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "exterior_image_2_left": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "wrist_image_left": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "joint_position": {
-                "dtype": "float32",
-                "shape": (7,),
-                "names": ["joint_position"],
-            },
-            "gripper_position": {
-                "dtype": "float32",
-                "shape": (1,),
-                "names": ["gripper_position"],
-            },
-            "actions": {
-                "dtype": "float32",
-                "shape": (8,),
-                "names": ["actions"],
-            },
-        },
-        image_writer_threads=6,
-        image_writer_processes=0,
-    )
-
-
-def _load_or_create_dataset(
-    repo_id: str, *, fps: float, image_hw: int, root: Path
-) -> LeRobotDataset:
-    def looks_like_lerobot_dataset(path: Path) -> bool:
-        return (path / "meta" / "info.json").is_file() and (
-            path / "meta" / "episodes.jsonl"
-        ).is_file()
-
-    def resume_existing_dataset_for_recording(path: Path) -> LeRobotDataset:
-        from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
-        from lerobot.common.datasets.video_utils import get_safe_default_codec
-
-        meta = LeRobotDatasetMetadata(repo_id=repo_id, root=path)
-
-        missing: list[Path] = []
-        for ep_idx in range(meta.total_episodes):
-            fpath = meta.root / meta.get_data_file_path(ep_idx)
-            if not fpath.is_file():
-                missing.append(fpath)
-        if missing:
-            preview = "\n".join(f"  - {p}" for p in missing[:10])
-            more = "" if len(missing) <= 10 else f"\n  ... and {len(missing) - 10} more"
-            raise RuntimeError(
-                "Cannot resume: dataset is missing episode parquet files:\n"
-                f"{preview}{more}\n"
-                "Fix the dataset first, then retry."
-            )
-
-        next_ep = meta.total_episodes
-        images_dir = meta.root / "images"
-        if images_dir.is_dir():
-            leftover = list(images_dir.rglob(f"episode_{next_ep:06d}"))
-            if leftover:
-                raise RuntimeError(
-                    "Cannot resume: found leftover temporary images for the next episode. "
-                    f"Please remove '{images_dir}' (or the episode_{next_ep:06d} folder) and retry."
-                )
-
-        dataset = LeRobotDataset.__new__(LeRobotDataset)
-        dataset.meta = meta
-        dataset.repo_id = meta.repo_id
-        dataset.root = meta.root
-        dataset.revision = None
-        dataset.tolerance_s = 1e-4
-        dataset.image_writer = None
-        dataset.episode_buffer = dataset.create_episode_buffer()
-        dataset.episodes = None
-        dataset.hf_dataset = dataset.create_hf_dataset()
-        dataset.image_transforms = None
-        dataset.delta_timestamps = None
-        dataset.delta_indices = None
-        dataset.episode_data_index = None
-        dataset.video_backend = get_safe_default_codec()
-        dataset.start_image_writer(num_processes=0, num_threads=6)
-        return dataset
-
-    if root.exists():
-        if not root.is_dir():
-            raise RuntimeError(f"Dataset path exists and is not a directory: {root}")
-        if not looks_like_lerobot_dataset(root):
-            raise RuntimeError(
-                "Dataset directory exists but doesn't look like a LeRobot dataset "
-                f"(missing meta/info.json): {root}"
-            )
-        try:
-            return resume_existing_dataset_for_recording(root)
-        except Exception as exc:
-            raise RuntimeError(
-                "Failed to load existing LeRobot dataset. "
-                "Refusing to modify/recreate automatically. "
-                "If the last episode is incomplete, prune it manually with: "
-                f".venv/bin/python data_analysis/delete_latest_episode.py --dataset {root}"
-            ) from exc
-
-    return _create_dataset(repo_id, fps=fps, image_hw=image_hw, root=root)
-
-
-def _prepare_episode_for_save(dataset: LeRobotDataset) -> None:
-    if dataset.episode_buffer is None:
-        return
-    gripper_values = dataset.episode_buffer.get("gripper_position")
-    if not isinstance(gripper_values, list) or not gripper_values:
-        return
-    dataset.episode_buffer["gripper_position"] = [
-        float(v.reshape(-1)[0]) if isinstance(v, np.ndarray) else float(v)
-        for v in gripper_values
-    ]
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Collect Franka data into LeRobot via VR (teleop_xr)"
-    )
-    parser.add_argument("--repo-id", type=str, default="openpi/franka_franka_lerobot")
-    parser.add_argument("--date", type=str, default="3_10")
-    parser.add_argument("--instruction", type=str, default="")
-    parser.add_argument("--control-frequency", type=float, default=20.0)
-    parser.add_argument(
-        "--sensitivity",
-        type=float,
-        default=0.9,
-        help="Global multiplier on the per-step EE command increments.",
-    )
-    parser.add_argument(
-        "--max-ee-translation-step",
-        type=float,
-        default=0.04,  # 0.02
-        help="Maximum EE translation increment per control cycle (m/step) at full VR input.",
-    )
-    parser.add_argument(
-        "--max-ee-rotation-step",
-        type=float,
-        default=0.04,
-        help="Maximum EE rotation increment per control cycle (rad/step) at full VR input.",
-    )
-    parser.add_argument("--action-epsilon", type=float, default=1e-6)
-    parser.add_argument("--camera-width", type=int, default=640)
-    parser.add_argument("--camera-height", type=int, default=480)
-    parser.add_argument("--camera-fps", type=int, default=30)
-    parser.add_argument("--color-only", action="store_true")
-    parser.add_argument("--camera-startup-timeout-s", type=float, default=10.0)
-    parser.add_argument("--camera-timeout-ms", type=int, default=1000)
-    parser.add_argument("--max-duration", type=float, default=3600.0)
-    parser.add_argument("--external-camera-serial", type=str, default=None)
-    parser.add_argument("--wrist-camera-serial", type=str, default=None)
-    parser.add_argument("--image-hw", type=int, default=224)
-    parser.add_argument("--crop-scale", type=float, default=0.9)
-    parser.add_argument("--no-logging", action="store_true")
-    # VR-specific
-    parser.add_argument("--vr-host", type=str, default="0.0.0.0")
-    parser.add_argument("--vr-port", type=int, default=4443)
-    parser.add_argument(
-        "--vr-long-press-s",
-        type=float,
-        default=0.5,
-        help="Seconds both triggers must be held to enable arm movement.",
-    )
-    parser.add_argument(
-        "--vr-translation-scale",
-        type=float,
-        default=0.04,
-        help="VR translation delta (m) between adjacent samples that maps to a full EE translation step. Smaller values make motion faster.",
-    )
-    parser.add_argument(
-        "--vr-rotation-scale",
-        type=float,
-        default=0.20,
-        help="VR rotation delta (rad) between adjacent samples that maps to a full EE rotation step. Smaller values make rotation faster.",
-    )
-    parser.add_argument(
-        "--vr-position-alpha",
-        type=float,
-        default=0.6,
-        help="Right-controller position interpolation factor in (0, 1]. Smaller values are smoother but add latency; 1 disables input smoothing.",
-    )
-    parser.add_argument(
-        "--vr-rotation-alpha",
-        type=float,
-        default=0.35,
-        help="Right-controller rotation interpolation factor in (0, 1]. Smaller values are smoother but add latency; 1 disables input smoothing.",
-    )
-    parser.add_argument(
-        "--max-ee-translation",
-        type=float,
-        default=0.5,
-        help="Optional workspace half-range around the engagement pose (m). Set 0 to disable the translation clamp.",
-    )
-    parser.add_argument(
-        "--max-ee-rotation",
-        type=float,
-        default=1.2,
-        help="Optional rotational half-range around the engagement pose (rad). Set 0 to disable the rotation clamp.",
-    )
-    parser.add_argument(
-        "--max-joint-delta",
-        type=float,
-        default=0.0,
-        help="Optional hard clip for per-cycle joint position change (rad). Set 0 to disable clipping.",
-    )
-    parser.add_argument(
-        "--joint-velocity-limit",
-        type=float,
-        default=0.45,
-        help="Clip joint velocity feedforward (rad/s). Set 0 to disable feedforward.",
-    )
-    parser.add_argument(
-        "--vr-enable-rotation",
-        action="store_true",
-        help="Enable rotation control from VR wrist. Off by default to avoid IK chaos.",
-    )
-
+    parser = build_vr_lerobot_joint_parser()
     args = parser.parse_args()
     sys.setswitchinterval(0.0005)
     if args.control_frequency <= 0:
@@ -302,6 +73,8 @@ def main() -> None:
         raise ValueError("--max-joint-delta must be >= 0")
     if args.joint_velocity_limit < 0:
         raise ValueError("--joint-velocity-limit must be >= 0")
+    if args.ik_attempts <= 0:
+        raise ValueError("--ik-attempts must be > 0")
 
     enable_logging = not args.no_logging
     if enable_logging and not args.instruction.strip():
@@ -326,6 +99,7 @@ def main() -> None:
     )
     print(f"Control frequency: {args.control_frequency} Hz")
     print(f"Sensitivity: {args.sensitivity}")
+    print(f"IK solver: {args.ik_solver} (attempts={args.ik_attempts})")
     print(
         "Joint control tuning: "
         f"step_xyz={args.max_ee_translation_step:.3f}m, "
@@ -424,12 +198,15 @@ def main() -> None:
     print("[Camera] First frames acquired, ready to record!")
 
     # --- EE pose IK solver ---
-    print("Initializing Franka EE pose IK solver (dm_control)...")
-    ik_solver = FrankaJointIKSolver(
+    print(f"Initializing Franka EE pose IK solver ({args.ik_solver})...")
+    ik_solver_cls = (
+        MinkFrankaJointIKSolver if args.ik_solver == "mink" else FrankaJointIKSolver
+    )
+    ik_solver = ik_solver_cls(
         linear_tol=2e-3,
         angular_tol=5e-3,
         max_steps=50,
-        num_attempts=1,
+        num_attempts=int(args.ik_attempts),
     )
     joint_limits = ik_solver.joint_limits
 
@@ -446,9 +223,9 @@ def main() -> None:
     def _start_joint_position_controller(settle_s: float = 0.0):
         controller = controllers.JointPosition()
         arm.panda.start_controller(controller)
+        _hold_current_joint_position(controller)
         if settle_s > 0.0:
             time.sleep(settle_s)
-        _hold_current_joint_position(controller)
         return controller
 
     def _move_robot_to_start_pose() -> None:
@@ -461,10 +238,12 @@ def main() -> None:
             )
 
     print("Opening gripper...")
+    # arm.safe_open()
     arm.gripper_open()
     print("Moving to start position...")
     _move_robot_to_start_pose()
     ctrl = _start_joint_position_controller(settle_s=0.5)
+    hold_qpos_target = _current_qpos().copy()
 
     active_instruction = args.instruction
     gripper_state = 1.0
@@ -482,16 +261,18 @@ def main() -> None:
     last_ik_warning_at = 0.0
 
     def _reset_robot_to_start() -> None:
-        nonlocal ctrl, gripper_state, last_gripper_cmd
+        nonlocal ctrl, gripper_state, last_gripper_cmd, hold_qpos_target
 
         _hold_current_joint_position(ctrl)
         arm.panda.stop_controller()
+        # arm.safe_open()
         arm.gripper_open()
         gripper_state = 1.0
         last_gripper_cmd = 1.0
         print("[Control] Moving to start position...")
         _move_robot_to_start_pose()
         ctrl = _start_joint_position_controller(settle_s=0.0)
+        hold_qpos_target = _current_qpos().copy()
         vr_mapper.reset()
 
     def _finish_episode(*, save_episode: bool, message: str) -> None:
@@ -507,12 +288,12 @@ def main() -> None:
                 except Exception as exc:
                     print(f"[Error] Failed to save episode: {exc}")
                     try:
-                        dataset.clear_episode_buffer()
+                        _discard_unsaved_episode(dataset)
                     except Exception:
                         pass
             else:
                 try:
-                    dataset.clear_episode_buffer()
+                    _discard_unsaved_episode(dataset)
                 except Exception:
                     pass
 
@@ -579,8 +360,9 @@ def main() -> None:
 
                 joint_delta = np.zeros(7, dtype=np.float64)
                 normalized_action = np.zeros(7, dtype=np.float64)
-                qpos_cmd = qpos.copy()
+                qpos_cmd = hold_qpos_target.copy()
                 qvel_cmd = np.zeros(7, dtype=np.float64)
+                has_joint_motion_cmd = False
 
                 if vr.arm_enabled and not gripper_busy:
                     target_qpos = ik_solver.solve_pose(
@@ -589,8 +371,8 @@ def main() -> None:
                         initial_joint_configuration=qpos,
                         nullspace_reference=qpos,
                         early_stop=True,
-                        num_attempts=1,
-                        stop_on_first_successful_attempt=True,
+                        num_attempts=int(args.ik_attempts),
+                        stop_on_first_successful_attempt=False,
                     )
                     if target_qpos is None:
                         now = time.time()
@@ -622,13 +404,20 @@ def main() -> None:
                         normalized_action[small_mask] = 0.0
                         joint_delta[small_mask] = 0.0
 
+                has_joint_motion_cmd = bool(np.any(np.abs(joint_delta) > 0.0))
+
                 if not gripper_busy:
-                    qpos_cmd = np.clip(
-                        qpos + joint_delta,
-                        joint_limits[:, 0],
-                        joint_limits[:, 1],
-                    )
-                    if args.joint_velocity_limit > 0.0:
+                    if has_joint_motion_cmd:
+                        qpos_cmd = np.clip(
+                            qpos + joint_delta,
+                            joint_limits[:, 0],
+                            joint_limits[:, 1],
+                        )
+                        hold_qpos_target = qpos_cmd.copy()
+                    else:
+                        qpos_cmd = hold_qpos_target.copy()
+
+                    if has_joint_motion_cmd and args.joint_velocity_limit > 0.0:
                         qvel_cmd = np.clip(
                             joint_delta * float(args.control_frequency),
                             -float(args.joint_velocity_limit),
@@ -658,16 +447,19 @@ def main() -> None:
                     gripper_busy = True
 
                     def _do_gripper(cmd):
-                        nonlocal gripper_busy, ctrl
-                        _hold_current_joint_position(ctrl)
-                        arm.panda.stop_controller()
-                        if cmd > 0.5:
-                            arm.gripper_open()
-                        else:
-                            arm.gripper_close()
-                        ctrl = _start_joint_position_controller()
-                        vr_mapper.reset()
-                        gripper_busy = False
+                        nonlocal gripper_busy, ctrl, hold_qpos_target
+                        try:
+                            _hold_current_joint_position(ctrl)
+                            arm.panda.stop_controller()
+                            if cmd > 0.5:
+                                arm.gripper_open()
+                            else:
+                                arm.gripper_close()
+                            ctrl = _start_joint_position_controller()
+                            hold_qpos_target = _current_qpos().copy()
+                            vr_mapper.reset()
+                        finally:
+                            gripper_busy = False
 
                     threading.Thread(
                         target=_do_gripper, args=(gripper_cmd,), daemon=True
@@ -771,7 +563,7 @@ def main() -> None:
                     except Exception as exc:
                         print(f"\n[Error] Failed to save last episode: {exc}")
                         try:
-                            dataset.clear_episode_buffer()
+                            _discard_unsaved_episode(dataset)
                         except Exception:
                             pass
             finally:
@@ -781,7 +573,7 @@ def main() -> None:
                     pass
         elif enable_logging and dataset is not None and reflex_error_occurred:
             try:
-                dataset.clear_episode_buffer()
+                _discard_unsaved_episode(dataset)
             except Exception:
                 pass
             try:

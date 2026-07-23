@@ -9,6 +9,7 @@ Dual camera managers for DROID-style deployment.
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 import glob
 import threading
 import time
@@ -19,10 +20,16 @@ import numpy as np
 
 try:
     from control.camera_connector import RGBCameraConnector, RealSenseConnector
-    from control.img_util import center_crop_and_resize_rgb_uint8
+    from control.util.img_util import center_crop_and_resize_rgb_uint8
 except ModuleNotFoundError:
     from camera_connector import RGBCameraConnector, RealSenseConnector
-    from img_util import center_crop_and_resize_rgb_uint8
+    from control.util.img_util import center_crop_and_resize_rgb_uint8
+
+
+@dataclass(frozen=True)
+class CameraFrameTimestamps:
+    camera_timestamp: float
+    host_capture_monotonic_ns: int
 
 
 class DualRealsenseManager:
@@ -92,6 +99,8 @@ class DualRealsenseManager:
         self._wrist_img: Optional[np.ndarray] = None
         self._external_depth: Optional[np.ndarray] = None
         self._wrist_depth: Optional[np.ndarray] = None
+        self._external_timestamp: Optional[CameraFrameTimestamps] = None
+        self._wrist_timestamp: Optional[CameraFrameTimestamps] = None
 
     def _connect_cameras(self) -> None:
         if self._connected:
@@ -119,18 +128,38 @@ class DualRealsenseManager:
             out_hw=self._out_hw,
         )
 
-    def _cache_frames(self, external_ok: bool, wrist_ok: bool) -> None:
+    def _cache_frames(
+        self,
+        external_ok: bool,
+        wrist_ok: bool,
+        external_host_capture_monotonic_ns: Optional[int] = None,
+        wrist_host_capture_monotonic_ns: Optional[int] = None,
+    ) -> None:
         external_img = self._prepare_image(self.external_camera.img)
         wrist_img = self._prepare_image(self.wrist_camera.img)
         external_depth = self.external_camera.depth
         wrist_depth = self.wrist_camera.depth
+        external_camera_timestamp = float(self.external_camera.timestamp)
+        wrist_camera_timestamp = float(self.wrist_camera.timestamp)
         with self._image_lock:
             self._external_ok = bool(external_ok)
             self._wrist_ok = bool(wrist_ok)
             if external_img is not None:
                 self._external_img = external_img
+                if external_host_capture_monotonic_ns is not None:
+                    self._external_timestamp = CameraFrameTimestamps(
+                        camera_timestamp=external_camera_timestamp,
+                        host_capture_monotonic_ns=int(
+                            external_host_capture_monotonic_ns
+                        ),
+                    )
             if wrist_img is not None:
                 self._wrist_img = wrist_img
+                if wrist_host_capture_monotonic_ns is not None:
+                    self._wrist_timestamp = CameraFrameTimestamps(
+                        camera_timestamp=wrist_camera_timestamp,
+                        host_capture_monotonic_ns=int(wrist_host_capture_monotonic_ns),
+                    )
             if external_depth is not None:
                 self._external_depth = external_depth
             if wrist_depth is not None:
@@ -138,8 +167,15 @@ class DualRealsenseManager:
 
     def _update_once(self, timeout_ms: int) -> Tuple[bool, bool]:
         external_ok = self.external_camera.update(timeout=timeout_ms)
+        external_host_capture_monotonic_ns = time.monotonic_ns()
         wrist_ok = self.wrist_camera.update(timeout=timeout_ms)
-        self._cache_frames(external_ok, wrist_ok)
+        wrist_host_capture_monotonic_ns = time.monotonic_ns()
+        self._cache_frames(
+            external_ok,
+            wrist_ok,
+            external_host_capture_monotonic_ns=external_host_capture_monotonic_ns,
+            wrist_host_capture_monotonic_ns=wrist_host_capture_monotonic_ns,
+        )
         return external_ok, wrist_ok
 
     def _background_worker(self) -> None:
@@ -214,6 +250,22 @@ class DualRealsenseManager:
     def get_images(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         with self._image_lock:
             return self._external_img, self._wrist_img
+
+    def get_frames(
+        self,
+    ) -> tuple[
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+        Optional[CameraFrameTimestamps],
+        Optional[CameraFrameTimestamps],
+    ]:
+        with self._image_lock:
+            return (
+                self._external_img,
+                self._wrist_img,
+                self._external_timestamp,
+                self._wrist_timestamp,
+            )
 
     def get_depths(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         with self._image_lock:
@@ -513,7 +565,9 @@ class _FrameStreamStats:
         self._last_signature: Optional[int] = None
 
     def _signature(self, frame: np.ndarray) -> int:
-        sampled = np.ascontiguousarray(frame[:: self._sample_step, :: self._sample_step])
+        sampled = np.ascontiguousarray(
+            frame[:: self._sample_step, :: self._sample_step]
+        )
         return int(zlib.crc32(sampled.tobytes()) & 0xFFFFFFFF)
 
     def tick(
@@ -655,7 +709,9 @@ def main():
         cv2.namedWindow("External Camera", cv2.WINDOW_NORMAL)
         cv2.namedWindow("Wrist Camera", cv2.WINDOW_NORMAL)
         print(f"\n实时显示中，按 'q' 或 ESC 退出。当前请求帧率: {args.fps} FPS")
-        print("窗口中的 `read fps` 是读取频率，`fresh fps` 是基于帧变化估算的新帧频率。")
+        print(
+            "窗口中的 `read fps` 是读取频率，`fresh fps` 是基于帧变化估算的新帧频率。"
+        )
 
         external_stats = _FrameStreamStats()
         wrist_stats = _FrameStreamStats()

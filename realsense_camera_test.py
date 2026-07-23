@@ -85,7 +85,7 @@ def main():
 
     try:
         camera.connect()
-        print(f"\nConnected to camera!")
+        print("connected to camera!")
         print(f"Intrinsics K:\n{camera.intrinsics}\n")
 
         frame_count = 0

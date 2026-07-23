@@ -208,7 +208,6 @@ class RoboticArmControler:
                 "Realtime control is disabled for this arm. Create `RoboticArmControler(..., realtime_control=True)` to use realtime APIs."
             )
 
-
     def _solve_joint_targets_from_poses(
         self, poses: Sequence[Sequence[float]]
     ) -> list[np.ndarray]:
@@ -331,7 +330,11 @@ class RoboticArmControler:
 
     def _pause_realtime_controller(self, timeout: float = 2.0) -> bool:
         del timeout
-        if not self.realtime_control or self._realtime_lock is None or self._realtime_paused is None:
+        if (
+            not self.realtime_control
+            or self._realtime_lock is None
+            or self._realtime_paused is None
+        ):
             return False
         with self._realtime_lock:
             controller = self._realtime_controller
@@ -345,7 +348,11 @@ class RoboticArmControler:
 
     def _resume_realtime_controller(self, timeout: float = 2.0) -> None:
         del timeout
-        if not self.realtime_control or self._realtime_lock is None or self._realtime_paused is None:
+        if (
+            not self.realtime_control
+            or self._realtime_lock is None
+            or self._realtime_paused is None
+        ):
             return
         with self._realtime_lock:
             controller = self._realtime_controller
@@ -479,6 +486,66 @@ class RoboticArmControler:
     ) -> bool:
         return self.gripper_move(width=width, speed=speed, wait=wait, timeout=timeout)
 
+    def safe_open(
+        self,
+        width: float = 0.05,
+        speed: float = 0.2,
+        *,
+        release_height: Optional[float] = None,
+        joint_speed_factor: Optional[float] = None,
+        descent_deadband: float = 5e-3,
+        settle_timeout_s: float = 2.0,
+        wait: bool = True,
+        timeout: Optional[float] = None,
+    ) -> bool:
+        """Lower the tool to a safer release height before opening the gripper.
+
+        The descent prefers the controller's existing pose IK path:
+        1. Keep the current full 6D tool pose and only lower z.
+        2. If that IK fails, fall back to position-only IK so yaw can adjust.
+        """
+        target_z = self.default_height if release_height is None else release_height
+        if target_z is not None:
+            target_z = float(target_z)
+            if target_z < 0.0:
+                raise ValueError(f"release_height must be >= 0, got {target_z:.6f}")
+
+            current_pose = np.asarray(self.pose, dtype=np.float64)
+            current_z = float(current_pose[2])
+            if current_z - target_z > float(descent_deadband):
+                target_pose = current_pose.copy()
+                target_pose[2] = target_z
+                move_error: Optional[Exception] = None
+
+                try:
+                    self.move_to_joint_position(
+                        [target_pose.tolist()],
+                        joint_speed_factor=joint_speed_factor,
+                    )
+                    self.wait_until_stopped(timeout_s=settle_timeout_s)
+                except Exception as exc:
+                    move_error = exc
+
+                if move_error is not None:
+                    try:
+                        self.move_to_joint_position(
+                            [target_pose[:3].tolist()],
+                            joint_speed_factor=joint_speed_factor,
+                        )
+                        self.wait_until_stopped(timeout_s=settle_timeout_s)
+                        move_error = None
+                    except Exception as fallback_exc:
+                        move_error = fallback_exc
+
+                if move_error is not None:
+                    print(
+                        "[Warning] safe_open failed to lower the end effector "
+                        f"from z={current_z:.3f} to z={target_z:.3f}; "
+                        f"opening in place instead. error={move_error}"
+                    )
+
+        return self.gripper_open(width=width, speed=speed, wait=wait, timeout=timeout)
+
     def gripper_close(
         self,
         width: float = 0.0,
@@ -602,7 +669,6 @@ class RoboticArmControler:
 
         if settle_s > 0.0:
             time.sleep(max(0.0, float(settle_s)))
-
         qpos = self._hold_current_joint_position_with_controller(controller)
         with self._realtime_lock:
             self._realtime_controller = controller
@@ -798,7 +864,11 @@ class RoboticArmControler:
         raise_on_timeout: bool = True,
     ) -> None:
         del timeout, raise_on_timeout
-        if not self.realtime_control or self._realtime_lock is None or self._realtime_paused is None:
+        if (
+            not self.realtime_control
+            or self._realtime_lock is None
+            or self._realtime_paused is None
+        ):
             return
         with self._realtime_lock:
             controller = self._realtime_controller

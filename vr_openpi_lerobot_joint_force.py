@@ -16,170 +16,40 @@ A (right controller): gripper close.  B: gripper open.
 uv run vr_openpi_lerobot_joint_force.py \
   --instruction "Pick up the wide-mouth bottle" \
   --second-instruction "Pick up the narrow-mouth bottle" \
+  --control-frequency 60 \
+  --realsense-fps 20 \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only
 """
 
-import argparse
 import time
 from pathlib import Path
 from typing import Optional
 import sys
 import numpy as np
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
-from control.img_util import center_crop_and_resize_rgb_uint8
+from control.collect_args import build_vr_lerobot_joint_force_parser
+from control.util.img_util import center_crop_and_resize_rgb_uint8
+from control.util.lerobot_util import (
+    _discard_unsaved_episode,
+    _load_or_create_dataset_force,
+    _prepare_episode_for_save_force,
+)
 from control.soft_gripper_control import DH5Gripper
 from control.vr_input import VRInputProcess
 from control.vr_input_mapper import VREEPoseMapper
 from control.dual_camera_manager import DualRealsenseManager
-from ik_solver import FrankaJointIKSolver
+from control.ik_solver.dm_control_ik_solver import FrankaJointIKSolver
 from control.robotic_arm_controller import RoboticArmControler
 
 
-def _create_dataset(
-    repo_id: str, *, fps: float, image_hw: int, root: Path
-) -> LeRobotDataset:
-    return LeRobotDataset.create(
-        repo_id=repo_id,
-        robot_type="panda",
-        fps=float(fps),
-        root=root,
-        features={
-            "exterior_image_1_left": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "exterior_image_2_left": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "wrist_image_left": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "gripper_image_left": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "gripper_image_right": {
-                "dtype": "image",
-                "shape": (image_hw, image_hw, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "joint_position": {
-                "dtype": "float32",
-                "shape": (7,),
-                "names": ["joint_position"],
-            },
-            "gripper_position": {
-                "dtype": "float32",
-                "shape": (1,),
-                "names": ["gripper_position"],
-            },
-            "actions": {
-                "dtype": "float32",
-                "shape": (8,),
-                "names": ["actions"],
-            },
-        },
-        image_writer_threads=6,
-        image_writer_processes=0,
-    )
-
-
-def _load_or_create_dataset(
-    repo_id: str, *, fps: float, image_hw: int, root: Path
-) -> LeRobotDataset:
-    def looks_like_lerobot_dataset(path: Path) -> bool:
-        return (path / "meta" / "info.json").is_file() and (
-            path / "meta" / "episodes.jsonl"
-        ).is_file()
-
-    def resume_existing_dataset_for_recording(path: Path) -> LeRobotDataset:
-        from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
-        from lerobot.common.datasets.video_utils import get_safe_default_codec
-
-        meta = LeRobotDatasetMetadata(repo_id=repo_id, root=path)
-
-        missing: list[Path] = []
-        for ep_idx in range(meta.total_episodes):
-            fpath = meta.root / meta.get_data_file_path(ep_idx)
-            if not fpath.is_file():
-                missing.append(fpath)
-        if missing:
-            preview = "\n".join(f"  - {p}" for p in missing[:10])
-            more = "" if len(missing) <= 10 else f"\n  ... and {len(missing) - 10} more"
-            raise RuntimeError(
-                "Cannot resume: dataset is missing episode parquet files:\n"
-                f"{preview}{more}\n"
-                "Fix the dataset first, then retry."
-            )
-
-        next_ep = meta.total_episodes
-        images_dir = meta.root / "images"
-        if images_dir.is_dir():
-            leftover = list(images_dir.rglob(f"episode_{next_ep:06d}"))
-            if leftover:
-                raise RuntimeError(
-                    "Cannot resume: found leftover temporary images for the next episode. "
-                    f"Please remove '{images_dir}' (or the episode_{next_ep:06d} folder) and retry."
-                )
-
-        dataset = LeRobotDataset.__new__(LeRobotDataset)
-        dataset.meta = meta
-        dataset.repo_id = meta.repo_id
-        dataset.root = meta.root
-        dataset.revision = None
-        dataset.tolerance_s = 1e-4
-        dataset.image_writer = None
-        dataset.episode_buffer = dataset.create_episode_buffer()
-        dataset.episodes = None
-        dataset.hf_dataset = dataset.create_hf_dataset()
-        dataset.image_transforms = None
-        dataset.delta_timestamps = None
-        dataset.delta_indices = None
-        dataset.episode_data_index = None
-        dataset.video_backend = get_safe_default_codec()
-        dataset.start_image_writer(num_processes=0, num_threads=6)
-        return dataset
-
-    if root.exists():
-        if not root.is_dir():
-            raise RuntimeError(f"Dataset path exists and is not a directory: {root}")
-        if not looks_like_lerobot_dataset(root):
-            raise RuntimeError(
-                "Dataset directory exists but doesn't look like a LeRobot dataset "
-                f"(missing meta/info.json): {root}"
-            )
-        try:
-            return resume_existing_dataset_for_recording(root)
-        except Exception as exc:
-            raise RuntimeError(
-                "Failed to load existing LeRobot dataset. "
-                "Refusing to modify/recreate automatically. "
-                "If the last episode is incomplete, prune it manually with: "
-                f".venv/bin/python data_analysis/delete_latest_episode.py --dataset {root}"
-            ) from exc
-
-    return _create_dataset(repo_id, fps=fps, image_hw=image_hw, root=root)
-
-
-def _prepare_episode_for_save(dataset: LeRobotDataset) -> None:
-    if dataset.episode_buffer is None:
-        return
-    gripper_values = dataset.episode_buffer.get("gripper_position")
-    if not isinstance(gripper_values, list) or not gripper_values:
-        return
-    dataset.episode_buffer["gripper_position"] = [
-        float(v.reshape(-1)[0]) if isinstance(v, np.ndarray) else float(v)
-        for v in gripper_values
-    ]
+CAMERA_TIMING_FEATURE_KEYS = {
+    "external_camera_timestamp_ms",
+    "wrist_camera_timestamp_ms",
+    "external_camera_frame_age_s",
+    "wrist_camera_frame_age_s",
+}
 
 
 def _wait_for_soft_gripper_frames(
@@ -216,154 +86,35 @@ def _get_soft_gripper_images(
     return left_rgb, right_rgb
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Collect Franka data into LeRobot via VR (teleop_xr)"
-    )
-    parser.add_argument("--repo-id", type=str, default="openpi/franka_franka_lerobot")
-    parser.add_argument("--instruction", type=str, default="")
-    parser.add_argument("--second-instruction", type=str, default="")
-    parser.add_argument("--control-frequency", type=float, default=30.0)
-    parser.add_argument(
-        "--sensitivity",
-        type=float,
-        default=0.9,
-        help="Global multiplier on the per-step EE command increments.",
-    )
-    parser.add_argument(
-        "--max-ee-translation-step",
-        type=float,
-        default=0.04,  # 0.02
-        help="Maximum EE translation increment per control cycle (m/step) at full VR input.",
-    )
-    parser.add_argument(
-        "--max-ee-rotation-step",
-        type=float,
-        default=0.04,
-        help="Maximum EE rotation increment per control cycle (rad/step) at full VR input.",
-    )
-    parser.add_argument("--action-epsilon", type=float, default=1e-6)
-    parser.add_argument("--camera-width", type=int, default=640)
-    parser.add_argument("--camera-height", type=int, default=480)
-    parser.add_argument("--camera-fps", type=int, default=30)
-    parser.add_argument("--color-only", action="store_true")
-    parser.add_argument("--camera-startup-timeout-s", type=float, default=10.0)
-    parser.add_argument("--camera-timeout-ms", type=int, default=1000)
-    parser.add_argument("--max-duration", type=float, default=3600.0)
-    parser.add_argument("--external-camera-serial", type=str, default=None)
-    parser.add_argument("--wrist-camera-serial", type=str, default=None)
-    parser.add_argument(
-        "--soft-gripper-port",
-        type=str,
-        default="/dev/ttyUSB0",
-        help="Serial port for the DH soft gripper controller.",
-    )
-    parser.add_argument(
-        "--gripper-right-camera-device",
-        type=str,
-        default="1",
-        help="OpenCV device index/path for the right soft-gripper camera.",
-    )
-    parser.add_argument(
-        "--gripper-left-camera-device",
-        type=str,
-        default="2",
-        help="OpenCV device index/path for the left soft-gripper camera.",
-    )
-    parser.add_argument(
-        "--soft-gripper-force",
-        type=int,
-        default=50,
-        help="DH soft-gripper force in [20, 100].",
-    )
-    parser.add_argument(
-        "--soft-gripper-velocity",
-        type=int,
-        default=100,
-        help="DH soft-gripper velocity in [0, 1000].",
-    )
-    parser.add_argument(
-        "--soft-gripper-axis-threshold",
-        type=float,
-        default=0.55,
-        help="Thumbstick threshold used by `DH5Gripper.update_from_vr()`.",
-    )
-    parser.add_argument(
-        "--soft-gripper-step-interval",
-        type=float,
-        default=0.08,
-        help="Minimum interval between adjacent soft-gripper level steps.",
-    )
-    parser.add_argument("--image-hw", type=int, default=224)
-    parser.add_argument("--crop-scale", type=float, default=0.9)
-    parser.add_argument("--no-logging", action="store_true")
-    # VR-specific
-    parser.add_argument("--vr-host", type=str, default="0.0.0.0")
-    parser.add_argument("--vr-port", type=int, default=4443)
-    parser.add_argument(
-        "--vr-long-press-s",
-        type=float,
-        default=0.5,
-        help="Seconds both triggers must be held to enable arm movement.",
-    )
-    parser.add_argument(
-        "--vr-translation-scale",
-        type=float,
-        default=0.04,
-        help="VR translation delta (m) between adjacent samples that maps to a full EE translation step. Smaller values make motion faster.",
-    )
-    parser.add_argument(
-        "--vr-rotation-scale",
-        type=float,
-        default=0.20,
-        help="VR rotation delta (rad) between adjacent samples that maps to a full EE rotation step. Smaller values make rotation faster.",
-    )
-    parser.add_argument(
-        "--vr-position-alpha",
-        type=float,
-        default=0.6,
-        help="Right-controller position interpolation factor in (0, 1]. Smaller values are smoother but add latency; 1 disables input smoothing.",
-    )
-    parser.add_argument(
-        "--vr-rotation-alpha",
-        type=float,
-        default=0.35,
-        help="Right-controller rotation interpolation factor in (0, 1]. Smaller values are smoother but add latency; 1 disables input smoothing.",
-    )
-    parser.add_argument(
-        "--max-ee-translation",
-        type=float,
-        default=0.5,
-        help="Optional workspace half-range around the engagement pose (m). Set 0 to disable the translation clamp.",
-    )
-    parser.add_argument(
-        "--max-ee-rotation",
-        type=float,
-        default=1.2,
-        help="Optional rotational half-range around the engagement pose (rad). Set 0 to disable the rotation clamp.",
-    )
-    parser.add_argument(
-        "--max-joint-delta",
-        type=float,
-        default=0.0,
-        help="Optional hard clip for per-cycle joint position change (rad). Set 0 to disable clipping.",
-    )
-    parser.add_argument(
-        "--joint-velocity-limit",
-        type=float,
-        default=0.45,
-        help="Clip joint velocity feedforward (rad/s). Set 0 to disable feedforward.",
-    )
-    parser.add_argument(
-        "--vr-enable-rotation",
-        action="store_true",
-        help="Enable rotation control from VR wrist. Off by default to avoid IK chaos.",
-    )
+def _scalar_float32(value: float) -> np.ndarray:
+    return np.asarray([value], dtype=np.float32)
 
+
+def _get_dataset_feature_keys(dataset) -> set[str]:
+    features = getattr(dataset, "features", None)
+    if isinstance(features, dict):
+        return set(features)
+
+    meta = getattr(dataset, "meta", None)
+    meta_features = getattr(meta, "features", None)
+    if isinstance(meta_features, dict):
+        return set(meta_features)
+
+    return set()
+
+
+def main() -> None:
+    parser = build_vr_lerobot_joint_force_parser()
     args = parser.parse_args()
     sys.setswitchinterval(0.0005)
     if args.control_frequency <= 0:
         raise ValueError("--control-frequency must be > 0")
+    if args.realsense_fps <= 0:
+        raise ValueError("--realsense-fps must be > 0")
+    if args.realsense_fps > args.control_frequency:
+        raise ValueError(
+            "--realsense-fps must be <= --control-frequency for slow-vision sample-and-hold logging."
+        )
     if args.vr_translation_scale <= 0:
         raise ValueError("--vr-translation-scale must be > 0")
     if args.vr_rotation_scale <= 0:
@@ -399,6 +150,15 @@ def main() -> None:
     enable_logging = not args.no_logging
     if enable_logging and not args.instruction.strip():
         raise ValueError("--instruction is required when logging is enabled")
+    realsense_hold_ratio = float(args.control_frequency) / float(args.realsense_fps)
+    realsense_hold_ratio_rounded = round(realsense_hold_ratio)
+    realsense_hold_ratio_is_integer = (
+        abs(realsense_hold_ratio - realsense_hold_ratio_rounded) < 1e-6
+    )
+    if realsense_hold_ratio_is_integer:
+        slow_vision_summary = f"{int(realsense_hold_ratio_rounded)} control ticks/frame"
+    else:
+        slow_vision_summary = f"{realsense_hold_ratio:.2f} control ticks/frame"
 
     print("=" * 70)
     print("Franka LeRobot data collection (VR teleop)")
@@ -435,12 +195,20 @@ def main() -> None:
         f"rot_alpha={args.vr_rotation_alpha:.2f}"
     )
     print(
-        f"Camera stream: {args.camera_width}x{args.camera_height}@{args.camera_fps} "
-        f"(depth={'off' if args.color_only else 'on'})"
+        f"RealSense stream: {args.camera_width}x{args.camera_height}@{args.realsense_fps} "
+        f"(depth={'off' if args.color_only else 'on'}, sample-and-hold={slow_vision_summary})"
+    )
+    print(
+        f"Soft gripper camera stream: {args.camera_width}x{args.camera_height}@{args.camera_fps}"
     )
     print(f"VR server: {args.vr_host}:{args.vr_port}")
     print(f"External camera serial: {args.external_camera_serial}")
     print(f"Wrist camera serial: {args.wrist_camera_serial}")
+    if not realsense_hold_ratio_is_integer:
+        print(
+            "[Warning] --control-frequency / --realsense-fps is not an integer; "
+            "RealSense frame reuse count will vary slightly across ticks."
+        )
     print(
         "Soft gripper: "
         f"port={args.soft_gripper_port}, "
@@ -516,7 +284,7 @@ def main() -> None:
         wrist_serial=args.wrist_camera_serial,
         width=args.camera_width,
         height=args.camera_height,
-        fps=args.camera_fps,
+        fps=args.realsense_fps,
         enable_depth=not args.color_only,
         background_poll=True,
         background_timeout_ms=int(args.camera_timeout_ms),
@@ -526,10 +294,11 @@ def main() -> None:
     camera_manager.connect()
 
     dataset = None
+    dataset_supports_camera_timing = False
     if enable_logging:
         dataset_root = Path(__file__).resolve().parent / "data" / args.repo_id
         resume_existing = dataset_root.exists()
-        dataset = _load_or_create_dataset(
+        dataset = _load_or_create_dataset_force(
             args.repo_id,
             fps=args.control_frequency,
             image_hw=args.image_hw,
@@ -539,6 +308,21 @@ def main() -> None:
             print(f"LeRobot dataset exists, resuming: {dataset_root}")
         else:
             print(f"LeRobot dataset path: {dataset_root}")
+        dataset_feature_keys = _get_dataset_feature_keys(dataset)
+        dataset_supports_camera_timing = CAMERA_TIMING_FEATURE_KEYS.issubset(
+            dataset_feature_keys
+        )
+        if resume_existing and not dataset_supports_camera_timing:
+            print(
+                "[Camera] Existing dataset schema has no RealSense timing fields; "
+                "resuming without camera timestamp/frame-age logging."
+            )
+        elif not resume_existing and not dataset_supports_camera_timing:
+            raise RuntimeError(
+                "New force dataset is missing RealSense timing features."
+            )
+        elif dataset_supports_camera_timing:
+            print("[Camera] RealSense timing fields enabled in dataset schema.")
 
     print("[Camera] Waiting for first frames...")
     camera_manager.wait_for_frames(timeout_s=float(args.camera_startup_timeout_s))
@@ -584,12 +368,13 @@ def main() -> None:
     def _start_joint_position_controller(settle_s: float = 0.0):
         controller = controllers.JointPosition()
         arm.panda.start_controller(controller)
+        _hold_current_joint_position(controller)
         if settle_s > 0.0:
             time.sleep(settle_s)
-        _hold_current_joint_position(controller)
         return controller
 
     ctrl = _start_joint_position_controller(settle_s=0.5)
+    hold_qpos_target = _current_qpos().copy()
 
     active_instruction = args.instruction
     gripper_state = float(soft_gripper.gripper_open_ratio.reshape(-1)[0])
@@ -602,9 +387,10 @@ def main() -> None:
     prev_x_pressed = False
     prev_y_pressed = False
     last_ik_warning_at = 0.0
+    camera_timing_warning_printed = False
 
     def _reset_robot_to_start() -> None:
-        nonlocal ctrl, gripper_state
+        nonlocal ctrl, gripper_state, hold_qpos_target
 
         _hold_current_joint_position(ctrl)
         arm.panda.stop_controller()
@@ -622,6 +408,7 @@ def main() -> None:
                 f"max_vel={max_vel:.4f} rad/s"
             )
         ctrl = _start_joint_position_controller(settle_s=0.0)
+        hold_qpos_target = _current_qpos().copy()
         vr_mapper.reset()
 
     def _finish_episode(*, save_episode: bool, message: str) -> None:
@@ -631,18 +418,18 @@ def main() -> None:
         if dataset is not None:
             if save_episode and frame_count > 0:
                 try:
-                    _prepare_episode_for_save(dataset)
+                    _prepare_episode_for_save_force(dataset)
                     dataset.save_episode()
                     print(f"[Recording] Saved episode with {frame_count} frames")
                 except Exception as exc:
                     print(f"[Error] Failed to save episode: {exc}")
                     try:
-                        dataset.clear_episode_buffer()
+                        _discard_unsaved_episode(dataset)
                     except Exception:
                         pass
             else:
                 try:
-                    dataset.clear_episode_buffer()
+                    _discard_unsaved_episode(dataset)
                 except Exception:
                     pass
 
@@ -726,8 +513,9 @@ def main() -> None:
 
                 joint_delta = np.zeros(7, dtype=np.float64)
                 normalized_action = np.zeros(7, dtype=np.float64)
-                qpos_cmd = qpos.copy()
+                qpos_cmd = hold_qpos_target.copy()
                 qvel_cmd = np.zeros(7, dtype=np.float64)
+                has_joint_motion_cmd = False
 
                 if vr.arm_enabled:
                     target_qpos = ik_solver.solve_pose(
@@ -769,12 +557,19 @@ def main() -> None:
                         normalized_action[small_mask] = 0.0
                         joint_delta[small_mask] = 0.0
 
-                qpos_cmd = np.clip(
-                    qpos + joint_delta,
-                    joint_limits[:, 0],
-                    joint_limits[:, 1],
-                )
-                if args.joint_velocity_limit > 0.0:
+                has_joint_motion_cmd = bool(np.any(np.abs(joint_delta) > 0.0))
+
+                if has_joint_motion_cmd:
+                    qpos_cmd = np.clip(
+                        qpos + joint_delta,
+                        joint_limits[:, 0],
+                        joint_limits[:, 1],
+                    )
+                    hold_qpos_target = qpos_cmd.copy()
+                else:
+                    qpos_cmd = hold_qpos_target.copy()
+
+                if has_joint_motion_cmd and args.joint_velocity_limit > 0.0:
                     qvel_cmd = np.clip(
                         joint_delta * float(args.control_frequency),
                         -float(args.joint_velocity_limit),
@@ -801,7 +596,12 @@ def main() -> None:
                 if not enable_logging:
                     continue
 
-                external_img, wrist_img = camera_manager.get_images()
+                (
+                    external_img,
+                    wrist_img,
+                    external_frame_timestamps,
+                    wrist_frame_timestamps,
+                ) = camera_manager.get_frames()
                 gripper_left_img, gripper_right_img = _get_soft_gripper_images(
                     soft_gripper,
                     crop_scale=float(args.crop_scale),
@@ -845,20 +645,76 @@ def main() -> None:
                         [np.float32(gripper_state)], dtype=np.float32
                     )
                     blank = np.zeros_like(external_img)
+                    frame = {
+                        "exterior_image_1_left": external_img,
+                        "exterior_image_2_left": blank,
+                        "wrist_image_left": wrist_img,
+                        "gripper_image_left": gripper_left_img,
+                        "gripper_image_right": gripper_right_img,
+                        "joint_position": joint_pos,
+                        "gripper_position": gripper_pos,
+                        "actions": actions,
+                        "task": active_instruction,
+                    }
 
-                    dataset.add_frame(
-                        {
-                            "exterior_image_1_left": external_img,
-                            "exterior_image_2_left": blank,
-                            "wrist_image_left": wrist_img,
-                            "gripper_image_left": gripper_left_img,
-                            "gripper_image_right": gripper_right_img,
-                            "joint_position": joint_pos,
-                            "gripper_position": gripper_pos,
-                            "actions": actions,
-                            "task": active_instruction,
-                        }
-                    )
+                    if dataset_supports_camera_timing:
+                        if (
+                            external_frame_timestamps is None
+                            or wrist_frame_timestamps is None
+                        ):
+                            if not camera_timing_warning_printed:
+                                print(
+                                    "[Warning] Missing RealSense frame timestamps; "
+                                    "writing NaN camera timing values for affected ticks."
+                                )
+                                camera_timing_warning_printed = True
+                            external_camera_timestamp_ms = np.nan
+                            wrist_camera_timestamp_ms = np.nan
+                            external_camera_frame_age_s = np.nan
+                            wrist_camera_frame_age_s = np.nan
+                        else:
+                            tick_monotonic_ns = time.monotonic_ns()
+                            external_camera_timestamp_ms = float(
+                                external_frame_timestamps.camera_timestamp
+                            )
+                            wrist_camera_timestamp_ms = float(
+                                wrist_frame_timestamps.camera_timestamp
+                            )
+                            external_camera_frame_age_s = max(
+                                0.0,
+                                (
+                                    tick_monotonic_ns
+                                    - external_frame_timestamps.host_capture_monotonic_ns
+                                )
+                                / 1e9,
+                            )
+                            wrist_camera_frame_age_s = max(
+                                0.0,
+                                (
+                                    tick_monotonic_ns
+                                    - wrist_frame_timestamps.host_capture_monotonic_ns
+                                )
+                                / 1e9,
+                            )
+
+                        frame.update(
+                            {
+                                "external_camera_timestamp_ms": _scalar_float32(
+                                    external_camera_timestamp_ms
+                                ),
+                                "wrist_camera_timestamp_ms": _scalar_float32(
+                                    wrist_camera_timestamp_ms
+                                ),
+                                "external_camera_frame_age_s": _scalar_float32(
+                                    external_camera_frame_age_s
+                                ),
+                                "wrist_camera_frame_age_s": _scalar_float32(
+                                    wrist_camera_frame_age_s
+                                ),
+                            }
+                        )
+
+                    dataset.add_frame(frame)
                     frame_count += 1
                     if frame_count % 50 == 0:
                         print(f"[Recording] {frame_count} frames", end="\r")
@@ -908,13 +764,13 @@ def main() -> None:
             try:
                 if frame_count > 0:
                     try:
-                        _prepare_episode_for_save(dataset)
+                        _prepare_episode_for_save_force(dataset)
                         dataset.save_episode()
                         print(f"\n[Recording] Saved episode with {frame_count} frames")
                     except Exception as exc:
                         print(f"\n[Error] Failed to save last episode: {exc}")
                         try:
-                            dataset.clear_episode_buffer()
+                            _discard_unsaved_episode(dataset)
                         except Exception:
                             pass
             finally:
@@ -924,7 +780,7 @@ def main() -> None:
                     pass
         elif enable_logging and dataset is not None and reflex_error_occurred:
             try:
-                dataset.clear_episode_buffer()
+                _discard_unsaved_episode(dataset)
             except Exception:
                 pass
             try:
