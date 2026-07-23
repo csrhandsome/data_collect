@@ -11,3 +11,6 @@ wheels/
 data/
 data_analysis/quality_reports
 .codex
+scripts/data2modelscope.py
+scripts/modelscope2data.py
+scripts/modelscope2weights.py

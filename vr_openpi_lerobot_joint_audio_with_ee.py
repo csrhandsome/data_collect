@@ -4,7 +4,8 @@ Collect Franka teleop data into a LeRobot dataset using VR input, with episode a
 
 - Cameras: external + wrist (2x RealSense)
 - Audio: per-episode microphone WAV + audio metadata sidecar
-- Control: VR end-effector pose -> IK -> joint position controller
+- Control: VR end-effector pose -> Cartesian impedance controller
+- Actions: next measured joint position + gripper state
 - Output: LeRobot dataset + audio sync JSON
 
 Deadman: hold both VR triggers (long press) to enable arm movement.
@@ -12,14 +13,22 @@ Recording: start automatically when motion begins.
 Y (left controller): save current episode and return to the start pose.
 A (right controller): gripper close.  B: gripper open.
 
-uv run vr_openpi_lerobot_joint_audio.py \
+uv run vr_openpi_lerobot_joint_audio_with_ee.py \
   --instruction "Place the object into the basket" \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only \
-  --date "5_1_audio_test"
+  --date "7_6_audio" \
+  --label stop
+如果ctrl c无法终止
+ps -ef | grep vr_openpi_lerobot_joint_audio_with_ee
+然后杀主进程和 uv 包装进程：
+kill -TERM <pid1> <pid2>
+还不退再用：
+kill -KILL <pid1> <pid2>
 """
 
+import argparse
 import json
 import threading
 import time
@@ -28,6 +37,8 @@ from typing import Optional
 import sys
 
 import numpy as np
+import websockets
+import websockets.sync.client
 
 from control.collect_args import build_vr_lerobot_joint_audio_parser
 from control.dual_camera_manager import DualRealsenseManager
@@ -40,8 +51,19 @@ from control.microphone_connector import MicrophoneRecorder
 from control.robotic_arm_controller import RoboticArmControler
 from control.vr_input import VRInputProcess
 from control.vr_input_mapper import VREEPoseMapper
+from data_analysis.instruction_audio_window import make_pending_instruction_audio_window
 from data_analysis.preprocess_vad import compute_vad_for_dataset
-from control.ik_solver.dm_control_ik_solver import FrankaJointIKSolver
+
+
+CUSTOM_START_JOINT_POSITION: tuple[float, ...] | None = (
+    0.00388,
+    -0.45916,
+    -0.15237,
+    -2.47266,
+    -0.06778,
+    1.96442,
+    0.70214,
+)
 
 
 def _path_for_json(path: Optional[Path], root: Optional[Path] = None) -> Optional[str]:
@@ -55,8 +77,135 @@ def _path_for_json(path: Optional[Path], root: Optional[Path] = None) -> Optiona
     return str(path)
 
 
+class ReactiveDeskVlaClient:
+    """Minimal Reactive Desk websocket client compatible with the openpi sender."""
+
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        path: str = "/ws/VlaIngest",
+        *,
+        enabled: bool = True,
+    ) -> None:
+        self._uri = self._build_ws_uri(host, port, path)
+        self._enabled = enabled
+        self._ws: websockets.sync.client.ClientConnection | None = None
+
+    def connect(self) -> None:
+        if not self._enabled or self._ws is not None:
+            return
+
+        self._ws = websockets.sync.client.connect(
+            self._uri,
+            compression=None,
+            max_size=None,
+        )
+        self._ws.recv()
+
+    def send_predictions(
+        self,
+        xyz: np.ndarray,
+        probabilities: np.ndarray,
+        *,
+        prompt: str = "",
+        is_executing: bool = True,
+    ) -> bool:
+        if not self._enabled:
+            return False
+
+        xyz = np.asarray(xyz, dtype=np.float32)
+        probabilities = np.asarray(probabilities, dtype=np.float32).reshape(-1)
+        if xyz.ndim == 1:
+            xyz = xyz.reshape(1, -1)
+
+        predictions = [
+            {
+                "x": float(point[0]),
+                "y": float(point[1]),
+                "z": float(point[2]) if point.shape[0] > 2 else 0.0,
+                "probability": float(probabilities[rank])
+                if rank < probabilities.shape[0]
+                else 1.0,
+                "rank": int(rank),
+            }
+            for rank, point in enumerate(xyz)
+        ]
+        payload = {
+            "type": "vla_predictions",
+            "predictions": predictions,
+            "is_executing": is_executing,
+            "current_prompt": prompt,
+        }
+
+        try:
+            self.connect()
+            if self._ws is None:
+                return False
+            self._ws.send(json.dumps(payload))
+            self._ws.recv()
+            return True
+        except websockets.ConnectionClosed:
+            self._ws = None
+            return False
+        except OSError:
+            self._ws = None
+            return False
+
+    def close(self) -> None:
+        if self._ws is None:
+            return
+        self._ws.close()
+        self._ws = None
+
+    @staticmethod
+    def _build_ws_uri(host: str, port: int, path: str) -> str:
+        uri = host if host.startswith(("ws://", "wss://")) else f"ws://{host}:{port}"
+        if path:
+            path = path if path.startswith("/") else f"/{path}"
+            if not uri.endswith(path):
+                uri = f"{uri.rstrip('/')}{path}"
+        return uri
+
+
 def main() -> None:
     parser = build_vr_lerobot_joint_audio_parser()
+    for action in parser._actions:
+        if action.dest in {
+            "ik_solver",
+            "ik_attempts",
+            "max_joint_delta",
+            "joint_velocity_limit",
+        }:
+            action.help = argparse.SUPPRESS
+    parser.add_argument(
+        "--ee-filter-coeff",
+        type=float,
+        default=0.35,
+        help="CartesianImpedance input filter coefficient. 1 disables filtering; smaller is smoother but slower.",
+    )
+    parser.add_argument(
+        "--ee-nullspace-stiffness",
+        type=float,
+        default=0.5,
+        help="CartesianImpedance nullspace stiffness.",
+    )
+    parser.add_argument("--reactive-desk-host", type=str, default="127.0.0.1")
+    parser.add_argument("--reactive-desk-port", type=int, default=8000)
+    parser.add_argument("--reactive-desk-path", type=str, default="/ws/VlaIngest")
+    parser.add_argument(
+        "--no-reactive-desk",
+        dest="reactive_desk_enabled",
+        action="store_false",
+        default=True,
+        help="Disable sending current end-effector xy to Reactive Desk.",
+    )
+    parser.add_argument(
+        "--label",
+        choices=("straight", "detour", "none", "stop"),
+        default="none",
+        help="Route label for this episode.",
+    )
     args = parser.parse_args()
     sys.setswitchinterval(0.0005)
     if args.control_frequency <= 0:
@@ -77,30 +226,26 @@ def main() -> None:
         raise ValueError("--max-ee-translation must be >= 0")
     if args.max_ee_rotation < 0:
         raise ValueError("--max-ee-rotation must be >= 0")
-    if args.max_joint_delta < 0:
-        raise ValueError("--max-joint-delta must be >= 0")
-    if args.joint_velocity_limit < 0:
-        raise ValueError("--joint-velocity-limit must be >= 0")
+    if not 0.0 < args.ee_filter_coeff <= 1.0:
+        raise ValueError("--ee-filter-coeff must be in (0, 1]")
+    if args.ee_nullspace_stiffness < 0:
+        raise ValueError("--ee-nullspace-stiffness must be >= 0")
     if args.audio_sample_rate <= 0:
         raise ValueError("--audio-sample-rate must be > 0")
     if args.audio_channels <= 0:
         raise ValueError("--audio-channels must be > 0")
+    if args.reactive_desk_port <= 0:
+        raise ValueError("--reactive-desk-port must be > 0")
 
     enable_logging = not args.no_logging
     if enable_logging and not args.instruction.strip():
         raise ValueError("--instruction is required when logging is enabled")
 
+    label = str(args.label)
+
     print("=" * 70)
     print("Franka LeRobot data collection (VR teleop + audio)")
     print("=" * 70)
-    dq_clip_str = (
-        "off" if args.max_joint_delta <= 0 else f"{args.max_joint_delta:.3f}rad/step"
-    )
-    qvel_ff_str = (
-        "off"
-        if args.joint_velocity_limit <= 0
-        else f"{args.joint_velocity_limit:.2f}rad/s"
-    )
     trans_limit_str = (
         "off" if args.max_ee_translation <= 0 else f"±{args.max_ee_translation:.3f}m"
     )
@@ -110,15 +255,16 @@ def main() -> None:
     print(f"Control frequency: {args.control_frequency} Hz")
     print(f"Sensitivity: {args.sensitivity}")
     print(
-        "Joint control tuning: "
+        "EE control tuning: "
         f"step_xyz={args.max_ee_translation_step:.3f}m, "
         f"step_rot={args.max_ee_rotation_step:.3f}rad, "
         f"limit_xyz={trans_limit_str}, "
         f"limit_rot={rot_limit_str}, "
         f"vr_rot={'on' if args.vr_enable_rotation else 'off'}, "
-        f"dq_clip={dq_clip_str}, "
-        f"qdot_ff={qvel_ff_str}"
+        f"filter={args.ee_filter_coeff:.2f}, "
+        f"nullspace={args.ee_nullspace_stiffness:.2f}"
     )
+    print("Action logging: next measured 7D joint position + gripper")
     print(
         "VR input smoothing: "
         f"pos_alpha={args.vr_position_alpha:.2f}, "
@@ -133,12 +279,21 @@ def main() -> None:
         f"{args.audio_channels} channel(s), int16 PCM"
     )
     print(f"VR server: {args.vr_host}:{args.vr_port}")
+    print(
+        "Reactive Desk: "
+        + (
+            f"{args.reactive_desk_host}:{args.reactive_desk_port}{args.reactive_desk_path}"
+            if args.reactive_desk_enabled
+            else "disabled"
+        )
+    )
     print(f"External camera serial: {args.external_camera_serial}")
     print(f"Wrist camera serial: {args.wrist_camera_serial}")
     if enable_logging:
         args.repo_id = f"{args.repo_id}_{args.date}"
         print(f"Logging: enabled (max {args.max_duration} s)")
         print(f"Instruction: {args.instruction}")
+        print(f"Label: {label}")
         print(f"LeRobot repo_id: {args.repo_id}")
     else:
         print("Logging: disabled")
@@ -158,7 +313,6 @@ def main() -> None:
     max_ee_rotation = float(args.max_ee_rotation)
     max_ee_translation_step = float(args.max_ee_translation_step)
     max_ee_rotation_step = float(args.max_ee_rotation_step)
-    max_joint_delta = float(args.max_joint_delta)
 
     vr_mapper = VREEPoseMapper(
         translation_scale=args.vr_translation_scale,
@@ -168,6 +322,7 @@ def main() -> None:
         translation_limit=max_ee_translation,
         rotation_limit=max_ee_rotation,
         sensitivity=args.sensitivity,
+        enable_rotation=args.vr_enable_rotation,
     )
 
     print("Initializing Franka arm...")
@@ -219,39 +374,88 @@ def main() -> None:
     camera_manager.wait_for_frames(timeout_s=float(args.camera_startup_timeout_s))
     print("[Camera] First frames acquired, ready to record!")
 
-    print("Initializing Franka EE pose IK solver (dm_control)...")
-    ik_solver = FrankaJointIKSolver(
-        linear_tol=2e-3,
-        angular_tol=5e-3,
-        max_steps=50,
-        num_attempts=1,
-    )
-    joint_limits = ik_solver.joint_limits
-
     from panda_py import controllers
 
     def _current_qpos() -> np.ndarray:
         robot_state = arm.panda.get_state()
         return np.asarray(robot_state.q, dtype=np.float64)
 
-    def _hold_current_joint_position(controller) -> None:
-        qpos = _current_qpos()
-        controller.set_control(qpos, np.zeros(7, dtype=np.float64))
+    def _quat_xyzw_to_wxyz(quat_xyzw: np.ndarray) -> np.ndarray:
+        return np.array(
+            [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]],
+            dtype=np.float64,
+        )
 
-    def _start_joint_position_controller(settle_s: float = 0.0):
-        controller = controllers.JointPosition()
+    def _quat_wxyz_to_xyzw(quat_wxyz: np.ndarray) -> np.ndarray:
+        return np.array(
+            [quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]],
+            dtype=np.float64,
+        )
+
+    def _quat_angle_xyzw(a: np.ndarray, b: np.ndarray) -> float:
+        a = np.asarray(a, dtype=np.float64)
+        b = np.asarray(b, dtype=np.float64)
+        a = a / max(np.linalg.norm(a), 1e-12)
+        b = b / max(np.linalg.norm(b), 1e-12)
+        dot = abs(float(np.dot(a, b)))
+        return float(2.0 * np.arccos(np.clip(dot, -1.0, 1.0)))
+
+    def _current_ee_pose() -> tuple[np.ndarray, np.ndarray]:
+        return (
+            arm.panda.get_position().astype(np.float64),
+            arm.panda.get_orientation().astype(np.float64),
+        )
+
+    def _hold_current_ee_pose(controller) -> None:
+        ee_pos, ee_quat_xyzw = _current_ee_pose()
+        qpos = _current_qpos()
+        controller.set_control(ee_pos, ee_quat_xyzw, qpos)
+
+    def _start_ee_controller(settle_s: float = 0.0):
+        controller = controllers.CartesianImpedance(
+            filter_coeff=float(args.ee_filter_coeff),
+            nullspace_stiffness=float(args.ee_nullspace_stiffness),
+        )
         arm.panda.start_controller(controller)
-        _hold_current_joint_position(controller)
+        _hold_current_ee_pose(controller)
         if settle_s > 0.0:
             time.sleep(settle_s)
         return controller
 
+    def _format_joint_position(qpos: np.ndarray) -> str:
+        return np.array2string(
+            np.asarray(qpos, dtype=np.float64),
+            precision=5,
+            separator=", ",
+            suppress_small=False,
+        )
+
+    def _print_current_joint_position(qpos: np.ndarray) -> None:
+        line = f"[Joint] current q = {_format_joint_position(qpos)}"
+        print(f"{line:<140}", end="\r", flush=True)
+
+    def _move_robot_to_joint_pose(
+        target_qpos: np.ndarray | list[float] | tuple[float, ...],
+    ) -> None:
+        qpos = np.asarray(target_qpos, dtype=np.float64).flatten()
+        if qpos.shape != (7,):
+            raise ValueError(f"target_qpos must be 7D, got shape {qpos.shape}")
+        if arm.auto_set_default_behavior:
+            arm.panda.set_default_behavior()
+        print(f"[Control] Moving to custom joint pose: {_format_joint_position(qpos)}")
+        arm.panda.move_to_joint_position(qpos, speed_factor=arm.joint_speed_factor)
+
     def _move_robot_to_start_pose() -> None:
-        arm.move_to_start()
+        move_name = "move_to_start"
+        if CUSTOM_START_JOINT_POSITION is None:
+            arm.move_to_start()
+        else:
+            move_name = "custom start joint pose"
+            _move_robot_to_joint_pose(CUSTOM_START_JOINT_POSITION)
         if not arm.wait_until_stopped():
             max_vel = float(np.max(np.abs(np.asarray(arm.panda.get_state().dq))))
             print(
-                "[Warning] Robot did not fully stop after move_to_start: "
+                f"[Warning] Robot did not fully stop after {move_name}: "
                 f"max_vel={max_vel:.4f} rad/s"
             )
 
@@ -259,10 +463,29 @@ def main() -> None:
     arm.gripper_open()
     print("Moving to start position...")
     _move_robot_to_start_pose()
-    ctrl = _start_joint_position_controller(settle_s=0.5)
+    ctrl = _start_ee_controller(settle_s=0.5)
+    hold_ee_pos_target, hold_ee_quat_xyzw_target = _current_ee_pose()
     hold_qpos_target = _current_qpos().copy()
 
+    def _refresh_hold_target_from_current() -> None:
+        nonlocal hold_ee_pos_target, hold_ee_quat_xyzw_target, hold_qpos_target
+        hold_ee_pos_target, hold_ee_quat_xyzw_target = _current_ee_pose()
+        hold_qpos_target = _current_qpos().copy()
+
+    def _set_hold_control(controller) -> None:
+        controller.set_control(
+            hold_ee_pos_target,
+            hold_ee_quat_xyzw_target,
+            hold_qpos_target,
+        )
+
     active_instruction = args.instruction
+    reactive_desk_client = ReactiveDeskVlaClient(
+        host=args.reactive_desk_host,
+        port=args.reactive_desk_port,
+        path=args.reactive_desk_path,
+        enabled=args.reactive_desk_enabled,
+    )
     gripper_state = 1.0
     last_gripper_cmd = 1.0
 
@@ -272,6 +495,7 @@ def main() -> None:
     current_episode_index: Optional[int] = None
     current_audio_path: Optional[Path] = None
     frame_records: list[dict] = []
+    pending_frame: Optional[dict] = None
     frame_count = 0
     motion_start_threshold = max(float(args.action_epsilon), 1e-3)
     last_gripper_switch_time = 0.0
@@ -279,7 +503,7 @@ def main() -> None:
     gripper_switch_cooldown_s = 0.12
     reflex_error_occurred = False
     prev_y_pressed = False
-    last_ik_warning_at = 0.0
+    prev_arm_enabled = False
 
     def _reset_episode_state() -> None:
         nonlocal frame_count
@@ -289,6 +513,7 @@ def main() -> None:
         nonlocal current_episode_index
         nonlocal current_audio_path
         nonlocal frame_records
+        nonlocal pending_frame
 
         frame_count = 0
         recording_started = False
@@ -297,10 +522,47 @@ def main() -> None:
         current_episode_index = None
         current_audio_path = None
         frame_records = []
+        pending_frame = None
         if microphone_recorder is not None:
             microphone_recorder.default_output_path = None
             if not microphone_recorder.is_recording:
                 microphone_recorder.reset()
+
+    def _append_pending_frame(action_qpos: np.ndarray) -> None:
+        nonlocal frame_count, pending_frame
+
+        if pending_frame is None or dataset is None:
+            return
+
+        action_gripper_state = float(pending_frame["action_gripper_state"])
+        actions = np.concatenate(
+            [
+                np.asarray(action_qpos, dtype=np.float32),
+                [np.float32(action_gripper_state)],
+            ],
+            dtype=np.float32,
+        )
+
+        frame_record = pending_frame["frame_record"]
+        frame_record["action_joint_position"] = actions[:7].tolist()
+        frame_record["action_gripper_position"] = action_gripper_state
+
+        dataset.add_frame(
+            {
+                "exterior_image_1_left": pending_frame["external_img"],
+                "exterior_image_2_left": pending_frame["blank"],
+                "wrist_image_left": pending_frame["wrist_img"],
+                "joint_position": pending_frame["joint_pos"],
+                "gripper_position": pending_frame["gripper_pos"],
+                "actions": actions,
+                "task": active_instruction,
+            }
+        )
+        frame_records.append(frame_record)
+        frame_count += 1
+        pending_frame = None
+        if frame_count % 50 == 0:
+            print(f"[Recording] {frame_count} frames", end="\r")
 
     def _cleanup_episode_files(*paths: Optional[Path]) -> None:
         for path in paths:
@@ -326,6 +588,9 @@ def main() -> None:
         payload = {
             "episode_index": current_episode_index,
             "task": active_instruction,
+            "label": label,
+            "divergence_time": None,
+            "instruction_audio_window": make_pending_instruction_audio_window(),
             "control_frequency": float(args.control_frequency),
             "audio_path": _path_for_json(audio_path, dataset_root),
             "audio_metadata_path": _path_for_json(
@@ -342,7 +607,7 @@ def main() -> None:
                 "tool": "silero-vad",
                 "note": (
                     "Run data_analysis/preprocess_vad.py after collection to fill "
-                    "vad_segments with VAD start_sec/end_sec timestamps."
+                    "vad_segments and refresh instruction_audio_window."
                 ),
             },
             "vad_segments": [],
@@ -359,6 +624,9 @@ def main() -> None:
 
     def _finalize_episode_data(*, save_episode: bool) -> None:
         nonlocal frame_count
+
+        if save_episode and pending_frame is not None:
+            _append_pending_frame(_current_qpos())
 
         should_persist = (
             bool(save_episode)
@@ -417,17 +685,18 @@ def main() -> None:
             _reset_episode_state()
 
     def _reset_robot_to_start() -> None:
-        nonlocal ctrl, gripper_state, last_gripper_cmd, hold_qpos_target
+        nonlocal ctrl, gripper_state, last_gripper_cmd
 
-        _hold_current_joint_position(ctrl)
+        _set_hold_control(ctrl)
         arm.panda.stop_controller()
         arm.gripper_open()
         gripper_state = 1.0
         last_gripper_cmd = 1.0
         print("[Control] Moving to start position...")
         _move_robot_to_start_pose()
-        ctrl = _start_joint_position_controller(settle_s=0.0)
-        hold_qpos_target = _current_qpos().copy()
+        ctrl = _start_ee_controller(settle_s=0.0)
+        _refresh_hold_target_from_current()
+        _set_hold_control(ctrl)
         vr_mapper.reset()
 
     def _finish_episode(*, save_episode: bool, message: str) -> None:
@@ -435,11 +704,18 @@ def main() -> None:
         _finalize_episode_data(save_episode=save_episode)
         _reset_robot_to_start()
 
+    def _send_current_ee_xy(ee_pos: np.ndarray) -> None:
+        reactive_desk_client.send_predictions(
+            np.asarray(ee_pos[:2], dtype=np.float32).reshape(1, 2),
+            np.ones(1, dtype=np.float32),
+            prompt=active_instruction,
+            is_executing=True,
+        )
+
     print("\nControl mapping (VR):")
     print("  Hold both triggers (long press): enable arm movement")
-    print(
-        "  Right controller pose: snapshot-based EE pose control -> IK -> joint position"
-    )
+    print("  Right controller pose: EE pose target -> Cartesian impedance control")
+    print("  Action: next measured joint position + gripper")
     print("  Release / re-hold triggers: re-anchor the VR neutral pose")
     print("  A (right): gripper close | B (right): gripper open")
     print("  Recording: starts automatically when motion begins")
@@ -458,7 +734,7 @@ def main() -> None:
                     if gripper_busy:
                         continue
                     _finish_episode(
-                        save_episode=frame_count > 0,
+                        save_episode=frame_count > 0 or pending_frame is not None,
                         message="\n[Recording] Max duration reached, saving episode and returning to start...",
                     )
                     continue
@@ -478,10 +754,10 @@ def main() -> None:
                         print("\n[Recording] Ignored Y press because gripper is busy.")
                     else:
                         _finish_episode(
-                            save_episode=frame_count > 0,
+                            save_episode=frame_count > 0 or pending_frame is not None,
                             message=(
                                 "\n[Control] Y pressed, saving episode and returning to start..."
-                                if frame_count > 0
+                                if frame_count > 0 or pending_frame is not None
                                 else "\n[Control] Y pressed, resetting with no captured frames."
                             ),
                         )
@@ -489,77 +765,56 @@ def main() -> None:
 
                 robot_state = arm.panda.get_state()
                 qpos = np.asarray(robot_state.q, dtype=np.float64)
-                ee_pos, ee_quat = ik_solver.forward_kinematics(qpos)
-                target_ee_pos, target_ee_quat = vr_mapper.map(vr, ee_pos, ee_quat)
+                _print_current_joint_position(qpos)
+                if enable_logging and recording_started and pending_frame is not None:
+                    _append_pending_frame(qpos)
 
-                joint_delta = np.zeros(7, dtype=np.float64)
-                normalized_action = np.zeros(7, dtype=np.float64)
-                qpos_cmd = hold_qpos_target.copy()
-                qvel_cmd = np.zeros(7, dtype=np.float64)
-                has_joint_motion_cmd = False
+                ee_pos, ee_quat_xyzw = _current_ee_pose()
+                _send_current_ee_xy(ee_pos)
 
-                if vr.arm_enabled and not gripper_busy:
-                    target_qpos = ik_solver.solve_pose(
-                        target_ee_pos,
-                        target_ee_quat,
-                        initial_joint_configuration=qpos,
-                        nullspace_reference=qpos,
-                        early_stop=True,
-                        num_attempts=1,
-                        stop_on_first_successful_attempt=True,
+                arm_enabled = bool(vr.arm_enabled)
+                if not arm_enabled and prev_arm_enabled:
+                    _refresh_hold_target_from_current()
+                    vr_mapper.reset()
+                elif not arm_enabled:
+                    vr_mapper.reset()
+                prev_arm_enabled = arm_enabled
+
+                if arm_enabled:
+                    hold_ee_quat_wxyz = _quat_xyzw_to_wxyz(hold_ee_quat_xyzw_target)
+                    target_ee_pos, target_ee_quat_wxyz = vr_mapper.map(
+                        vr,
+                        hold_ee_pos_target,
+                        hold_ee_quat_wxyz,
                     )
-                    if target_qpos is None:
-                        now = time.time()
-                        if now - last_ik_warning_at > 1.0:
-                            print(
-                                "[Warning] IK failed for current EE target; holding position."
-                            )
-                            last_ik_warning_at = now
-                    else:
-                        target_qpos = np.clip(
-                            np.asarray(target_qpos, dtype=np.float64),
-                            joint_limits[:, 0],
-                            joint_limits[:, 1],
-                        )
-                        joint_delta = target_qpos - qpos
-                        if max_joint_delta > 0.0:
-                            joint_delta = np.clip(
-                                joint_delta,
-                                -max_joint_delta,
-                                max_joint_delta,
-                            )
-                            normalized_action = joint_delta / max_joint_delta
-                        else:
-                            normalized_action = joint_delta.copy()
+                    target_ee_quat_xyzw = _quat_wxyz_to_xyzw(target_ee_quat_wxyz)
+                else:
+                    target_ee_pos = hold_ee_pos_target.copy()
+                    target_ee_quat_xyzw = hold_ee_quat_xyzw_target.copy()
 
-                if args.action_epsilon > 0.0:
-                    small_mask = np.abs(joint_delta) <= args.action_epsilon
-                    if np.any(small_mask):
-                        normalized_action[small_mask] = 0.0
-                        joint_delta[small_mask] = 0.0
-
-                has_joint_motion_cmd = bool(np.any(np.abs(joint_delta) > 0.0))
+                command_translation = target_ee_pos - hold_ee_pos_target
+                rotation_error = _quat_angle_xyzw(
+                    target_ee_quat_xyzw, hold_ee_quat_xyzw_target
+                )
+                motion_norm = float(np.linalg.norm(command_translation))
+                rotation_motion_threshold = max(float(args.action_epsilon), 1e-3)
+                has_ee_motion_cmd = bool(
+                    arm_enabled
+                    and not gripper_busy
+                    and (
+                        motion_norm >= motion_start_threshold
+                        or rotation_error >= rotation_motion_threshold
+                    )
+                )
 
                 if not gripper_busy:
-                    if has_joint_motion_cmd:
-                        qpos_cmd = np.clip(
-                            qpos + joint_delta,
-                            joint_limits[:, 0],
-                            joint_limits[:, 1],
-                        )
-                        hold_qpos_target = qpos_cmd.copy()
+                    if has_ee_motion_cmd:
+                        ctrl.set_control(target_ee_pos, target_ee_quat_xyzw, qpos)
+                        hold_ee_pos_target = target_ee_pos.copy()
+                        hold_ee_quat_xyzw_target = target_ee_quat_xyzw.copy()
+                        hold_qpos_target = qpos.copy()
                     else:
-                        qpos_cmd = hold_qpos_target.copy()
-
-                    if has_joint_motion_cmd and args.joint_velocity_limit > 0.0:
-                        qvel_cmd = np.clip(
-                            joint_delta * float(args.control_frequency),
-                            -float(args.joint_velocity_limit),
-                            float(args.joint_velocity_limit),
-                        )
-                    else:
-                        qvel_cmd = np.zeros(7, dtype=np.float64)
-                    ctrl.set_control(qpos_cmd, qvel_cmd)
+                        _set_hold_control(ctrl)
 
                 gripper_cmd = last_gripper_cmd
                 if vr.gripper_close:
@@ -580,16 +835,17 @@ def main() -> None:
                     gripper_busy = True
 
                     def _do_gripper(cmd):
-                        nonlocal gripper_busy, ctrl, hold_qpos_target
+                        nonlocal gripper_busy, ctrl
                         try:
-                            _hold_current_joint_position(ctrl)
+                            _set_hold_control(ctrl)
                             arm.panda.stop_controller()
                             if cmd > 0.5:
                                 arm.gripper_open()
                             else:
                                 arm.gripper_close()
-                            ctrl = _start_joint_position_controller()
-                            hold_qpos_target = _current_qpos().copy()
+                            ctrl = _start_ee_controller()
+                            _refresh_hold_target_from_current()
+                            _set_hold_control(ctrl)
                             vr_mapper.reset()
                         finally:
                             gripper_busy = False
@@ -617,8 +873,7 @@ def main() -> None:
                 if wrist_img.shape != (args.image_hw, args.image_hw, 3):
                     continue
 
-                motion_norm = float(np.linalg.norm(joint_delta))
-                has_action = motion_norm >= motion_start_threshold or gripper_changed
+                has_action = has_ee_motion_cmd or gripper_changed
 
                 if has_action and not recording_started:
                     if (
@@ -659,13 +914,6 @@ def main() -> None:
                     gripper_pos = np.asarray(
                         [np.float32(gripper_state)], dtype=np.float32
                     )
-                    actions = np.concatenate(
-                        [
-                            qpos_cmd.astype(np.float32),
-                            [np.float32(gripper_state)],
-                        ],
-                        dtype=np.float32,
-                    )
                     blank = np.zeros_like(external_img)
 
                     frame_record = {
@@ -683,23 +931,21 @@ def main() -> None:
                         ),
                         "joint_position": joint_pos.tolist(),
                         "gripper_position": float(gripper_pos[0]),
+                        "ee_position": np.asarray(ee_pos, dtype=np.float32).tolist(),
+                        "ee_orientation_xyzw": np.asarray(
+                            ee_quat_xyzw, dtype=np.float32
+                        ).tolist(),
                     }
 
-                    dataset.add_frame(
-                        {
-                            "exterior_image_1_left": external_img,
-                            "exterior_image_2_left": blank,
-                            "wrist_image_left": wrist_img,
-                            "joint_position": joint_pos,
-                            "gripper_position": gripper_pos,
-                            "actions": actions,
-                            "task": active_instruction,
-                        }
-                    )
-                    frame_records.append(frame_record)
-                    frame_count += 1
-                    if frame_count % 50 == 0:
-                        print(f"[Recording] {frame_count} frames", end="\r")
+                    pending_frame = {
+                        "external_img": external_img,
+                        "wrist_img": wrist_img,
+                        "blank": blank,
+                        "joint_pos": joint_pos,
+                        "gripper_pos": gripper_pos,
+                        "frame_record": frame_record,
+                        "action_gripper_state": gripper_state,
+                    }
 
     except RuntimeError as exc:
         msg = str(exc)
@@ -717,14 +963,16 @@ def main() -> None:
         print("\n[Recording] Ctrl+C detected, stopping...")
     finally:
         try:
-            _hold_current_joint_position(ctrl)
+            _set_hold_control(ctrl)
             arm.panda.stop_controller()
         except Exception:
             pass
 
         if enable_logging and not reflex_error_occurred:
             try:
-                _finalize_episode_data(save_episode=frame_count > 0)
+                _finalize_episode_data(
+                    save_episode=frame_count > 0 or pending_frame is not None
+                )
             except Exception as exc:
                 print(f"\n[Error] Failed to finalize current episode: {exc}")
         elif enable_logging and reflex_error_occurred:
@@ -737,6 +985,10 @@ def main() -> None:
                 microphone_recorder.stop()
             except Exception:
                 pass
+        try:
+            reactive_desk_client.close()
+        except Exception:
+            pass
         try:
             camera_manager.close()
         except Exception:

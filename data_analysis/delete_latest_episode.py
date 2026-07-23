@@ -4,7 +4,7 @@
 - 直接执行硬删除，不做 dry-run、备份或 .trash 中转。
 - 会同步删除对应的 parquet / mp4 / 音频 sidecar 文件。
 - 会同步更新 meta/episodes.jsonl、meta/episodes_stats.jsonl、meta/info.json。
-- 如果不传 --dataset，会在 data/openpi/ 下自动选择最近修改的一个数据集目录。
+- 如果不传 --dataset,会在 data/openpi/ 下自动选择最近修改的一个数据集目录。
 
 用法示例：
   .venv/bin/python data_analysis/delete_latest_episode.py --dataset data/openpi/franka_droid_lerobot_2_4

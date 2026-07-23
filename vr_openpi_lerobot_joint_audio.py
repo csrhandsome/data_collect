@@ -17,7 +17,13 @@ uv run vr_openpi_lerobot_joint_audio.py \
   --external-camera-serial 825412070292 \
   --wrist-camera-serial 825412070487 \
   --color-only \
-  --date "5_1_audio_test"
+  --date "4_9_audio"
+如果ctrl c无法终止
+ps -ef | grep vr_openpi_lerobot_joint_audio
+然后杀主进程和 uv 包装进程：
+kill -TERM <pid1> <pid2>
+还不退再用：
+kill -KILL <pid1> <pid2>
 """
 
 import json

@@ -21,4 +21,9 @@ dependencies = [
     "sounddevice>=0.5.5",
     "silero-vad>=6.2.1",
     "mink>=0.0.13",
+    "qwen-asr",
+    "seaborn>=0.13.2",
 ]
+
+[tool.uv.sources]
+qwen-asr = { path = "third_party/Qwen3-ASR" }

@@ -25,6 +25,11 @@ import wave
 
 import numpy as np
 
+from data_analysis.instruction_audio_window import (
+    DEFAULT_POST_MARGIN_SEC,
+    DEFAULT_PRE_MARGIN_SEC,
+    refresh_dataset_instruction_audio_windows,
+)
 from control.util.audio_util import read_wav_pcm
 
 
@@ -61,7 +66,9 @@ def _json_float_or_none(value: float) -> float | None:
     return value
 
 
-def _resolve_audio_path(dataset_root: Path, sync_data: dict[str, Any], default_path: Path) -> Path:
+def _resolve_audio_path(
+    dataset_root: Path, sync_data: dict[str, Any], default_path: Path
+) -> Path:
     raw_path = sync_data.get("audio_path")
     if not raw_path:
         return default_path
@@ -107,7 +114,9 @@ def _audio_to_mono_float(audio: np.ndarray) -> np.ndarray:
     return np.clip(pcm.astype(np.float32), -1.0, 1.0)
 
 
-def _resample_linear(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+def _resample_linear(
+    audio: np.ndarray, source_rate: int, target_rate: int
+) -> np.ndarray:
     if source_rate == target_rate:
         return np.ascontiguousarray(audio, dtype=np.float32)
     if audio.size == 0:
@@ -193,12 +202,22 @@ def _fallback_get_speech_timestamps(
         for start in range(0, int(wav.numel()), window_size):
             chunk = wav[start : start + window_size]
             if int(chunk.numel()) < window_size:
-                chunk = torch.nn.functional.pad(chunk, (0, window_size - int(chunk.numel())))
+                chunk = torch.nn.functional.pad(
+                    chunk, (0, window_size - int(chunk.numel()))
+                )
             speech_probs.append(float(model(chunk, int(sampling_rate)).item()))
 
-    neg = max(float(threshold) - 0.15, 0.01) if neg_threshold is None else float(neg_threshold)
-    min_speech_samples = int(round(int(sampling_rate) * min_speech_duration_ms / 1000.0))
-    min_silence_samples = int(round(int(sampling_rate) * min_silence_duration_ms / 1000.0))
+    neg = (
+        max(float(threshold) - 0.15, 0.01)
+        if neg_threshold is None
+        else float(neg_threshold)
+    )
+    min_speech_samples = int(
+        round(int(sampling_rate) * min_speech_duration_ms / 1000.0)
+    )
+    min_silence_samples = int(
+        round(int(sampling_rate) * min_silence_duration_ms / 1000.0)
+    )
     pad_samples = int(round(int(sampling_rate) * speech_pad_ms / 1000.0))
     max_speech_samples = (
         None
@@ -278,11 +297,15 @@ def _load_silero() -> tuple[Any, SpeechTimestampFn, dict[str, Any]]:
     except importlib.metadata.PackageNotFoundError:
         version = None
 
-    return model, timestamp_fn, {
-        "tool": "silero-vad",
-        "tool_version": version,
-        "model_loader": loader,
-    }
+    return (
+        model,
+        timestamp_fn,
+        {
+            "tool": "silero-vad",
+            "tool_version": version,
+            "model_loader": loader,
+        },
+    )
 
 
 def _detect_segments(
@@ -337,7 +360,9 @@ def _segment_payloads(
         start_sec = float(timestamp["start"]) / float(vad_sample_rate)
         end_sec = float(timestamp["end"]) / float(vad_sample_rate)
         start_sample = int(np.clip(round(start_sec * sample_rate), 0, total_samples))
-        end_sample = int(np.clip(round(end_sec * sample_rate), start_sample, total_samples))
+        end_sample = int(
+            np.clip(round(end_sec * sample_rate), start_sample, total_samples)
+        )
         if end_sample <= start_sample:
             continue
 
@@ -379,9 +404,8 @@ def process_episode(
     sync_path = audio_dir / f"{stem}.sync.json"
     sync_data = _read_json(sync_path)
 
-    if (
-        not bool(args.overwrite)
-        and bool(sync_data.get("vad_metadata", {}).get("processed"))
+    if not bool(args.overwrite) and bool(
+        sync_data.get("vad_metadata", {}).get("processed")
     ):
         return {
             "episode_index": episode_index,
@@ -503,12 +527,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("audio/vad_segments"),
         help="Directory for VAD clips, relative to dataset root unless absolute.",
     )
-    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--threshold", type=float, default=0.25)
     parser.add_argument("--neg-threshold", type=float, default=None)
     parser.add_argument("--min-speech-duration-ms", type=int, default=250)
     parser.add_argument("--max-speech-duration-s", type=float, default=float("inf"))
     parser.add_argument("--min-silence-duration-ms", type=int, default=100)
     parser.add_argument("--speech-pad-ms", type=int, default=30)
+    parser.add_argument(
+        "--no-instruction-audio-window",
+        dest="instruction_audio_window",
+        action="store_false",
+        default=True,
+        help="Skip deriving instruction_audio_window after VAD.",
+    )
+    parser.add_argument(
+        "--instruction-pre-margin-sec",
+        type=float,
+        default=DEFAULT_PRE_MARGIN_SEC,
+    )
+    parser.add_argument(
+        "--instruction-post-margin-sec",
+        type=float,
+        default=DEFAULT_POST_MARGIN_SEC,
+    )
     return parser
 
 
@@ -525,6 +566,9 @@ def compute_vad_for_dataset(
     max_speech_duration_s: float = float("inf"),
     min_silence_duration_ms: int = 100,
     speech_pad_ms: int = 30,
+    instruction_audio_window: bool = True,
+    instruction_pre_margin_sec: float = DEFAULT_PRE_MARGIN_SEC,
+    instruction_post_margin_sec: float = DEFAULT_POST_MARGIN_SEC,
     print_summary: bool = True,
 ) -> dict[str, Any]:
     """Run offline VAD for a LeRobot dataset and write episode sync JSON files."""
@@ -539,6 +583,9 @@ def compute_vad_for_dataset(
         max_speech_duration_s=max_speech_duration_s,
         min_silence_duration_ms=min_silence_duration_ms,
         speech_pad_ms=speech_pad_ms,
+        instruction_audio_window=instruction_audio_window,
+        instruction_pre_margin_sec=instruction_pre_margin_sec,
+        instruction_post_margin_sec=instruction_post_margin_sec,
     )
 
     dataset_root = Path(dataset_path).resolve()
@@ -593,8 +640,7 @@ def compute_vad_for_dataset(
             skipped += 1
             if print_summary:
                 print(
-                    f"[VAD] episode_{episode_index:06d}: "
-                    f"skipped ({result['reason']})"
+                    f"[VAD] episode_{episode_index:06d}: skipped ({result['reason']})"
                 )
         else:
             missing += 1
@@ -611,6 +657,18 @@ def compute_vad_for_dataset(
         "results": results,
     }
 
+    window_summary = None
+    if bool(args.instruction_audio_window):
+        window_summary = refresh_dataset_instruction_audio_windows(
+            dataset_root,
+            episode_indices=[int(index) for index in selected_episode_indices],
+            pre_margin_sec=float(args.instruction_pre_margin_sec),
+            post_margin_sec=float(args.instruction_post_margin_sec),
+            overwrite=True,
+            dry_run=False,
+        )
+        summary["instruction_audio_window"] = window_summary
+
     if print_summary:
         print("=" * 70)
         print(
@@ -618,6 +676,15 @@ def compute_vad_for_dataset(
             f"processed={processed}, skipped={skipped}, missing={missing}, "
             f"vad_segments={total_segments}"
         )
+        if window_summary is not None:
+            print(
+                "Instruction windows: "
+                f"updated={window_summary['updated']}, "
+                f"vad={window_summary['vad_windows']}, "
+                f"imputed={window_summary['imputed_windows']}, "
+                f"pending={window_summary['pending_windows']}, "
+                f"reference={window_summary['reference_window_count']}"
+            )
 
     return summary
 
@@ -637,6 +704,9 @@ def main() -> None:
         max_speech_duration_s=float(args.max_speech_duration_s),
         min_silence_duration_ms=int(args.min_silence_duration_ms),
         speech_pad_ms=int(args.speech_pad_ms),
+        instruction_audio_window=bool(args.instruction_audio_window),
+        instruction_pre_margin_sec=float(args.instruction_pre_margin_sec),
+        instruction_post_margin_sec=float(args.instruction_post_margin_sec),
         print_summary=True,
     )
 
