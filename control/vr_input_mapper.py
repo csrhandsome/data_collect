@@ -1,3 +1,4 @@
+from control.util.pose import quat_xyzw_to_wxyz, quat_wxyz_to_xyzw
 """Map VRInput to robot control commands.
 
 Includes:
@@ -143,29 +144,9 @@ class VREEPoseMapper:
         self._state_lock = threading.Lock()
         self.reset()
 
-    @staticmethod
-    def _quat_wxyz_to_xyzw(quaternion_wxyz: np.ndarray) -> np.ndarray:
-        return np.array(
-            [
-                quaternion_wxyz[1],
-                quaternion_wxyz[2],
-                quaternion_wxyz[3],
-                quaternion_wxyz[0],
-            ],
-            dtype=np.float64,
-        )
+    _quat_wxyz_to_xyzw = staticmethod(quat_wxyz_to_xyzw)
 
-    @staticmethod
-    def _quat_xyzw_to_wxyz(quaternion_xyzw: np.ndarray) -> np.ndarray:
-        return np.array(
-            [
-                quaternion_xyzw[3],
-                quaternion_xyzw[0],
-                quaternion_xyzw[1],
-                quaternion_xyzw[2],
-            ],
-            dtype=np.float64,
-        )
+    _quat_xyzw_to_wxyz = staticmethod(quat_xyzw_to_wxyz)
 
     def reset(self) -> None:
         with self._state_lock:

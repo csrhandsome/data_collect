@@ -154,6 +154,7 @@ class DH5Gripper(object):
         discrete_level_count: int = 28,
         vr_axis_threshold: float = 0.55,
         vr_step_interval_s: float = 0.08,
+        enable_cameras: bool = True,
     ):
         if int(discrete_level_count) <= 1:
             raise ValueError("discrete_level_count must be > 1")
@@ -179,12 +180,17 @@ class DH5Gripper(object):
             background_poll=True,
             background_poll_interval_s=camera_poll_interval_s,
             background_timeout_ms=camera_timeout_ms,
-        )
+        ) if enable_cameras else None
         self._observation = DHGripperObservation(
             gripper_open_ratio=self.gripper_open_ratio
         )
-        self.initialize()
-        self.dual_camera_manager.connect()
+        try:
+            self.initialize()
+            if self.dual_camera_manager is not None:
+                self.dual_camera_manager.connect()
+        except BaseException:
+            self.close()
+            raise
         self._gripper_level = self._position_to_level(self._position_command)
 
     def _build_observation(
@@ -347,7 +353,8 @@ class DH5Gripper(object):
 
     @property
     def observation(self) -> DHGripperObservation:
-        external_img, wrist_img = self.dual_camera_manager.get_images()
+        external_img, wrist_img = (self.dual_camera_manager.get_images()
+            if self.dual_camera_manager is not None else (None, None))
         self._observation = self._build_observation(
             external_img=external_img,
             wrist_img=wrist_img,
@@ -372,7 +379,8 @@ class DH5Gripper(object):
             print(f"initialization_status={back}")
 
     def close(self) -> None:
-        self.dual_camera_manager.close()
+        if self.dual_camera_manager is not None:
+            self.dual_camera_manager.close()
         if self.Hand.sc.is_open:
             self.Hand.sc.close()
 

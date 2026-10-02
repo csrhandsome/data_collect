@@ -14,3 +14,11 @@ data_analysis/quality_reports
 scripts/data2modelscope.py
 scripts/modelscope2data.py
 scripts/modelscope2weights.py
+
+# Frontend dependencies and verification output
+node_modules/
+.vite/
+playwright-report/
+test-results/
+.ruff_cache/
+.pytest_cache/

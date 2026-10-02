@@ -5,98 +5,8 @@ import numpy as np
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 
-def _image_feature(image_hw: int) -> dict[str, object]:
-    return {
-        "dtype": "image",
-        "shape": (image_hw, image_hw, 3),
-        "names": ["height", "width", "channel"],
-    }
-
-
-def _scalar_feature(name: str, *, dtype: str = "float32") -> dict[str, object]:
-    return {
-        "dtype": dtype,
-        "shape": (1,),
-        "names": [name],
-    }
-
-
-def _create_dataset(
-    repo_id: str, *, fps: float, image_hw: int, root: Path
-) -> LeRobotDataset:
-    return LeRobotDataset.create(
-        repo_id=repo_id,
-        robot_type="panda",
-        fps=float(fps),
-        root=root,
-        features={
-            "exterior_image_1_left": _image_feature(image_hw),
-            "exterior_image_2_left": _image_feature(image_hw),
-            "wrist_image_left": _image_feature(image_hw),
-            "joint_position": {
-                "dtype": "float32",
-                "shape": (7,),
-                "names": ["joint_position"],
-            },
-            "gripper_position": {
-                "dtype": "float32",
-                "shape": (1,),
-                "names": ["gripper_position"],
-            },
-            "actions": {
-                "dtype": "float32",
-                "shape": (8,),
-                "names": ["actions"],
-            },
-        },
-        image_writer_threads=6,
-        image_writer_processes=0,
-    )
-
-
-def _create_dataset_force(
-    repo_id: str, *, fps: float, image_hw: int, root: Path
-) -> LeRobotDataset:
-    return LeRobotDataset.create(
-        repo_id=repo_id,
-        robot_type="panda",
-        fps=float(fps),
-        root=root,
-        features={
-            "exterior_image_1_left": _image_feature(image_hw),
-            "exterior_image_2_left": _image_feature(image_hw),
-            "wrist_image_left": _image_feature(image_hw),
-            "gripper_image_left": _image_feature(image_hw),
-            "gripper_image_right": _image_feature(image_hw),
-            "joint_position": {
-                "dtype": "float32",
-                "shape": (7,),
-                "names": ["joint_position"],
-            },
-            "gripper_position": _scalar_feature("gripper_position"),
-            "actions": {
-                "dtype": "float32",
-                "shape": (8,),
-                "names": ["actions"],
-            },
-            "external_camera_timestamp_ms": _scalar_feature(
-                "external_camera_timestamp_ms"
-            ),
-            "wrist_camera_timestamp_ms": _scalar_feature("wrist_camera_timestamp_ms"),
-            "external_camera_frame_age_s": _scalar_feature(
-                "external_camera_frame_age_s"
-            ),
-            "wrist_camera_frame_age_s": _scalar_feature("wrist_camera_frame_age_s"),
-        },
-        image_writer_threads=6,
-        image_writer_processes=0,
-    )
-
-
 def _looks_like_lerobot_dataset(path: Path) -> bool:
-    return (path / "meta" / "info.json").is_file() and (
-        path / "meta" / "episodes.jsonl"
-    ).is_file()
+    return (path / "meta" / "info.json").is_file() and (path / "meta" / "episodes.jsonl").is_file()
 
 
 def _find_orphan_next_episode_image_dirs(meta) -> list[Path]:
@@ -106,11 +16,7 @@ def _find_orphan_next_episode_image_dirs(meta) -> list[Path]:
 
     next_episode = meta.total_episodes
     return sorted(
-        {
-            path
-            for path in images_dir.rglob(f"episode_{next_episode:06d}")
-            if path.is_dir()
-        }
+        {path for path in images_dir.rglob(f"episode_{next_episode:06d}") if path.is_dir()}
     )
 
 
@@ -135,15 +41,10 @@ def _cleanup_orphan_next_episode_images(meta) -> None:
         except OSError:
             pass
 
-    print(
-        "[LeRobot] Removed leftover temporary images for "
-        f"episode_{meta.total_episodes:06d}."
-    )
+    print(f"[LeRobot] Removed leftover temporary images for episode_{meta.total_episodes:06d}.")
 
 
-def _resume_existing_dataset_for_recording(
-    repo_id: str, path: Path
-) -> LeRobotDataset:
+def _resume_existing_dataset_for_recording(repo_id: str, path: Path) -> LeRobotDataset:
     from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
     from lerobot.common.datasets.video_utils import get_safe_default_codec
 
@@ -194,58 +95,6 @@ def _resume_existing_dataset_for_recording(
     return dataset
 
 
-def _load_or_create_dataset(
-    repo_id: str, *, fps: float, image_hw: int, root: Path
-) -> LeRobotDataset:
-    if root.exists():
-        if not root.is_dir():
-            raise RuntimeError(f"Dataset path exists and is not a directory: {root}")
-        if not _looks_like_lerobot_dataset(root):
-            raise RuntimeError(
-                "Dataset directory exists but doesn't look like a LeRobot dataset "
-                f"(missing meta/info.json): {root}"
-            )
-        try:
-            return _resume_existing_dataset_for_recording(repo_id, root)
-        except Exception as exc:
-            raise RuntimeError(
-                "Failed to load existing LeRobot dataset. "
-                "Refusing to modify/recreate automatically. "
-                "If the last saved episode is incomplete, prune it manually with: "
-                f".venv/bin/python data_analysis/delete_latest_episode.py --dataset {root}. "
-                "If the failure mentions leftover temporary images, remove the orphaned "
-                f"'{root / 'images'}' episode directory and retry."
-            ) from exc
-
-    return _create_dataset(repo_id, fps=fps, image_hw=image_hw, root=root)
-
-
-def _load_or_create_dataset_force(
-    repo_id: str, *, fps: float, image_hw: int, root: Path
-) -> LeRobotDataset:
-    if root.exists():
-        if not root.is_dir():
-            raise RuntimeError(f"Dataset path exists and is not a directory: {root}")
-        if not _looks_like_lerobot_dataset(root):
-            raise RuntimeError(
-                "Dataset directory exists but doesn't look like a LeRobot dataset "
-                f"(missing meta/info.json): {root}"
-            )
-        try:
-            return _resume_existing_dataset_for_recording(repo_id, root)
-        except Exception as exc:
-            raise RuntimeError(
-                "Failed to load existing LeRobot dataset. "
-                "Refusing to modify/recreate automatically. "
-                "If the last saved episode is incomplete, prune it manually with: "
-                f".venv/bin/python data_analysis/delete_latest_episode.py --dataset {root}. "
-                "If the failure mentions leftover temporary images, remove the orphaned "
-                f"'{root / 'images'}' episode directory and retry."
-            ) from exc
-
-    return _create_dataset_force(repo_id, fps=fps, image_hw=image_hw, root=root)
-
-
 def _prepare_episode_for_save(dataset: LeRobotDataset) -> None:
     if dataset.episode_buffer is None:
         return
@@ -253,13 +102,8 @@ def _prepare_episode_for_save(dataset: LeRobotDataset) -> None:
     if not isinstance(gripper_values, list) or not gripper_values:
         return
     dataset.episode_buffer["gripper_position"] = [
-        float(v.reshape(-1)[0]) if isinstance(v, np.ndarray) else float(v)
-        for v in gripper_values
+        float(v.reshape(-1)[0]) if isinstance(v, np.ndarray) else float(v) for v in gripper_values
     ]
-
-
-def _prepare_episode_for_save_force(dataset: LeRobotDataset) -> None:
-    _prepare_episode_for_save(dataset)
 
 
 def _discard_unsaved_episode(dataset: LeRobotDataset) -> None:
