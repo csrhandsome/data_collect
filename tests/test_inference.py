@@ -35,6 +35,7 @@ class SlowPolicy:
 
 def test_async_inference_preserves_servo_rate():
     cfg = copy.deepcopy(load_config())
+    cfg["control"]["frequency_hz"] = 100.0
     policy = SlowPolicy()
     start = time.monotonic()
     stats = run_inference(cfg, dry_run=True, max_steps=60, policy=policy)

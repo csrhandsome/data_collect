@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from pathlib import Path
 
 import yaml
@@ -58,3 +59,10 @@ def validate(config):
         and config.get("gripper", {}).get("type") != "dh5"
     ):
         raise ValueError("Tactile images require gripper.type=dh5")
+    diagnostics = config.get("diagnostics", {})
+    sample_hz = float(diagnostics.get("sample_hz", 0))
+    if not math.isfinite(sample_hz) or sample_hz < 0:
+        raise ValueError("diagnostics.sample_hz must be finite and nonnegative (0 logs every tick)")
+    pending = diagnostics.get("max_pending", 1024)
+    if isinstance(pending, bool) or not isinstance(pending, int) or pending <= 0:
+        raise ValueError("diagnostics.max_pending must be a positive integer")

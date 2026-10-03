@@ -61,6 +61,7 @@ def test_vr_edges_and_stale_input():
 )
 def test_complete_multirate_recording(tmp_path, space, tactile, audio):
     cfg = copy.deepcopy(load_config())
+    cfg["control"]["frequency_hz"] = 100.0
     cfg["dataset"].update(root=str(tmp_path), date=space, action_space=space)
     cfg["gripper"]["type"] = "dh5" if tactile else "franka"
     cfg["tactile"]["enabled"] = tactile

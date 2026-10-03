@@ -30,6 +30,11 @@ control:
   ee_nullspace_stiffness: 0.5
   max_target_translation_m: 0.15
   max_target_rotation_rad: 0.5
+diagnostics:
+  enabled: false
+  root: data/diagnostics
+  sample_hz: 0.0  # 0 records every control tick; use e.g. 10 to reduce log volume.
+  max_pending: 1024  # Full queues drop diagnostic records rather than delay control.
 camera:
   external_camera_serial: '825412070292'
   wrist_camera_serial: '825412070487'

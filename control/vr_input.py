@@ -27,7 +27,7 @@ from teleop_xr.messages import XRState
 
 from control.util.pose import nlerp_quat_xyzw, normalize_quat_xyzw
 
-# Shared-memory layout (16 doubles, lock-free):
+# Shared-memory layout (25 doubles, copied under one short lock):
 #  [0]  arm_enabled   (0.0 / 1.0)
 #  [1]  pos_x
 #  [2]  pos_y
@@ -44,18 +44,24 @@ from control.util.pose import nlerp_quat_xyzw, normalize_quat_xyzw
 #  [13] right_stick_y
 #  [14] gripper_velocity_axis  (+close / -open)
 #  [15] timestamp
-_SHM_SIZE = 18
+#  [16] pose_monotonic_ns (local callback receipt time, not headset time)
+#  [17] pose_seq
+#  [18:21] raw position before input filtering
+#  [21:25] raw quaternion xyzw before input filtering
+_SHM_SIZE = 25
 
 
 def _normalize_quaternion(quaternion_xyzw):
     try:
         return tuple(normalize_quat_xyzw(quaternion_xyzw))
     except ValueError:
-        return (0., 0., 0., 1.)
+        return (0.0, 0.0, 0.0, 1.0)
 
 
 def _nlerp_quaternion(start_xyzw, end_xyzw, alpha):
-    return tuple(nlerp_quat_xyzw(_normalize_quaternion(start_xyzw), _normalize_quaternion(end_xyzw), alpha))
+    return tuple(
+        nlerp_quat_xyzw(_normalize_quaternion(start_xyzw), _normalize_quaternion(end_xyzw), alpha)
+    )
 
 
 @dataclass(slots=True)
@@ -87,6 +93,8 @@ class VRInput:
     timestamp: float = 0.0
     pose_monotonic_ns: int = 0
     pose_seq: int = 0
+    raw_position: tuple[float, float, float] | None = None
+    raw_quaternion_xyzw: tuple[float, float, float, float] | None = None
 
 
 class VRInputReader:
@@ -191,6 +199,7 @@ class VRInputReader:
         return filtered_pos, filtered_quat
 
     def _on_xr_update(self, _pose, message) -> None:
+        received_ns = time.monotonic_ns()
         xr_data = message.get("data", message)
         state = XRState.model_validate(xr_data)
 
@@ -313,8 +322,10 @@ class VRInputReader:
             right_stick_y=right_stick_y,
             gripper_velocity_axis=gripper_velocity_axis,
             timestamp=now,
-            pose_monotonic_ns=time.monotonic_ns(),
-            pose_seq=self._latest.pose_seq+1,
+            pose_monotonic_ns=received_ns,
+            pose_seq=self._latest.pose_seq + 1,
+            raw_position=(pos_x, pos_y, pos_z),
+            raw_quaternion_xyzw=(quat_x, quat_y, quat_z, quat_w),
         )
 
 
@@ -326,7 +337,7 @@ class VRInputProcess:
         vr = VRInputProcess()
         vr.start()
         ...
-        v = vr.latest          # zero-copy read of 12 doubles
+        v = vr.latest          # coherent latest snapshot; no input queue
         vr.stop()              # on shutdown
     """
 
@@ -340,6 +351,7 @@ class VRInputProcess:
     ) -> None:
         self._shm: mp.Array = mp.Array("d", _SHM_SIZE, lock=True)
         self._shm[7] = 1.0  # quat_w default
+        self._shm[24] = 1.0  # raw quat_w default
         self._proc = mp.Process(
             target=self._vr_worker,
             args=(
@@ -383,30 +395,34 @@ class VRInputProcess:
         while True:
             v = reader.latest
             with shm.get_lock():
-                shm[0] = 1.0 if v.arm_enabled else 0.0
-                shm[1] = v.pos_x
-                shm[2] = v.pos_y
-                shm[3] = v.pos_z
-                shm[4] = v.quat_x
-                shm[5] = v.quat_y
-                shm[6] = v.quat_z
-                shm[7] = v.quat_w
-                shm[8] = 1.0 if v.x_pressed else 0.0
-                shm[9] = 1.0 if v.y_pressed else 0.0
-                shm[10] = 1.0 if v.gripper_close else 0.0
-                shm[11] = 1.0 if v.gripper_open else 0.0
-                shm[12] = v.right_stick_x
-                shm[13] = v.right_stick_y
-                shm[14] = v.gripper_velocity_axis
-                shm[15] = v.timestamp
-                shm[16] = v.pose_monotonic_ns
-                shm[17] = v.pose_seq
+                shm[:] = (
+                    float(v.arm_enabled),
+                    v.pos_x,
+                    v.pos_y,
+                    v.pos_z,
+                    v.quat_x,
+                    v.quat_y,
+                    v.quat_z,
+                    v.quat_w,
+                    float(v.x_pressed),
+                    float(v.y_pressed),
+                    float(v.gripper_close),
+                    float(v.gripper_open),
+                    v.right_stick_x,
+                    v.right_stick_y,
+                    v.gripper_velocity_axis,
+                    v.timestamp,
+                    v.pose_monotonic_ns,
+                    v.pose_seq,
+                    *(v.raw_position or (v.pos_x, v.pos_y, v.pos_z)),
+                    *(v.raw_quaternion_xyzw or (v.quat_x, v.quat_y, v.quat_z, v.quat_w)),
+                )
             time.sleep(0.001)  # 1 kHz — <1 ms latency, negligible CPU
 
     @property
     def latest(self) -> VRInput:
         with self._shm.get_lock():
-            s = list(self._shm)
+            s = self._shm[:]
         return VRInput(
             arm_enabled=s[0] > 0.5,
             pos_x=s[1],
@@ -425,6 +441,8 @@ class VRInputProcess:
             right_stick_y=s[13],
             pose_monotonic_ns=int(s[16]),
             pose_seq=int(s[17]),
+            raw_position=tuple(s[18:21]) if s[17] > 0 else None,
+            raw_quaternion_xyzw=tuple(s[21:25]) if s[17] > 0 else None,
             gripper_velocity_axis=s[14],
             timestamp=s[15],
         )

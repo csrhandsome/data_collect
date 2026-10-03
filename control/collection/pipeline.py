@@ -12,6 +12,7 @@ from control.collection.dataset import open_dataset
 from control.collection.devices import make_cameras, make_microphone, make_vr
 from control.collection.recording import EpisodeRecorder
 from control.collection.vr import EEMapper, VRResampler
+from control.control_diagnostics import ControlDiagnostics
 from control.reactive_desk_client import ScenePublisher
 from control.robotic_arm_controller import RoboticArmControler
 from control.util.pose import quat_angle_xyzw
@@ -26,6 +27,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
 
     recorder = None
     with ExitStack() as stack:
+        diagnostics = stack.enter_context(ControlDiagnostics(config))
         arm = stack.enter_context(
             RoboticArmControler(config=config, backend=FakeBackend() if dry_run else None)
         )
@@ -51,29 +53,46 @@ def run_collection(config, *, dry_run=False, max_steps=0):
         arm.start_stream()
         resampler = VRResampler(float(config.get("vr", {}).get("stale_after_s", 0.5)))
         mapper = EEMapper(config.get("vr", {}))
+        state = arm.get_state()
+        mapper.reset(state)
+        if diagnostics.enabled:
+            diagnostics.event("stream_start", hold_position=state.ee_position.tolist())
         rate = FixedRate(config["control"]["frequency_hz"])
         steps = 0
         last_axis_ns = 0
         failed = False
         try:
             while max_steps <= 0 or steps < max_steps:
-                rate.tick()
+                tick_ns = rate.tick()
+                diagnostics.begin_tick(steps, tick_ns, rate.overruns)
+                reset_requested = False
+                command_sent = False
                 state = arm.get_state()
+                diagnostics.mark("state_read")
                 raw_sample = vr.latest
+                diagnostics.mark("vr_read")
                 now = time.monotonic_ns()
                 sample = resampler.sample(raw_sample, now)
+                if arm.gripper_busy:
+                    # The controller is paused for the gripper; discard unsent VR motion.
+                    mapper.reset(state)
                 position, quaternion = mapper.map(sample, state, now)
+                diagnostics.mark("resample_and_map")
                 scene.publish(state.ee_position, now, config["dataset"]["instruction"])
-                changed = (
+                diagnostics.mark("scene_publish")
+                # Idle pose corrections are not operator actions that start an episode.
+                changed = sample.enabled and (
                     np.linalg.norm(position - state.ee_position) > 1e-6
                     or quat_angle_xyzw(quaternion, state.ee_quaternion_xyzw) > 1e-6
                 )
                 if not arm.gripper_busy:
                     arm.send_ee_target(position, quaternion)
+                    command_sent = True
                     gripper_changed, last_axis_ns = handle_gripper(
                         arm, sample, state, now, last_axis_ns, config
                     )
                     changed = changed or gripper_changed
+                diagnostics.mark("command_and_gripper")
                 if recorder is not None:
                     if changed and not recorder.active:
                         recorder.start()
@@ -102,15 +121,39 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                             save=not sample.discard,
                             success=True if sample.save else None,
                         )
-                        reset_robot(arm)
-                        mapper.reset()
+                        reset_requested = True
+                diagnostics.mark("recording_and_camera")
+                diagnostics.record(
+                    raw=raw_sample,
+                    sample=sample,
+                    state=state,
+                    mapper=mapper,
+                    position=position,
+                    quaternion=quaternion,
+                    command_sent=command_sent,
+                )
+                if reset_requested:
+                    reset_robot(arm)
+                    state = arm.get_state()
+                    mapper.reset(state)
+                    if diagnostics.enabled:
+                        diagnostics.event("stream_reset", hold_position=state.ee_position.tolist())
                 steps += 1
         except KeyboardInterrupt:
+            diagnostics.event("interrupt", step=steps)
             logger.info("Stopping acquisition")
-        except BaseException:
+        except BaseException as exc:
             failed = True
+            diagnostics.event(
+                "error",
+                step=steps,
+                error_type=type(exc).__name__,
+                message=str(exc),
+                timings_ms=dict(diagnostics.timings_ms),
+            )
             raise
         finally:
+            diagnostics.event("loop_end", ticks=steps, overruns=rate.overruns, failed=failed)
             finish_stream(arm)
             if recorder is not None:
                 recorder.finish(arm.get_state(), save=not failed)

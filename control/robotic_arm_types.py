@@ -28,6 +28,10 @@ class RobotState:
     gripper: GripperState
     sampled_monotonic_ns: int
     base_frame: str = "panda_link0"
+    robot_time_s: float | None = None
+    robot_mode: str | None = None
+    control_command_success_rate: float | None = None
+    current_errors: str | None = None
 
     def __post_init__(self):
         for name, shape in (

@@ -82,6 +82,10 @@ class PandaBackend:
             transform,
             GripperState(self.gripper_kind, self.commanded_open_ratio, self._width, busy),
             time.monotonic_ns(),
+            robot_time_s=state.time.to_sec(),
+            robot_mode=str(state.robot_mode),
+            control_command_success_rate=float(state.control_command_success_rate),
+            current_errors=str(state.current_errors),
         )
 
     def start(self, state):

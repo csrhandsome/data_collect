@@ -80,6 +80,8 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
                     mapper.reset()
                     takeover = enabled
                 if enabled:
+                    if arm.gripper_busy:
+                        mapper.reset(state)
                     position, quat = mapper.map(sample, state, now)
                     if not arm.gripper_busy:
                         arm.send_ee_target(position, quat)
