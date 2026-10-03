@@ -25,6 +25,8 @@ from teleop_xr import Teleop
 from teleop_xr.config import TeleopSettings
 from teleop_xr.messages import XRState
 
+from control.util.pose import nlerp_quat_xyzw, normalize_quat_xyzw
+
 # Shared-memory layout (16 doubles, lock-free):
 #  [0]  arm_enabled   (0.0 / 1.0)
 #  [1]  pos_x

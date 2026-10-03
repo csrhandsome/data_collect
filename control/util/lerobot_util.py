@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 
@@ -44,10 +45,37 @@ def _cleanup_orphan_next_episode_images(meta) -> None:
     print(f"[LeRobot] Removed leftover temporary images for episode_{meta.total_episodes:06d}.")
 
 
+def _ensure_local_recording_metadata(path: Path) -> None:
+    from lerobot.common.datasets.utils import EPISODES_PATH, EPISODES_STATS_PATH, TASKS_PATH
+    from packaging.version import Version
+
+    info = json.loads((path / "meta/info.json").read_text())
+    required = [TASKS_PATH, EPISODES_PATH]
+    if Version(info["codebase_version"]) >= Version("v2.1"):
+        required.append(EPISODES_STATS_PATH)
+    missing = [path / name for name in required if not (path / name).is_file()]
+    if not missing:
+        return
+
+    # LeRobot creates these JSONL files only when the first episode is saved.
+    empty = info.get("total_episodes") == 0 and info.get("total_frames") == 0
+    missing_tasks = path / TASKS_PATH in missing
+    if not empty or (missing_tasks and info.get("total_tasks") != 0):
+        preview = "\n".join(f"  - {p}" for p in missing)
+        raise RuntimeError(
+            f"Cannot resume: dataset is missing local metadata:\n{preview}\n"
+            "Restore the metadata before recording."
+        )
+    for metadata_path in missing:
+        with metadata_path.open("x", encoding="utf-8"):
+            pass
+
+
 def _resume_existing_dataset_for_recording(repo_id: str, path: Path) -> LeRobotDataset:
     from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
     from lerobot.common.datasets.video_utils import get_safe_default_codec
 
+    _ensure_local_recording_metadata(path)
     meta = LeRobotDatasetMetadata(repo_id=repo_id, root=path)
 
     missing: list[Path] = []

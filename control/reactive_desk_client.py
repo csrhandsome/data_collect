@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import websockets
 import websockets.sync.client
+from websockets.exceptions import InvalidHandshake
 
 
 class ReactiveDeskVlaClient:
@@ -77,7 +78,7 @@ class ReactiveDeskVlaClient:
             self._ws.send(json.dumps(payload))
             self._ws.recv(timeout=1)
             return True
-        except (websockets.ConnectionClosed, OSError, TimeoutError):
+        except (websockets.ConnectionClosed, InvalidHandshake, OSError, TimeoutError):
             self.close()
             return False
 

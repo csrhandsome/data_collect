@@ -116,7 +116,11 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 recorder.finish(arm.get_state(), save=not failed)
         logger.info("Acquisition finished: %s ticks, %s overruns", steps, rate.overruns)
     if recorder is not None and config.get("audio", {}).get("vad_enabled", False) and not dry_run:
-        from data_analysis.preprocess_vad import compute_vad_for_dataset
+        audio_files = (recorder.root / "audio").glob("episode_*.wav")
+        if recorder.dataset.meta.total_episodes > 0 and any(path.is_file() for path in audio_files):
+            from data_analysis.preprocess_vad import compute_vad_for_dataset
 
-        compute_vad_for_dataset(recorder.root)
+            compute_vad_for_dataset(recorder.root)
+        else:
+            logger.info("Skipping VAD: no saved episode audio")
     return {"ticks": steps, "overruns": rate.overruns}
