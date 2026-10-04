@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[2] / "data/openpi"
+DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[2] / "data/dataset"
 
 
 def configured_data_root(data_root: Path | None = None) -> Path:

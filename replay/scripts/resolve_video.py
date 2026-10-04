@@ -20,6 +20,10 @@ def resolve_video(root: Path, episode_index: int, feature: str) -> dict:
     episode = _get_episode(episodes, episode_index)
     if feature not in info["features"]:
         raise KeyError(f"Feature {feature} not found")
+    if info["features"][feature]["dtype"] == "image":
+        from .prepare_video import prepare_video
+
+        return prepare_video(root, episode_index, feature)
     if info["features"][feature]["dtype"] != "video":
         raise ValueError("Requested feature is not a video stream")
     feature_info = info["features"][feature].get("info", {})

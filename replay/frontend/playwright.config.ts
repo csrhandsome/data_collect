@@ -22,7 +22,7 @@ export default defineConfig({
   webServer: [
     {
       command:
-        'env -u PYTHONPATH uv run python -m replay.scripts.generate_demo && env -u PYTHONPATH uv run uvicorn replay.backend.main:app --host 127.0.0.1 --port 8000',
+        'env -u PYTHONPATH uv run python -m replay.scripts.generate_demo && env -u PYTHONPATH uv run python -m replay.scripts.generate_image_demo && env -u PYTHONPATH uv run uvicorn replay.backend.main:app --host 127.0.0.1 --port 8000',
       cwd: repoRoot,
       url: 'http://127.0.0.1:8000/api/health',
       env: { REPLAY_DATA_ROOT: join(repoRoot, 'replay', 'demo_data') },

@@ -1,3 +1,5 @@
+import { Texture } from '../ui/Texture'
+import { Button } from '../ui/Button'
 import { useState } from 'react'
 import type { DragEvent, ReactNode } from 'react'
 import { FEATURE_DRAG_TYPE } from '../../lib/api'
@@ -50,7 +52,7 @@ export function ReferencePanel({
 
   return (
     <section
-      className={`reference-panel ${dragOver ? 'is-drag-over' : ''} ${count ? 'has-cards' : ''}`}
+      className={`relative mb-6 min-h-80 min-w-0 flex-1 md:overflow-y-auto md:p-1 ${dragOver ? 'outline-4 outline-offset-4 outline-foreground' : ''}`}
       data-testid="reference-panel"
       aria-label="参考栏"
       onDragOver={allowDrop}
@@ -61,48 +63,47 @@ export function ReferencePanel({
     >
       {count ? (
         <>
-          <div className="visualization-grid">{children}</div>
-          <div className="drop-more">
+          <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2 2xl:grid-cols-3">
+            {children}
+          </div>
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-3 border-y border-border-light py-5 text-sm text-muted-foreground [&>code]:font-mono [&>code]:text-[10px] [&>code]:tracking-widest">
             <Icon name="plus" size={17} />
             <span>继续拖入数据字段，添加一个视图</span>
             <code>DROP TO ADD</code>
           </div>
         </>
       ) : (
-        <div className="empty-workspace">
-          <div className="empty-illustration" aria-hidden="true">
-            <div className="illustration-grid" />
-            <div className="floating-card floating-card-video">
-              <Icon name="video" size={22} />
-              <span>CAMERA STREAM</span>
-              <div className="mini-video">
-                <span />
-              </div>
+        <div className="relative isolate flex min-h-[400px] md:min-h-full flex-col items-center justify-center overflow-hidden border border-foreground px-5 py-10 text-center ">
+          <Texture pattern="grid" />
+          <div aria-hidden="true" className="mb-7 grid grid-cols-2 border border-foreground">
+            <div className="flex h-20 w-28 flex-col items-center justify-center gap-2 border-r border-foreground">
+              <Icon name="video" size={24} />
+              <span className="font-mono text-[9px] tracking-widest">01 / CAMERA</span>
             </div>
-            <div className="floating-card floating-card-plot">
-              <Icon name="trajectory" size={19} />
-              <span>EE TRAJECTORY</span>
-              <svg viewBox="0 0 140 55">
-                <path d="M0 45C15 45 12 13 30 20S48 52 65 30 86 30 98 15s24-3 42-7" />
-              </svg>
+            <div className="flex h-20 w-28 flex-col items-center justify-center gap-2 bg-foreground text-background">
+              <Icon name="trajectory" size={24} />
+              <span className="font-mono text-[9px] tracking-widest">02 / MOTION</span>
             </div>
-            <span className="drop-cross">
-              <Icon name="plus" size={20} />
-            </span>
           </div>
-          <p className="eyebrow">YOUR DATA, IN MOTION</p>
-          <h2>把数据拖进来，开始回放。</h2>
-          <p className="empty-description">
+          <p className="font-mono text-[10px] tracking-[0.2em] text-muted-foreground">
+            YOUR DATA, IN MOTION
+          </p>
+          <h2 className="mt-3 max-w-lg font-display text-3xl leading-tight tracking-tight lg:text-[40px]">
+            把数据拖进来，
+            <br className="sm:hidden" />
+            开始回放。
+          </h2>
+          <p className="my-5 max-w-lg text-base leading-relaxed text-muted-foreground">
             从左侧选择相机、音频或状态数据，拖动到参考栏。
             <br />
             多个视图将跟随同一条时间轴同步播放。
           </p>
-          <button className="button button-primary" disabled={disabled} onClick={onAddDefaults}>
+          <Button disabled={disabled} onClick={onAddDefaults}>
             <Icon name="plus" size={16} />
             添加相机与 EE
             <Icon name="arrow" size={16} />
-          </button>
-          <div className="supported-views">
+          </Button>
+          <div className="mt-7 flex flex-wrap justify-center gap-5 [&>span]:flex [&>span]:items-center [&>span]:gap-2 [&>span]:font-mono [&>span]:text-[11px]">
             <span>
               <Icon name="video" size={14} />
               相机图片与视频
@@ -112,11 +113,13 @@ export function ReferencePanel({
               末端、关节曲线与音频
             </span>
           </div>
-          <p className="empty-keyboard-note">也可以点击数据块上的「添加」按钮</p>
+          <p className="mt-4 font-mono text-[10px] text-muted-foreground">
+            也可以点击数据块上的「添加」按钮
+          </p>
         </div>
       )}
       {dragOver ? (
-        <div className="drop-overlay">
+        <div className="absolute inset-0 z-20 flex min-h-60 flex-col items-center justify-center gap-4 border-4 border-foreground bg-background text-foreground pointer-events-none [&>strong]:font-display [&>strong]:text-3xl [&>strong]:font-normal">
           <Icon name="plus" size={26} />
           <strong>松开，添加到参考栏</strong>
         </div>

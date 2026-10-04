@@ -3,6 +3,7 @@
 import ast
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import is_dataclass
 from pathlib import Path
 
@@ -146,6 +147,52 @@ def test_gripper_busy_failure_and_worker_ownership(arm):
         arm.gripper_close()
     # Clear the consumed failure before fixture cleanup; separate tests verify propagation.
     arm._gripper_future = None
+
+
+@pytest.mark.parametrize("transition", ["stop", "start"])
+def test_state_read_waits_for_gripper_controller_transition(arm, monkeypatch, transition):
+    arm.start_stream()
+    transitioning = threading.Event()
+    release = threading.Event()
+    read_requested = threading.Event()
+    read_during_transition = threading.Event()
+    original_transition = getattr(arm._backend, transition)
+    original_snapshot = arm._backend.snapshot
+
+    def blocked_transition(*args, **kwargs):
+        transitioning.set()
+        if not release.wait(2):
+            raise TimeoutError("Controller transition was not released")
+        try:
+            return original_transition(*args, **kwargs)
+        finally:
+            transitioning.clear()
+
+    def snapshot(*args, **kwargs):
+        if transitioning.is_set():
+            read_during_transition.set()
+            raise RuntimeError("Concurrent libfranka control/read operation")
+        return original_snapshot(*args, **kwargs)
+
+    def read_state():
+        read_requested.set()
+        return arm.get_state()
+
+    monkeypatch.setattr(arm._backend, transition, blocked_transition)
+    monkeypatch.setattr(arm._backend, "snapshot", snapshot)
+    with ThreadPoolExecutor(max_workers=1) as reader:
+        try:
+            arm.gripper_close(wait=False)
+            assert transitioning.wait(1)
+            state_future = reader.submit(read_state)
+            assert read_requested.wait(1)
+            assert not read_during_transition.wait(0.05)
+        finally:
+            release.set()
+        arm.wait_gripper(timeout=1)
+        assert state_future.result(timeout=1).joint_positions.shape == (7,)
+    assert arm.get_status().stream_space == "ee"
+    assert arm.get_state().gripper.commanded_open_ratio == 0
 
 
 def test_stop_timeout_never_reports_stopped(arm):

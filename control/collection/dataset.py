@@ -41,7 +41,8 @@ def open_dataset(config):
 
     cfg = config["dataset"]
     repo = f"{cfg['repo_id']}_{cfg['date']}"
-    root = Path(cfg.get("root", "data")) / repo
+    # Keep the Hub repo ID independent of the local, flat dataset directory.
+    root = Path(cfg.get("root", "data/dataset")) / repo.rsplit("/", 1)[-1]
     fps = float(config["camera"].get("fps", 30))
     schema = features(
         int(config["camera"].get("image_hw", 224)),

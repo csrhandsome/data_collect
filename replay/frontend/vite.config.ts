@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': {
           target: process.env.REPLAY_API_TARGET || env.REPLAY_API_TARGET || 'http://127.0.0.1:8003',
-          changeOrigin: true,
+          changeOrigin: false,
         },
       },
     },

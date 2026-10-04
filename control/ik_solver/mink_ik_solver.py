@@ -47,7 +47,7 @@ class MinkFrankaJointIKSolver(IKVectorInputs):
         self._rng = np.random.RandomState(random_seed)
 
         model_path = (
-            Path(__file__).resolve().parents[2] / "franka_mjcf" / "panda.xml"
+            Path(__file__).resolve().parents[2] / "data" / "franka_mjcf" / "panda.xml"
         )
         self._model = mujoco.MjModel.from_xml_path(str(model_path))
         self._configuration = mink.Configuration(self._model)

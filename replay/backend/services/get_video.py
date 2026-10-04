@@ -16,6 +16,6 @@ def get_video(
             **source,
             "dataset_id": dataset_id,
             "episode_index": episode_index,
-            "url": f"{path}?{urlencode({'feature': feature})}",
+            "url": f"{path}?{urlencode({'feature': feature, **({'version': source['version']} if 'version' in source else {})})}",
         },
     )

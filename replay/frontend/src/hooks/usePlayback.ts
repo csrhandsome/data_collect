@@ -4,6 +4,7 @@ export function usePlayback(duration: number, selectionKey: string) {
   const [time, setTime] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [rate, setRate] = useState(1)
+  const [seekVersion, setSeekVersion] = useState(0)
   const clock = useRef({ time: 0, lastTick: 0, lastPaint: 0 })
 
   useEffect(() => {
@@ -40,6 +41,7 @@ export function usePlayback(duration: number, selectionKey: string) {
       const clamped = Math.max(0, Math.min(duration, next))
       clock.current.time = clamped
       setTime(clamped)
+      setSeekVersion((value) => value + 1)
     },
     [duration],
   )
@@ -49,10 +51,11 @@ export function usePlayback(duration: number, selectionKey: string) {
     if (clock.current.time >= duration) {
       clock.current.time = 0
       setTime(0)
+      setSeekVersion((value) => value + 1)
     }
     setPlaying((value) => !value)
   }, [duration])
 
   const pause = useCallback(() => setPlaying(false), [])
-  return { time, playing, rate, setRate, seek, toggle, pause }
+  return { time, playing, rate, seekVersion, setRate, seek, toggle, pause }
 }

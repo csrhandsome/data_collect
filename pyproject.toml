@@ -55,6 +55,11 @@ ignore = ["E501"]
 
 [project.scripts]
 replay-server = "replay.backend.cli:main"
+vr_collect = "vr_collect:cli"
+episode-delete = "control.collection.deletion:cli"
+
+[tool.setuptools]
+py-modules = ["vr_collect"]
 
 [build-system]
 requires = ["setuptools>=68"]

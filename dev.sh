@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-replay_repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+replay_repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$replay_repo_root"
 
 for replay_tool in uv pnpm setsid; do

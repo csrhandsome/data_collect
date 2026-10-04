@@ -32,3 +32,24 @@ export function episodeUrl(datasetId: string, episodeIndex: number) {
 }
 
 export const FEATURE_DRAG_TYPE = 'application/x-replay-feature'
+
+export async function postJson<T>(url: string, body?: unknown): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  } catch {
+    throw new ApiError('无法连接后端。请先刷新任务状态，确认操作是否已启动。', 0)
+  }
+  if (!response.ok) {
+    const body: { detail?: unknown } = await response.json().catch(() => ({}))
+    throw new ApiError(
+      typeof body.detail === 'string' ? body.detail : `操作失败（HTTP ${response.status}）`,
+      response.status,
+    )
+  }
+  return response.json() as Promise<T>
+}

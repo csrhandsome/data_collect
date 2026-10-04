@@ -8,7 +8,7 @@ short WAV clips, and stores the result back into the existing
 
 Example:
   uv run -m data_analysis.preprocess_vad \
-    --dataset-path data/openpi/franka_lerobot_4_9_audio \
+    --dataset-path data/dataset/franka_lerobot_4_9_audio \
     --overwrite
 """
 
@@ -500,7 +500,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset-path",
         type=Path,
-        default=Path("data/openpi/franka_lerobot_4_9_audio"),
+        default=Path("data/dataset/franka_lerobot_4_9_audio"),
         help="LeRobot dataset root containing audio/ and meta/.",
     )
     parser.add_argument(

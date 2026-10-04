@@ -9,8 +9,8 @@ Default usage:
 
 Explicit usage:
 uv run data_analysis/convert_audio_dataset_to_asr_qwen.py \
-    --input-dir data/openpi/franka_lerobot_6_19_audio \
-    --output-dir data/openpi/franka_lerobot_6_19_audio_asr \
+    --input-dir data/dataset/franka_lerobot_6_19_audio \
+    --output-dir data/dataset/franka_lerobot_6_19_audio_asr \
     --overwrite-output \
     --asr-model Qwen/Qwen3-ASR-0.6B
 

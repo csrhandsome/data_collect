@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--port", type=int)
     args = parser.parse_args()
     config = load_config(args.config).get("replay", {})
-    os.environ.setdefault("REPLAY_DATA_ROOT", config.get("data_root", "data/openpi"))
+    os.environ.setdefault("REPLAY_DATA_ROOT", config.get("data_root", "data/dataset"))
     import uvicorn
 
     uvicorn.run(

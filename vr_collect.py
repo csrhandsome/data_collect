@@ -24,5 +24,11 @@ def main(argv=None):
     )
 
 
+def cli():
+    """Console entry points must return an exit code, not the collection statistics."""
+    main()
+    return 0
+
+
 if __name__ == "__main__":
     main()

@@ -160,3 +160,36 @@ test('API failure is shown and can recover through retry', async ({ page }) => {
   await expect(page.getByTestId('dataset-select')).toBeEnabled()
   await expect(page.getByTestId('data-block-ee_pose')).toBeVisible()
 })
+
+test('rescanning discovers datasets and recovers when the selected dataset is removed', async ({
+  page,
+}) => {
+  let available = ['demo_v21']
+  await page.route('**/api/datasets', async (route) => {
+    const response = await route.fetch()
+    const body = await response.json()
+    await route.fulfill({
+      response,
+      json: {
+        datasets: body.datasets.filter((item: { id: string }) => available.includes(item.id)),
+      },
+    })
+  })
+  await page.goto('/')
+  const select = page.getByTestId('dataset-select')
+  await expect(select).toHaveValue('demo_v21')
+  await expect(select.locator('option[value="demo_v30"]')).toHaveCount(0)
+  available = ['demo_v21', 'demo_v30']
+  await page.getByTestId('scan-datasets').click()
+  await expect(select.locator('option[value="demo_v30"]')).toHaveCount(1)
+  await select.selectOption('demo_v30')
+  await expect(page.getByTestId('data-block-ee_pose')).toBeVisible()
+  await page.getByTestId('data-block-ee_pose').getByRole('button').click()
+  await expect(page.getByTestId('visualization-ee_pose')).toBeVisible()
+  available = ['demo_v21']
+  await page.getByTestId('scan-datasets').click()
+  await expect(select).toHaveValue('demo_v21')
+  await expect(page.getByTestId('data-block-ee_pose')).toBeVisible()
+  await expect(page.getByTestId('visualization-ee_pose')).toHaveCount(0)
+  await expect(page).toHaveURL(/dataset=demo_v21/)
+})

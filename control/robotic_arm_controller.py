@@ -42,8 +42,11 @@ class RoboticArmControler:
                 warnings.warn(f"Robot cleanup failed: {exc}", RuntimeWarning)
 
     def get_state(self) -> RobotState:
-        lifecycle.require_connected(self)
-        return self._backend.snapshot(busy=self.gripper_busy)
+        # SDK state reads may call readOnce while idle. Serialize them with
+        # controller stop/start in the gripper worker and other state readers.
+        with self._lock:
+            lifecycle.require_connected(self)
+            return self._backend.snapshot(busy=self.gripper_busy)
 
     def wait_ready(self, *, timeout_s: float = 5.0) -> RobotState:
         from control.util.timing import wait_ready

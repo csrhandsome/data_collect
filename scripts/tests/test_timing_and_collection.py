@@ -67,7 +67,7 @@ def test_complete_multirate_recording(tmp_path, space, tactile, audio):
     cfg["tactile"]["enabled"] = tactile
     cfg["audio"].update(enabled=audio, vad_enabled=False)
     stats = run_collection(cfg, dry_run=True, max_steps=50)
-    root = tmp_path / f"openpi/franka_lerobot_{space}"
+    root = tmp_path / f"franka_lerobot_{space}"
     info = read_dataset(root)
     assert stats["ticks"] == 50
     assert info["fps"] == 30 and info["total_episodes"] == 1

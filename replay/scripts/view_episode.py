@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from replay.backend.config import configured_data_root
 from replay.scripts.read_audio import read_audio
 from replay.scripts.read_dataset import read_dataset
 from replay.scripts.read_episode import read_episode
@@ -18,11 +19,11 @@ def main(argv=None):
     parser.add_argument("--list-episodes", action="store_true")
     parser.add_argument("--max-points", type=int, default=20)
     args = parser.parse_args(argv)
-    data_root = Path(__file__).resolve().parents[2] / "data/openpi"
+    data_root = configured_data_root()
     if args.root:
         root = args.root
     elif args.repo_id:
-        root = data_root.parent / args.repo_id if "/" in args.repo_id else data_root / args.repo_id
+        root = data_root / args.repo_id.rsplit("/", 1)[-1]
     else:
         candidates = [p.parent.parent for p in data_root.glob("*/meta/info.json")]
         if not candidates:

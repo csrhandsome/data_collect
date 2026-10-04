@@ -249,7 +249,7 @@ def _episode_summary(info: dict, episode: dict) -> dict:
     }
 
 
-def _episode_table(root: Path, info: dict, episode: dict, feature: str) -> pa.Table:
+def _episode_data_path(root: Path, info: dict, episode: dict) -> Path:
     index = episode["episode_index"]
     if info["codebase_version"].startswith("v2."):
         path = _format_path(
@@ -265,6 +265,12 @@ def _episode_table(root: Path, info: dict, episode: dict, feature: str) -> pa.Ta
             chunk_index=episode["data/chunk_index"],
             file_index=episode["data/file_index"],
         )
+    return path
+
+
+def _episode_table(root: Path, info: dict, episode: dict, feature: str) -> pa.Table:
+    index = episode["episode_index"]
+    path = _episode_data_path(root, info, episode)
     try:
         schema = pq.ParquetFile(path).schema_arrow.names
     except (OSError, pa.ArrowException) as exc:

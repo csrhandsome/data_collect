@@ -45,6 +45,27 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
             stack.callback(vr.stop)
         if cfg.get("move_to_start", False):
             arm.move_to_start()
+        # Warmup: wait for five inference responses and discard them before execution.
+        for i in range(5):
+            state = arm.get_state()
+            pair = cameras.get_frames()
+            if (
+                pair is None
+                or time.monotonic_ns() - min(pair.front_ns, pair.wrist_ns)
+                > config["camera"].get("max_age_s", 0.2) * 1e9
+            ):
+                raise RuntimeError("Inference camera frame is unavailable or stale")
+            observation = build_observation(
+                state,
+                pair,
+                config["dataset"]["instruction"],
+                cfg["action_space"],
+                tactile=arm.get_tactile_images()
+                if config.get("tactile", {}).get("enabled", False)
+                else None,
+            )
+            client.infer(observation)
+            logger.info("Policy warmup %d/5 complete", i + 1)
         arm.start_stream()
         worker = PolicyWorker(client)
         stack.callback(worker.close)

@@ -178,6 +178,22 @@ def test_single_dataset_root_and_environment(demo_root: Path, monkeypatch: pytes
         assert [dataset["id"] for dataset in datasets] == ["demo_v30"]
 
 
+def test_dataset_scan_detects_added_and_moved_datasets(demo_root: Path, tmp_path: Path):
+    with TestClient(create_app(tmp_path)) as connection:
+        assert connection.get("/api/datasets").json() == {"datasets": []}
+        first = _copy_dataset(demo_root, tmp_path)
+        _copy_dataset(demo_root, tmp_path, "demo_v30")
+        response = connection.get("/api/datasets")
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["datasets"]] == ["demo_v21", "demo_v30"]
+        (tmp_path / "not-a-dataset").mkdir()
+        first.rename(tmp_path / "renamed_dataset")
+        response = connection.get("/api/datasets")
+        assert [item["id"] for item in response.json()["datasets"]] == ["demo_v30", "renamed_dataset"]
+        assert connection.get("/api/datasets/renamed_dataset/episodes/1").status_code == 200
+        assert connection.get("/api/datasets/demo_v21").status_code == 404
+
+
 def test_malformed_metadata_is_422_without_local_path(demo_root: Path, tmp_path: Path):
     root = _copy_dataset(demo_root, tmp_path)
     (root / "meta/info.json").write_text("{bad json")

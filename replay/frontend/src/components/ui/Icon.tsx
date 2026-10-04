@@ -31,7 +31,7 @@ const paths: Record<IconName, ReactNode> = {
   ),
   video: (
     <>
-      <rect x="3" y="5" width="13" height="14" rx="2" />
+      <rect x="3" y="5" width="13" height="14" rx="0" />
       <path d="m16 9 5-3v12l-5-3" />
     </>
   ),
@@ -130,7 +130,7 @@ export function Icon({
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.6"
+      strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}

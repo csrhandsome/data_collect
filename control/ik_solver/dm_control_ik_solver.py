@@ -23,6 +23,7 @@ class _FrankaArm(robot_arm.RobotArm):
         self._name = "franka"
         model_file = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+            "data",
             "franka_mjcf",
             "panda.xml",
         )
@@ -150,7 +151,7 @@ class FrankaJointIKSolver(IKVectorInputs):
         - The target pose is expressed in the world / robot-base frame.
         - Quaternions default to ``wxyz`` order, which is what
           ``dm_robotics.geometry.Pose`` expects.
-        - The default target element is ``wrist_site`` from ``franka_mjcf/panda.xml``.
+        - The default target element is ``wrist_site`` from ``data/franka_mjcf/panda.xml``.
     """
 
     def __init__(
