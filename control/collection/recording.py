@@ -209,11 +209,14 @@ class EpisodeRecorder:
         self.dataset.save_episode()
         # v3 Parquet footers and metadata are committed by finalize(), not save_episode().
         # Reopen between episodes so replay and a later recording session see complete files.
+        self.writer.close()
         self.dataset.finalize()
         temporary.replace(path)
         self.active = False
         self.records = []
         self.dataset, _ = open_dataset(self.config)
+        # The async worker holds its own dataset reference; replace it along with the dataset.
+        self.writer = AsyncDatasetFrames(self.dataset)
 
     def close(self):
         try:
