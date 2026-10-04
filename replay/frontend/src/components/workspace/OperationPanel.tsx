@@ -35,7 +35,7 @@ export function OperationPanel({
   const latest =
     dataset?.episodes.reduce((max, item) => Math.max(max, item.episode_index), -1) ?? -1
   const hasEpisode = Boolean(dataset?.episodes.some((item) => item.episode_index === episodeIndex))
-  const canDelete = dataset?.version === 'v2.0' || dataset?.version === 'v2.1'
+  const canDelete = ['v2.0', 'v2.1', 'v3.0'].includes(dataset?.version ?? '')
   const operation = tasks.operation
   const active = isOperationActive(operation)
   const disabled = !tasks.ready || tasks.busy
@@ -87,7 +87,7 @@ export function OperationPanel({
       </div>
       {dataset && !canDelete ? (
         <p className="px-4 pb-3 text-xs text-muted-foreground">
-          v3 使用共享文件，暂不支持删除；可查看和回放。
+          此数据格式暂不支持删除。
         </p>
       ) : null}
       {tasks.error ? (

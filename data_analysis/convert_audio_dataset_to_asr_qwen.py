@@ -22,17 +22,16 @@ path below.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import functools
 import os
-from pathlib import Path
 import shutil
 import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from tqdm import tqdm
-
 
 DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
 os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
@@ -51,7 +50,6 @@ from data_analysis.convert_audio_dataset_to_asr import (  # noqa: E402
     _is_lerobot_dataset,
     _normalize_prompt,
     _read_json,
-    _read_jsonl,
     _resolve_dataset_relative_path,
     _resolve_existing_path,
     _rewrite_metadata_and_parquet,
@@ -86,6 +84,9 @@ def _maybe_add_qwen3_asr_repo_to_path() -> None:
 
 
 def _import_qwen3_asr_model():
+    from control.util.hub_compat import allow_hub1_for_transformers
+
+    allow_hub1_for_transformers()
     try:
         from qwen_asr import Qwen3ASRModel
 
@@ -406,7 +407,8 @@ def convert_dataset(args: argparse.Namespace) -> int:
         work_dir = input_dir
 
     episodes_path = work_dir / "meta" / "episodes.jsonl"
-    episode_rows = _read_jsonl(episodes_path)
+    from data_analysis.dataset_io import episode_rows as load_episode_rows
+    episode_rows = load_episode_rows(work_dir)
     if not episode_rows:
         print(f"[ERROR] No episodes found in {episodes_path}", file=sys.stderr)
         return 2

@@ -99,7 +99,7 @@ def _write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
 
 
 def _is_lerobot_dataset_dir(path: Path) -> bool:
-    return (path / "meta" / "info.json").exists() and (path / "meta" / "episodes.jsonl").exists()
+    return (path / "meta" / "info.json").is_file()
 
 
 def _episode_parquet_path(info: Dict[str, Any], dataset_dir: Path, episode_index: int) -> Path:
@@ -533,6 +533,10 @@ def _prepare_episode(
         raise ValueError("episode_index must be >= 0")
 
     info = _read_json(dataset_dir / "meta" / "info.json")
+    if info.get("codebase_version") == "v3.0":
+        from control.collection._v3_deletion import prepare_episode
+
+        return prepare_episode(dataset_dir, episode_index, dry_run, final_dataset_dir)
     if info.get("codebase_version") not in (None, "v2.0", "v2.1"):
         raise ValueError("逐 episode 删除仅支持 v2 数据集")
     # Writes must never follow links outside the selected dataset, including metadata.
@@ -720,7 +724,13 @@ def _source_manifest(root: Path) -> dict:
 
 def _validate_result(root: Path, final_root: Path) -> None:
     info = _read_json(root / "meta/info.json")
-    episodes = _load_episode_infos(root)
+    if info["codebase_version"] == "v3.0":
+        from data_analysis.dataset_io import episode_dataframe, episode_paths, episode_rows
+
+        episodes = [EpisodeInfo(row["episode_index"], row["length"]) for row in episode_rows(root)]
+        paths = episode_paths(root)
+    else:
+        episodes = _load_episode_infos(root)
     _assert_contiguous_episode_infos(episodes)
     if info["total_episodes"] != len(episodes) or info["total_frames"] != sum(
         ep.length for ep in episodes
@@ -728,7 +738,10 @@ def _validate_result(root: Path, final_root: Path) -> None:
         raise ValueError("删除后的元数据总数不一致")
     start = 0
     for episode in episodes:
-        table = pq.read_table(_episode_parquet_path(info, root, episode.episode_index))
+        if info["codebase_version"] == "v3.0":
+            table = pa.Table.from_pandas(episode_dataframe(paths[episode.episode_index], episode.episode_index))
+        else:
+            table = pq.read_table(_episode_parquet_path(info, root, episode.episode_index))
         if (
             table.num_rows != episode.length
             or table["episode_index"].to_pylist() != [episode.episode_index] * episode.length

@@ -73,9 +73,9 @@ def start(payload: StartOperation, registry: Registry, manager: Manager):
         index = payload.episode_index
         if index is None or index not in indices:
             raise ReplayError(404, "待删除的 episode 不存在。")
-        if detail.version not in ("v2.0", "v2.1"):
+        if detail.version not in ("v2.0", "v2.1", "v3.0"):
             raise ReplayError(
-                422, "删除目前仅支持 v2 数据集；v3 共享文件不能使用逐 episode 删除脚本。"
+                422, "删除仅支持 LeRobot v2/v3 数据集。"
             )
         command = [
             "uv",

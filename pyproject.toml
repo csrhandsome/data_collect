@@ -3,12 +3,12 @@ name = "data-collect"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
     "pydantic>=2,<3",
-    "pyarrow>=18,<24",
+    "pyarrow>=21,<30",
     "pillow>=11,<13",
     "imageio-ffmpeg>=0.6,<1",
     "websockets>=14,<17",
@@ -16,8 +16,7 @@ dependencies = [
     "dm-control>=1.0.31",
     "dm-robotics-moma>=0.10.0",
     "langchain-openai>=1.1.10",
-    "lerobot @ git+https://github.com/huggingface/lerobot@0cf864870cf29f4738d3ade893e6fd13fbd7cdb5",
-    "opencv-python>=4.13.0.92",
+    "lerobot[dataset]==0.6.1",
     "crcmod>=1.7",
     "pyserial>=3.5",
     "panda-python>=1.1.1",
@@ -37,16 +36,21 @@ dependencies = [
 [tool.uv.sources]
 qwen-asr = { path = "third_party/Qwen3-ASR" }
 
+[tool.uv]
+# Keep Qwen's tested Transformers 4.57.6; relax its declared Hub <1 constraint.
+# control.util.hub_compat applies the matching, narrowly scoped runtime constraint.
+override-dependencies = ["huggingface-hub>=1.6,<2"]
+
 [dependency-groups]
 dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.11,<1"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "replay/tests"]
+testpaths = ["scripts/tests", "replay/tests"]
 pythonpath = ["."]
 addopts = "-p no:launch_testing -p no:launch_ros"
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]

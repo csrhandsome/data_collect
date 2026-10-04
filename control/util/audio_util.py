@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import functools
-import math
-from datetime import datetime
-from dataclasses import dataclass
 import json
-from pathlib import Path
+import math
 import shutil
 import wave
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 
@@ -495,8 +495,11 @@ def _resolve_whisper_device(device: str) -> str:
 @functools.lru_cache(maxsize=8)
 def _load_whisper_asr_components(model_name: str, device: str):
     import torch
-    from transformers import WhisperForConditionalGeneration
-    from transformers import WhisperProcessor
+
+    from control.util.hub_compat import allow_hub1_for_transformers
+
+    allow_hub1_for_transformers()
+    from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
     resolved_device = _resolve_whisper_device(device)
     processor = WhisperProcessor.from_pretrained(model_name)

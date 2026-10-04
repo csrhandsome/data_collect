@@ -14,14 +14,14 @@ uv run -m data_analysis.check_dataset_quality
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
-import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 from tqdm import tqdm
 
 from control.util.audio_util import read_wav_pcm
+from data_analysis.dataset_io import episode_dataframe, episode_paths
 
 
 def load_dataset_info(dataset_path: Path) -> Dict[str, Any]:
@@ -33,12 +33,9 @@ def load_dataset_info(dataset_path: Path) -> Dict[str, Any]:
 
 def load_episodes_info(dataset_path: Path) -> List[Dict[str, Any]]:
     """加载所有 episode 的元信息"""
-    episodes_path = dataset_path / "meta" / "episodes.jsonl"
-    episodes = []
-    with open(episodes_path, "r") as f:
-        for line in f:
-            episodes.append(json.loads(line))
-    return episodes
+    from data_analysis.dataset_io import episode_rows
+
+    return episode_rows(dataset_path)
 
 
 def _load_json_if_exists(path: Path) -> Dict[str, Any] | None:
@@ -133,19 +130,19 @@ def check_data_completeness(dataset_path: Path, info: Dict[str, Any]) -> Dict[st
     }
 
     # 检查所有 episode 文件是否存在
-    data_dir = dataset_path / "data" / "chunk-000"
-    for ep_idx in range(info["total_episodes"]):
-        ep_file = data_dir / f"episode_{ep_idx:06d}.parquet"
+    paths = episode_paths(dataset_path)
+    lengths = {row["episode_index"]: row["length"] for row in load_episodes_info(dataset_path)}
+    for ep_idx, ep_file in paths.items():
         if not ep_file.exists():
             results["missing_episodes"].append(ep_idx)
             print(f"  ✗ Episode {ep_idx} 文件缺失: {ep_file}")
         else:
             # 尝试读取文件
             try:
-                df = pd.read_parquet(ep_file)
-                if len(df) == 0:
+                df = episode_dataframe(ep_file, ep_idx, columns=["episode_index"])
+                if len(df) != lengths[ep_idx]:
                     results["corrupted_episodes"].append(ep_idx)
-                    print(f"  ✗ Episode {ep_idx} 为空")
+                    print(f"  ✗ Episode {ep_idx} 行数与元数据不一致")
             except Exception as e:
                 results["corrupted_episodes"].append(ep_idx)
                 print(f"  ✗ Episode {ep_idx} 读取失败: {e}")
@@ -187,8 +184,8 @@ def check_image_quality(
     print(f"  图像特征: {', '.join(results['image_keys'])}")
 
     # 随机采样检查
-    data_dir = dataset_path / "data" / "chunk-000"
-    episode_files = sorted(data_dir.glob("episode_*.parquet"))
+    paths = episode_paths(dataset_path)
+    episode_files = list(paths.values())
     sample_episodes = np.random.choice(
         len(episode_files), min(sample_size, len(episode_files)), replace=False
     )
@@ -198,7 +195,7 @@ def check_image_quality(
     for ep_idx in sample_episodes:
         ep_file = episode_files[ep_idx]
         try:
-            df = pd.read_parquet(ep_file)
+            df = episode_dataframe(ep_file, ep_idx, columns=results["image_keys"])
 
             # 检查每个图像特征
             for img_key in results["image_keys"]:
@@ -248,7 +245,7 @@ def check_image_quality(
         if len(results["issues"]) > 10:
             print(f"    ... 还有 {len(results['issues']) - 10} 个问题")
     else:
-        print(f"  ✓ 采样检查通过，图像质量正常")
+        print("  ✓ 采样检查通过，图像质量正常")
 
     return results
 
@@ -274,15 +271,15 @@ def check_action_data(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any
         return results
 
     # 收集所有动作数据
-    data_dir = dataset_path / "data" / "chunk-000"
-    episode_files = sorted(data_dir.glob("episode_*.parquet"))
+    paths = episode_paths(dataset_path)
+    episode_files = list(paths.values())
 
     all_actions = []
     print(f"\n  读取 {len(episode_files)} 个 episodes 的动作数据...")
 
-    for ep_file in tqdm(episode_files, desc="  处理中"):
+    for ep_idx, ep_file in tqdm(paths.items(), desc="  处理中"):
         try:
-            df = pd.read_parquet(ep_file)
+            df = episode_dataframe(ep_file, ep_idx, columns=["actions"])
             if "actions" in df.columns:
                 actions = np.stack(df["actions"].values)
                 all_actions.append(actions)
@@ -306,8 +303,8 @@ def check_action_data(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any
     }
 
     print(f"\n  动作统计 (共 {len(all_actions)} 个样本):")
-    print(f"    维度 | 均值      | 标准差    | 最小值    | 最大值")
-    print(f"    " + "-" * 60)
+    print("    维度 | 均值      | 标准差    | 最小值    | 最大值")
+    print("    " + "-" * 60)
     for i in range(results["action_dim"]):
         print(
             f"    {i:4d} | {results['action_stats']['mean'][i]:9.4f} | "
@@ -332,7 +329,7 @@ def check_action_data(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any
         for anomaly in results["anomalies"]:
             print(f"    - {anomaly}")
     else:
-        print(f"\n  ✓ 动作数据正常，无异常值")
+        print("\n  ✓ 动作数据正常，无异常值")
 
     return results
 
@@ -350,15 +347,15 @@ def check_timestamps(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any]
         "issues": [],
     }
 
-    data_dir = dataset_path / "data" / "chunk-000"
-    episode_files = sorted(data_dir.glob("episode_*.parquet"))
+    paths = episode_paths(dataset_path)
+    episode_files = list(paths.values())
 
     print(f"  期望帧率: {results['expected_fps']} Hz")
     print(f"\n  检查 {len(episode_files)} 个 episodes 的时间戳...")
 
-    for ep_file in tqdm(episode_files, desc="  处理中"):
+    for ep_idx, ep_file in tqdm(paths.items(), desc="  处理中"):
         try:
-            df = pd.read_parquet(ep_file)
+            df = episode_dataframe(ep_file, ep_idx, columns=["timestamp"])
             if "timestamp" not in df.columns or len(df) < 2:
                 continue
 
@@ -903,7 +900,7 @@ def analyze_episode_statistics(
     lengths = np.array(results["episode_lengths"])
     print(f"\n  Episode 数量: {results['num_episodes']}")
     print(f"  总帧数: {lengths.sum()}")
-    print(f"\n  Episode 长度统计:")
+    print("\n  Episode 长度统计:")
     print(f"    均值: {lengths.mean():.1f} 帧")
     print(f"    标准差: {lengths.std():.1f} 帧")
     print(f"    最小值: {lengths.min()} 帧")
@@ -911,7 +908,7 @@ def analyze_episode_statistics(
     print(f"    中位数: {np.median(lengths):.1f} 帧")
 
     # 任务统计
-    print(f"\n  任务分布:")
+    print("\n  任务分布:")
     for task, count in results["tasks"].items():
         print(
             f"    - {task}: {count} episodes ({100*count/results['num_episodes']:.1f}%)"
@@ -1014,7 +1011,7 @@ def generate_visualizations(
                 print(f"  ✓ 保存: {output_file}")
 
     # 4. 合并所有图表
-    print(f"\n  生成合并报告...")
+    print("\n  生成合并报告...")
     try:
         from PIL import Image
 
@@ -1054,9 +1051,9 @@ def generate_visualizations(
             plt.close()
             print(f"  ✓ 保存合并报告: {output_file}")
         else:
-            print(f"  ⊘ 没有图表可以合并")
+            print("  ⊘ 没有图表可以合并")
     except ImportError:
-        print(f"  ⊘ PIL 未安装，跳过合并报告生成")
+        print("  ⊘ PIL 未安装，跳过合并报告生成")
     except Exception as e:
         print(f"  ⚠ 合并报告生成失败: {e}")
 

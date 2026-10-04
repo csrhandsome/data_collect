@@ -25,7 +25,6 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-
 JSON = dict[str, Any]
 
 
@@ -75,9 +74,7 @@ def _write_jsonl(path: Path, rows: Iterable[JSON]) -> None:
 
 
 def _is_lerobot_dataset(path: Path) -> bool:
-    return (path / "meta" / "info.json").is_file() and (
-        path / "meta" / "episodes.jsonl"
-    ).is_file()
+    return (path / "meta" / "info.json").is_file()
 
 
 def _resolve_dataset(name_or_path: str, data_root: Path) -> Path:
@@ -149,10 +146,6 @@ def _episode_parquet_path(info: JSON, root: Path, episode_index: int) -> Path:
 
 
 def _episode_video_paths(info: JSON, root: Path, episode_index: int) -> list[Path]:
-    template = info.get(
-        "video_path",
-        "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
-    )
     chunk = _episode_chunk(info, episode_index)
     videos_dir = root / "videos" / f"chunk-{chunk:03d}"
     if not videos_dir.is_dir():
@@ -399,6 +392,14 @@ def merge_datasets(
     data_root: Path,
     overwrite: bool,
 ) -> Path:
+    paths = [_resolve_dataset(name, data_root) for name in input_names]
+    versions = {_read_json(path / "meta/info.json")["codebase_version"] for path in paths}
+    if "v3.0" in versions:
+        if versions != {"v3.0"}:
+            raise ValueError("先将旧数据转换为 v3.0，再与新采集的数据合并")
+        from data_analysis.merge_v3 import merge_v3
+
+        return merge_v3(paths, data_root / (output_name or _default_output_name(input_names)), overwrite)
     sources = [_load_source(name, data_root) for name in input_names]
     _validate_compatible(sources)
 

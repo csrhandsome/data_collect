@@ -127,11 +127,11 @@ test('delete confirms selected episode, waits and refreshes the renumbered list'
   await expect(page.getByTestId('episode-select').locator('option')).toHaveCount(2)
 })
 
-test('v3 delete is disabled and narrow layouts remain usable', async ({ page }) => {
+test('v3 delete is available and narrow layouts remain usable', async ({ page }) => {
   await mockOperations(page)
   await page.setViewportSize({ width: 390, height: 844 })
   await openDataset(page, 'demo_v30')
-  await expect(page.getByRole('button', { name: '删除当前片段' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '删除当前片段' })).toBeEnabled()
   await expect(page.getByRole('button', { name: '真机回放上一次' })).toBeEnabled()
   await page.getByRole('button', { name: '开启采集', exact: true }).click()
   await expect(page.getByRole('dialog')).toBeVisible()

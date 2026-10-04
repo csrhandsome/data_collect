@@ -14,13 +14,13 @@ from control.reactive_desk_client import ReactiveDeskVlaClient, ScenePublisher
 
 @pytest.fixture
 def local_collection_config(tmp_path, monkeypatch):
-    from lerobot.common.datasets import lerobot_dataset
+    from lerobot.datasets import dataset_metadata
 
     def forbid_hub(*args, **kwargs):
         pytest.fail("Local recording must not fall back to Hugging Face")
 
-    monkeypatch.setattr(lerobot_dataset, "get_safe_version", forbid_hub)
-    monkeypatch.setattr(lerobot_dataset.LeRobotDatasetMetadata, "pull_from_repo", forbid_hub)
+    monkeypatch.setattr(dataset_metadata, "get_safe_version", forbid_hub)
+    monkeypatch.setattr(dataset_metadata.LeRobotDatasetMetadata, "_pull_from_repo", forbid_hub)
     config = load_config()
     config["dataset"].update(root=str(tmp_path), date="startup")
     return config
@@ -30,7 +30,7 @@ def test_resume_before_first_saved_episode(local_collection_config, tmp_path):
     dataset, root = open_dataset(local_collection_config)
     assert root == tmp_path / "franka_lerobot_startup"
     assert dataset.repo_id == "openpi/franka_lerobot_startup"
-    dataset.stop_image_writer()
+    dataset.finalize()
     info_before = (root / "meta/info.json").read_bytes()
 
     for _ in range(2):
@@ -38,18 +38,18 @@ def test_resume_before_first_saved_episode(local_collection_config, tmp_path):
         try:
             assert resumed_root == root
             assert resumed.meta.total_episodes == 0
-            assert len(resumed.hf_dataset) == 0
+            assert not resumed.has_pending_frames()
             assert (root / "meta/info.json").read_bytes() == info_before
-            for name in ("tasks.jsonl", "episodes.jsonl", "episodes_stats.jsonl"):
-                assert (root / "meta" / name).read_text() == ""
+            assert not (root / "meta/tasks.parquet").exists()
+            assert not (root / "meta/episodes").exists()
         finally:
-            resumed.stop_image_writer()
+            resumed.finalize()
 
 
 @pytest.mark.parametrize("count", ["total_episodes", "total_frames", "total_tasks"])
 def test_missing_recorded_metadata_is_not_replaced(local_collection_config, count):
     dataset, root = open_dataset(local_collection_config)
-    dataset.stop_image_writer()
+    dataset.finalize()
     info_path = root / "meta/info.json"
     info = json.loads(info_path.read_text())
     info[count] = 1
@@ -57,8 +57,8 @@ def test_missing_recorded_metadata_is_not_replaced(local_collection_config, coun
 
     with pytest.raises(RuntimeError, match="missing local metadata"):
         open_dataset(local_collection_config)
-    assert not (root / "meta/tasks.jsonl").exists()
-    assert not (root / "meta/episodes.jsonl").exists()
+    assert not (root / "meta/tasks.parquet").exists()
+    assert not (root / "meta/episodes").exists()
 
 
 def test_resume_preserves_saved_episodes(local_collection_config):
@@ -72,7 +72,7 @@ def test_resume_preserves_saved_episodes(local_collection_config):
             assert (root / dataset.meta.get_data_file_path(index)).is_file()
         assert dataset.meta.total_frames > 0
     finally:
-        dataset.stop_image_writer()
+        dataset.finalize()
 
 
 def test_scene_handshake_failure_does_not_interrupt_collection(monkeypatch):
@@ -150,4 +150,4 @@ def test_vad_requires_saved_audio(
         else:
             assert not (root / "audio").exists()
     finally:
-        dataset.stop_image_writer()
+        dataset.finalize()

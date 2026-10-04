@@ -37,7 +37,7 @@ def features(image_hw, action_space, tactile):
 
 
 def open_dataset(config):
-    from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     cfg = config["dataset"]
     repo = f"{cfg['repo_id']}_{cfg['date']}"
@@ -71,6 +71,7 @@ def open_dataset(config):
             features=schema,
             image_writer_threads=4,
             image_writer_processes=0,
+            metadata_buffer_size=1,
         )
     return dataset, root
 

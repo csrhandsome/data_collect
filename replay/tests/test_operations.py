@@ -128,13 +128,13 @@ def test_api_uses_fixed_commands_and_latest_episode(demo_root):
             ).status_code
             == 422
         )
-        assert (
-            client.post(
-                "/api/operations",
-                json={"kind": "delete", "dataset_id": "demo_v30", "episode_index": 1},
-            ).status_code
-            == 422
+        response = client.post(
+            "/api/operations",
+            json={"kind": "delete", "dataset_id": "demo_v30", "episode_index": 1},
         )
+        assert response.status_code == 202
+        assert "episode-delete" in manager.last_command
+        wait_finished(manager)
         assert (
             client.post(
                 "/api/operations",

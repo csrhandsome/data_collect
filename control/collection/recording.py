@@ -8,9 +8,9 @@ from pathlib import Path
 
 import numpy as np
 
-from control.collection.dataset import recorded_action
+from control.collection.dataset import open_dataset, recorded_action
 from control.recording_writer import AsyncDatasetFrames, FreshCameraPair
-from control.util.lerobot_util import _discard_unsaved_episode, _prepare_episode_for_save
+from control.util.lerobot_util import _discard_unsaved_episode
 
 
 class JsonlSink:
@@ -206,11 +206,14 @@ class EpisodeRecorder:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(sync, indent=2, ensure_ascii=False))
-        _prepare_episode_for_save(self.dataset)
         self.dataset.save_episode()
+        # v3 Parquet footers and metadata are committed by finalize(), not save_episode().
+        # Reopen between episodes so replay and a later recording session see complete files.
+        self.dataset.finalize()
         temporary.replace(path)
         self.active = False
         self.records = []
+        self.dataset, _ = open_dataset(self.config)
 
     def close(self):
         try:
@@ -225,6 +228,7 @@ class EpisodeRecorder:
                 if self.active and self.microphone is not None:
                     self.microphone.default_output_path = None
                     self.microphone.stop_recording()
-                stop = getattr(self.dataset, "stop_image_writer", None)
-                if callable(stop):
-                    stop()
+                try:
+                    _discard_unsaved_episode(self.dataset)
+                finally:
+                    self.dataset.finalize()

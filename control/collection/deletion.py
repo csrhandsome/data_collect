@@ -22,7 +22,7 @@ class EpisodeDeletionResult:
 
 
 class EpisodeDeleter:
-    """Delete saved v2 episodes and renumber subsequent episodes atomically.
+    """Delete saved v2/v3 episodes and renumber subsequent episodes atomically.
 
     Returns a result on success; invalid inputs and transaction failures raise
     exceptions. Close recording resources before deletion and reopen the dataset
@@ -56,7 +56,7 @@ class EpisodeDeleter:
 
 def cli(argv: list[str] | None = None) -> int:
     """The single deletion command; exit codes belong only to this adapter."""
-    parser = argparse.ArgumentParser(description="删除 LeRobot v2 episode 并重排后续编号")
+    parser = argparse.ArgumentParser(description="删除 LeRobot v2/v3 episode 并重排后续编号")
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--episode-index", type=int, required=True)
     parser.add_argument("--yes", action="store_true", help="执行删除；默认只预览")

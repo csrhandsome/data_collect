@@ -16,19 +16,18 @@ Explicit usage:
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
-
 
 DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
 os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
@@ -39,7 +38,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from control.util.audio_util import read_wav_pcm, transcribe_whisper_asr  # noqa: E402
-
 
 DEFAULT_INPUT_DIR = Path("data/dataset/franka_lerobot_4_9_audio")
 
@@ -96,9 +94,7 @@ def _default_output_dir(input_dir: Path) -> Path:
 
 
 def _is_lerobot_dataset(path: Path) -> bool:
-    return (path / "meta" / "info.json").is_file() and (
-        path / "meta" / "episodes.jsonl"
-    ).is_file()
+    return (path / "meta" / "info.json").is_file()
 
 
 def _episode_parquet_path(
@@ -338,6 +334,10 @@ def _rewrite_metadata_and_parquet(
     stats_path = meta_dir / "episodes_stats.jsonl"
 
     info = _read_json(info_path)
+    if info["codebase_version"] == "v3.0" and not dry_run:
+        from data_analysis.dataset_io import rewrite_v3_tasks
+
+        return rewrite_v3_tasks(dataset_dir, prompts_by_episode)
 
     task_to_index: dict[str, int] = {}
     tasks_rows: list[dict[str, Any]] = []
@@ -451,7 +451,8 @@ def convert_dataset(args: argparse.Namespace) -> int:
         work_dir = input_dir
 
     episodes_path = work_dir / "meta" / "episodes.jsonl"
-    episode_rows = _read_jsonl(episodes_path)
+    from data_analysis.dataset_io import episode_rows as load_episode_rows
+    episode_rows = load_episode_rows(work_dir)
     if not episode_rows:
         print(f"[ERROR] No episodes found in {episodes_path}", file=sys.stderr)
         return 2
