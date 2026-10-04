@@ -9,7 +9,7 @@ Default usage:
 
 Explicit usage:
   uv run data_analysis/convert_audio_dataset_to_asr.py \
-    --input-dir data/openpi/franka_lerobot_4_9_audio \
+    --input-dir data/dataset/franka_lerobot_4_9_audio \
     --overwrite-output
 """
 
@@ -41,7 +41,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from control.util.audio_util import read_wav_pcm, transcribe_whisper_asr  # noqa: E402
 
 
-DEFAULT_INPUT_DIR = Path("data/openpi/franka_lerobot_4_9_audio")
+DEFAULT_INPUT_DIR = Path("data/dataset/franka_lerobot_4_9_audio")
 
 
 def _read_json(path: Path) -> dict[str, Any]:

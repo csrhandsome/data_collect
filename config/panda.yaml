@@ -1,0 +1,102 @@
+# EE control only. dataset.action_space selects joint (8D) or ee (7D) recorded labels.
+# Credentials: FRANKA_USERNAME / FRANKA_PASSWORD. force: gripper.type=dh5, tactile.enabled=true.
+dataset:
+  repo_id: openpi/franka_lerobot
+  date: test_100hz
+  instruction: Place the object into the basket
+  label: stop
+  enable_logging: true
+  max_duration_s: 3600.0
+  root: data/dataset
+  action_space: ee
+robot:
+  start_joint_position:
+  - 0.00388
+  - -0.45916
+  - -0.15237
+  - -2.47266
+  - -0.06778
+  - 1.96442
+  - 0.70214
+  hostname: 192.168.1.100
+  username: 'BionicDL-Franka'
+  password: 'Design@2018'
+  activate_fci: true
+  move_to_start: true
+control:
+  mode: ee
+  frequency_hz: 100.0
+  ee_filter_coeff: 0.35
+  ee_nullspace_stiffness: 0.5
+  max_target_translation_m: 0.15
+  max_target_rotation_rad: 0.5
+diagnostics:
+  enabled: false
+  root: data/diagnostics
+  sample_hz: 0.0  # 0 records every control tick; use e.g. 10 to reduce log volume.
+  max_pending: 1024  # Full queues drop diagnostic records rather than delay control.
+camera:
+  external_camera_serial: '825412070292'
+  wrist_camera_serial: '825412070487'
+  width: 640
+  height: 480
+  fps: 30
+  color_only: true
+  image_hw: 224
+  crop_scale: 0.9
+  startup_timeout_s: 10
+  max_age_s: 0.2
+gripper:
+  type: franka
+  open_width_m: 0.05
+  force: 50
+  velocity: 100
+  dh5:
+    com: /dev/ttyUSB0
+    right_camera_device: 1
+    left_camera_device: 2
+    camera_fps: 30
+tactile:
+  enabled: false
+audio:
+  enabled: true
+  sample_rate: 16000
+  channels: 1
+  input_device: null
+  vad_enabled: true
+vr:
+  host: 0.0.0.0
+  port: 4443
+  long_press_s: 0.5
+  position_alpha: 0.6
+  rotation_alpha: 0.35
+  stale_after_s: 0.5
+  translation_gain: 1.0
+  rotation_gain: 0.4
+  translation_limit_m: 0.5
+  rotation_limit_rad: 1.2
+  max_translation_speed_m_s: 0.2
+  max_rotation_speed_rad_s: 0.2
+  enable_rotation: true
+reactive_desk:
+  reactive_desk_enabled: true
+  reactive_desk_host: 127.0.0.1
+  reactive_desk_port: 8000
+  reactive_desk_path: /ws/VlaIngest
+inference:
+  host: 127.0.0.1
+  port: 8001
+  action_fps: 30.0
+  action_horizon: 16
+  action_space: ee
+  replan_every_steps: 8
+  max_steps: 0
+  move_to_start: false
+  max_plan_age_s: 0.6
+  max_translation_step_m: 0.03
+  max_rotation_step_rad: 0.15
+  enable_vr_takeover: false
+replay:
+  data_root: data/dataset
+  host: 127.0.0.1
+  port: 8003

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge local LeRobot datasets under data/openpi.
+"""Merge local LeRobot datasets under data/dataset.
 
 Example:
   uv run data_analysis/merge_lerobot_datasets.py \
@@ -44,7 +44,7 @@ def _repo_root() -> Path:
 
 
 def _default_data_root() -> Path:
-    return _repo_root() / "data" / "openpi"
+    return _repo_root() / "data" / "dataset"
 
 
 def _read_json(path: Path) -> JSON:
@@ -88,7 +88,7 @@ def _resolve_dataset(name_or_path: str, data_root: Path) -> Path:
     else:
         candidates.append(data_root / raw)
         if raw.parts[:1] == ("openpi",):
-            candidates.append(data_root.parent / raw)
+            candidates.append(data_root / raw.name)
         candidates.append(raw)
 
     for candidate in candidates:
@@ -602,7 +602,7 @@ def merge_datasets(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="合并本地 data/openpi 下的 LeRobot 数据集"
+        description="合并本地 data/dataset 下的 LeRobot 数据集"
     )
     parser.add_argument(
         "datasets",
@@ -619,7 +619,7 @@ def main(argv: list[str] | None = None) -> int:
         "--data-root",
         type=Path,
         default=_default_data_root(),
-        help="包含数据集目录的根目录，默认 data/openpi",
+        help="包含数据集目录的根目录，默认 data/dataset",
     )
     parser.add_argument(
         "--overwrite",

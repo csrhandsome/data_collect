@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from control.util.ik import IKVectorInputs
+
 from pathlib import Path
 
 import mink
@@ -9,7 +11,7 @@ import mujoco
 import numpy as np
 
 
-class MinkFrankaJointIKSolver:
+class MinkFrankaJointIKSolver(IKVectorInputs):
     """Solve Franka wrist pose IK with mink differential IK.
 
     The public methods intentionally mirror ``FrankaJointIKSolver`` so callers can
@@ -45,7 +47,7 @@ class MinkFrankaJointIKSolver:
         self._rng = np.random.RandomState(random_seed)
 
         model_path = (
-            Path(__file__).resolve().parents[2] / "franka_mjcf" / "panda.xml"
+            Path(__file__).resolve().parents[2] / "data" / "franka_mjcf" / "panda.xml"
         )
         self._model = mujoco.MjModel.from_xml_path(str(model_path))
         self._configuration = mink.Configuration(self._model)
@@ -233,63 +235,6 @@ class MinkFrankaJointIKSolver:
             return local_sample
         return self._rng.uniform(lower, upper)
 
-    def _as_position_array(self, value: np.ndarray, *, name: str) -> np.ndarray:
-        position = np.asarray(value, dtype=np.float64)
-        if position.shape != (3,):
-            raise ValueError(f"{name} must have shape (3,), got {position.shape}")
-        return position
 
-    def _as_quaternion_array(
-        self,
-        value: np.ndarray,
-        *,
-        name: str,
-        quaternion_order: str,
-    ) -> np.ndarray:
-        quaternion = np.asarray(value, dtype=np.float64)
-        if quaternion.shape != (4,):
-            raise ValueError(f"{name} must have shape (4,), got {quaternion.shape}")
 
-        if quaternion_order == "wxyz":
-            quaternion_wxyz = quaternion
-        elif quaternion_order == "xyzw":
-            quaternion_wxyz = np.array(
-                [quaternion[3], quaternion[0], quaternion[1], quaternion[2]],
-                dtype=np.float64,
-            )
-        else:
-            raise ValueError(
-                f"Unsupported quaternion_order={quaternion_order!r}; use 'wxyz' or 'xyzw'"
-            )
 
-        norm = np.linalg.norm(quaternion_wxyz)
-        if norm == 0.0:
-            raise ValueError(f"{name} must be non-zero")
-        return quaternion_wxyz / norm
-
-    def _format_quaternion(
-        self,
-        quaternion_wxyz: np.ndarray,
-        quaternion_order: str,
-    ) -> np.ndarray:
-        if quaternion_order == "wxyz":
-            return quaternion_wxyz.copy()
-        if quaternion_order == "xyzw":
-            return np.array(
-                [
-                    quaternion_wxyz[1],
-                    quaternion_wxyz[2],
-                    quaternion_wxyz[3],
-                    quaternion_wxyz[0],
-                ],
-                dtype=np.float64,
-            )
-        raise ValueError(
-            f"Unsupported quaternion_order={quaternion_order!r}; use 'wxyz' or 'xyzw'"
-        )
-
-    def _as_joint_array(self, value: np.ndarray, *, name: str) -> np.ndarray:
-        qpos = np.asarray(value, dtype=np.float64)
-        if qpos.shape != (7,):
-            raise ValueError(f"{name} must have shape (7,), got {qpos.shape}")
-        return qpos

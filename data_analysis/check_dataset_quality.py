@@ -1095,7 +1095,7 @@ def main():
     parser.add_argument(
         "--dataset-path",
         type=str,
-        default="data/openpi/franka_lerobot_4_9_audio",
+        default="data/dataset/franka_lerobot_4_9_audio",
         help="数据集路径",
     )
     parser.add_argument(

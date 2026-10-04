@@ -117,14 +117,14 @@ uv run data_analysis/check_dataset_quality.py
 
 ```bash
 uv run data_analysis/check_dataset_quality.py \
-  --dataset-path data/openpi/franka_droid_lerobot_20260130_161202 \
+  --dataset-path data/dataset/franka_droid_lerobot_20260130_161202 \
   --output-dir data_analysis/quality_reports \
   --sample-size 5
 ```
 
 ### 参数说明
 
-- `--dataset-path`: 数据集路径（默认：`data/openpi/franka_droid_lerobot_20260130_161202`）
+- `--dataset-path`: 数据集路径（默认：`data/dataset/franka_droid_lerobot_20260130_161202`）
 - `--output-dir`: 输出目录（默认：`data_analysis/quality_reports`）
 - `--sample-size`: 图像质量检查的采样数量（默认：5）
 
@@ -136,7 +136,7 @@ uv run data_analysis/check_dataset_quality.py \
 ============================================================
 LeRobot 数据集质量检查
 ============================================================
-数据集路径: data/openpi/franka_droid_lerobot_20260130_161202
+数据集路径: data/dataset/franka_droid_lerobot_20260130_161202
 输出目录: data_analysis/quality_reports
 
 ============================================================
@@ -250,7 +250,7 @@ LeRobot 数据集质量检查
 ### 问题：找不到数据集
 
 ```
-错误: 数据集路径不存在: data/openpi/...
+错误: 数据集路径不存在: data/dataset/...
 ```
 
 **解决方案**：检查数据集路径是否正确，使用 `--dataset-path` 参数指定正确的路径。

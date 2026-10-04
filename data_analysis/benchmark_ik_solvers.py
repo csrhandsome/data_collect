@@ -25,14 +25,7 @@ from control.ik_solver.mink_ik_solver import MinkFrankaJointIKSolver
 HOME_QPOS = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
 
 
-def _quat_angle_error(q1: np.ndarray, q2: np.ndarray) -> float:
-    q1 = np.asarray(q1, dtype=np.float64)
-    q2 = np.asarray(q2, dtype=np.float64)
-    q1 = q1 / np.linalg.norm(q1)
-    q2 = q2 / np.linalg.norm(q2)
-    dot = float(abs(np.dot(q1, q2)))
-    dot = min(1.0, max(-1.0, dot))
-    return float(2.0 * np.arccos(dot))
+from control.util.pose import quat_angle_xyzw as _quat_angle_error
 
 
 def _sample_qpos(
