@@ -1,8 +1,10 @@
 """Exercise real subprocess supervision and deletion only on temporary datasets."""
 
 import json
+import shutil
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -288,8 +290,10 @@ def test_replay_prefers_trace_and_executes_gripper_with_fake_arm(demo_root, tmp_
         load_trajectory(root)
 
 
-def test_delete_api_runs_public_deleter_on_temporary_copy(demo_root, tmp_path):
-    root = copy_dataset(demo_root, tmp_path)
+@pytest.mark.parametrize("dataset_id", ["demo_v21", "demo_v30"])
+def test_delete_api_runs_public_deleter_on_temporary_copy(demo_root, tmp_path, dataset_id):
+    root = tmp_path / dataset_id
+    shutil.copytree(demo_root / dataset_id, root)
 
     class DeleteManager(OperationManager):
         def start(self, kind, command, **kwargs):
@@ -299,8 +303,7 @@ def test_delete_api_runs_public_deleter_on_temporary_copy(demo_root, tmp_path):
                 kind,
                 [
                     sys.executable,
-                    "-c",
-                    "from control.collection.deletion import cli; raise SystemExit(cli())",
+                    str(Path(sys.executable).with_name("episode-delete")),
                     *command[3:],
                 ],
                 **kwargs,

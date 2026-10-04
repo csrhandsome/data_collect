@@ -61,5 +61,5 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["control*", "replay*"]
+include = ["control*", "replay*", "data_analysis*"]
 exclude = ["replay.frontend*"]
