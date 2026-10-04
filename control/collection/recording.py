@@ -31,10 +31,18 @@ class EpisodeRecorder:
         self.pending = None
         self.records = []
         self.trace_writer = self.trace_sink = None
+        self._closed = False
 
     def start(self):
+        if self._closed:
+            raise RuntimeError("Recorder is closed")
         if self.active:
             raise RuntimeError("Episode is already recording")
+        if self.writer is None:
+            # A read/edit boundary ended the previous session. Reopen only when
+            # recording starts again, using fresh metadata after any deletion.
+            self.dataset, _ = open_dataset(self.config)
+            self.writer = AsyncDatasetFrames(self.dataset)
         self.index = int(self.dataset.meta.total_episodes)
         self.started_ns = time.monotonic_ns()
         self.trace_count = self.unique_vr = 0
@@ -207,20 +215,40 @@ class EpisodeRecorder:
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(sync, indent=2, ensure_ascii=False))
         self.dataset.save_episode()
-        # v3 Parquet footers and metadata are committed by finalize(), not save_episode().
-        # Reopen between episodes so replay and a later recording session see complete files.
-        self.writer.close()
-        self.dataset.finalize()
         temporary.replace(path)
         self.active = False
         self.records = []
-        self.dataset, _ = open_dataset(self.config)
-        # The async worker holds its own dataset reference; replace it along with the dataset.
-        self.writer = AsyncDatasetFrames(self.dataset)
+
+    def finalize(self):
+        """Seal saved episodes for reading/editing; the next start resumes lazily.
+
+        Finish or discard the active episode first. Continuous recording only
+        needs save_episode(); v3 Parquet footers are written at this boundary.
+        """
+        if self.active:
+            raise RuntimeError("Finish or discard the active episode before finalizing")
+        writer, self.writer = self.writer, None
+        try:
+            if writer is not None:
+                writer.close()
+        finally:
+            self._finalize_dataset()
+
+    def _finalize_dataset(self):
+        from control.util.lerobot_metadata import normalize_episode_metadata
+
+        self.dataset.finalize()
+        # Historical v2 conversions lack modern quantile columns. Normalize
+        # after sealing a session so readers can load old and new shards together.
+        normalize_episode_metadata(self.root)
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         try:
-            self.writer.close()
+            if self.writer is not None:
+                self.writer.close()
         finally:
             try:
                 if self.trace_writer is not None:
@@ -232,6 +260,9 @@ class EpisodeRecorder:
                     self.microphone.default_output_path = None
                     self.microphone.stop_recording()
                 try:
-                    _discard_unsaved_episode(self.dataset)
+                    if self.writer is not None:
+                        _discard_unsaved_episode(self.dataset)
                 finally:
-                    self.dataset.finalize()
+                    self._finalize_dataset()
+                    self.writer = None
+                    self.active = False

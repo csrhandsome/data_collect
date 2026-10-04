@@ -522,7 +522,8 @@ def _cleanup_empty_dirs(root: Path) -> None:
 
 
 def _prepare_episode(
-    dataset_dir: Path, episode_index: int, *, dry_run: bool, final_dataset_dir: Path | None = None
+    dataset_dir: Path, episode_index: int, *, dry_run: bool,
+    final_dataset_dir: Path | None = None, output_dir: Path | None = None
 ) -> EpisodeDeletionResult:
     dataset_dir = dataset_dir.resolve()
     final_dataset_dir = final_dataset_dir or dataset_dir
@@ -536,7 +537,9 @@ def _prepare_episode(
     if info.get("codebase_version") == "v3.0":
         from control.collection._v3_deletion import prepare_episode
 
-        return prepare_episode(dataset_dir, episode_index, dry_run, final_dataset_dir)
+        return prepare_episode(
+            dataset_dir, episode_index, dry_run, final_dataset_dir, output_dir=output_dir
+        )
     if info.get("codebase_version") not in (None, "v2.0", "v2.1"):
         raise ValueError("逐 episode 删除仅支持 v2 数据集")
     # Writes must never follow links outside the selected dataset, including metadata.
@@ -825,11 +828,18 @@ def _delete_episode(
         )
         try:
             staged = transaction / "dataset"
-            logger.info("[STAGING] 正在复制数据集；原数据保持不变。")
-            shutil.copytree(dataset_dir, staged)
-            result = _prepare_episode(
-                staged, episode_index, dry_run=False, final_dataset_dir=dataset_dir
-            )
+            if _read_json(dataset_dir / "meta/info.json").get("codebase_version") == "v3.0":
+                logger.info("[STAGING] 正在生成删除后的数据集。")
+                result = _prepare_episode(
+                    dataset_dir, episode_index, dry_run=False,
+                    final_dataset_dir=dataset_dir, output_dir=staged,
+                )
+            else:
+                logger.info("[STAGING] 正在复制 v2 数据集。")
+                shutil.copytree(dataset_dir, staged)
+                result = _prepare_episode(
+                    staged, episode_index, dry_run=False, final_dataset_dir=dataset_dir
+                )
             _validate_result(staged, dataset_dir)
             # Flush prepared files before publishing the new directory tree.
             for path in staged.rglob("*"):

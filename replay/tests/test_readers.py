@@ -21,18 +21,6 @@ from replay.scripts.read_episode import read_episode
 from replay.scripts.resolve_video import resolve_video
 
 
-@pytest.fixture(scope="session")
-def demo_roots(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
-    return generate_demo(tmp_path_factory.mktemp("reader_demos"))
-
-
-@pytest.fixture
-def editable_v3(demo_roots: list[Path], tmp_path: Path) -> Path:
-    root = tmp_path / "dataset"
-    shutil.copytree(demo_roots[1], root)
-    return root
-
-
 def _edit_info(root: Path, **changes: object) -> None:
     path = root / "meta/info.json"
     info = json.loads(path.read_text())
@@ -354,9 +342,8 @@ def test_v3_task_table_preserves_upstream_string_index(tmp_path: Path) -> None:
     ]
 
 
-def test_v20_metadata_is_supported(demo_roots: list[Path], tmp_path: Path) -> None:
-    root = tmp_path / "legacy"
-    shutil.copytree(demo_roots[0], root)
+def test_v20_metadata_is_supported(copy_dataset) -> None:
+    root = copy_dataset()
     _edit_info(root, codebase_version="v2.0")
     assert read_dataset(root)["version"] == "v2.0"
     assert read_ee(root, 2)["total_points"] == 180

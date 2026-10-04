@@ -33,14 +33,44 @@ class Operation(BaseModel):
 
 
 class OperationManager:
-    def __init__(self, repo_root: Path = REPO_ROOT):
+    def __init__(
+        self,
+        repo_root: Path = REPO_ROOT,
+        *,
+        runtime_command: list[str] | None = None,
+        config_path: Path | None = None,
+        simulate: bool = False,
+        max_steps: int = 60,
+    ):
         self.repo_root = repo_root
+        self.runtime_command = runtime_command
+        self.config_path = config_path
+        self.simulate = simulate
+        self.max_steps = max_steps
         self._lock = threading.RLock()
         self._operation: Operation | None = None
         self._process: subprocess.Popen | None = None
         self._logs: deque[str] = deque(maxlen=80)
         self._thread: threading.Thread | None = None
         self._closed = False
+
+    def command(self, kind: str, args: list[str] | None = None) -> list[str]:
+        if self.runtime_command:
+            command = [*self.runtime_command, kind]
+            if kind != "delete" and self.config_path:
+                command.extend(["--config", str(self.config_path)])
+        else:
+            command = {
+                "collect": ["uv", "run", "vr_collect"],
+                "replay": ["uv", "run", "python", "-m", "replay.scripts.replay_robot"],
+                "delete": ["uv", "run", "episode-delete"],
+            }[kind].copy()
+        command.extend(args or [])
+        if self.simulate and kind in ("collect", "replay"):
+            command.append("--dry-run")
+            if kind == "collect":
+                command.extend(["--max-steps", str(self.max_steps)])
+        return command
 
     def snapshot(self) -> Operation | None:
         with self._lock:
@@ -72,7 +102,7 @@ class OperationManager:
                     start_new_session=True,
                 )
             except OSError as exc:
-                raise ReplayError(503, "无法启动任务，请检查 uv 和本地 Python 环境。") from exc
+                raise ReplayError(503, "无法启动任务，请检查程序安装及运行日志。") from exc
             self._logs.clear()
             self._operation = Operation(
                 id=uuid.uuid4().hex,
@@ -126,11 +156,11 @@ class OperationManager:
                     pass
             return self.snapshot()
 
-    def close(self):
+    def close(self, timeout: float | None = 30):
         with self._lock:
             self._closed = True
             if self._operation and self._operation.kind != "delete":
                 self.stop(self._operation.id)
             thread = self._thread
         if thread is not None:
-            thread.join(timeout=30)
+            thread.join(timeout=timeout)

@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 from pathlib import Path
 
 import yaml
 
 from control.util.timing import positive_rate
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config/panda.yaml"
+DEFAULT_CONFIG = Path(
+    os.environ.get(
+        "DATA_COLLECT_CONFIG", Path(__file__).resolve().parents[1] / "config/panda.yaml"
+    )
+)
 
 
 def load_config(path=DEFAULT_CONFIG, _seen=None):

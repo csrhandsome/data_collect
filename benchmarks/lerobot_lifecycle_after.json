@@ -1,0 +1,79 @@
+{
+  "label": "after",
+  "python": "3.12.3",
+  "parameters": {
+    "episodes": 12,
+    "frames": 30,
+    "image_hw": 224,
+    "unique_seed_images": true,
+    "repeats": 5,
+    "warmups": 1
+  },
+  "seed_bytes": 163599786,
+  "recording": [
+    {
+      "session_seconds": 9.318645243998617,
+      "finish_mean_seconds": 0.7690144098451128,
+      "close_seconds": 0.0024475299869664013,
+      "data_shards": 2
+    },
+    {
+      "session_seconds": 9.18548018700676,
+      "finish_mean_seconds": 0.757182987673635,
+      "close_seconds": 0.002508124045561999,
+      "data_shards": 2
+    },
+    {
+      "session_seconds": 9.167957383964676,
+      "finish_mean_seconds": 0.7559333079940794,
+      "close_seconds": 0.0024591610417701304,
+      "data_shards": 2
+    },
+    {
+      "session_seconds": 9.20778923301259,
+      "finish_mean_seconds": 0.7587996103344873,
+      "close_seconds": 0.002536237007007003,
+      "data_shards": 2
+    },
+    {
+      "session_seconds": 9.150054408994038,
+      "finish_mean_seconds": 0.7537972373296119,
+      "close_seconds": 0.0024232440046034753,
+      "data_shards": 2
+    }
+  ],
+  "deletion": [
+    {
+      "seconds": 2.552666086005047,
+      "copied_bytes": 906
+    },
+    {
+      "seconds": 2.6354106559883803,
+      "copied_bytes": 906
+    },
+    {
+      "seconds": 2.4712886789930053,
+      "copied_bytes": 906
+    },
+    {
+      "seconds": 2.4696500919526443,
+      "copied_bytes": 906
+    },
+    {
+      "seconds": 2.4858442390104756,
+      "copied_bytes": 906
+    }
+  ],
+  "median": {
+    "recording": {
+      "session_seconds": 9.18548018700676,
+      "finish_mean_seconds": 0.757182987673635,
+      "close_seconds": 0.0024591610417701304,
+      "data_shards": 2
+    },
+    "deletion": {
+      "seconds": 2.4858442390104756,
+      "copied_bytes": 906
+    }
+  }
+}

@@ -1,7 +1,6 @@
 """Exercise real subprocess supervision and deletion only on temporary datasets."""
 
 import json
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -28,15 +27,6 @@ def test_collect_console_reports_success(monkeypatch):
     assert vr_collect.cli() == 0
 
 
-@pytest.fixture(scope="module")
-def demo_root(tmp_path_factory):
-    from replay.scripts.generate_demo import generate_demo
-
-    root = tmp_path_factory.mktemp("operations-demo")
-    generate_demo(root)
-    return root
-
-
 def wait_finished(manager):
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -45,14 +35,6 @@ def wait_finished(manager):
             return status
         time.sleep(0.02)
     pytest.fail("Task did not finish")
-
-
-def copy_dataset(demo_root, tmp_path):
-    import shutil
-
-    target = tmp_path / "demo_v21"
-    shutil.copytree(demo_root / "demo_v21", target)
-    return target
 
 
 def test_task_logs_failure_and_bounded_history():
@@ -167,8 +149,8 @@ def test_api_uses_fixed_commands_and_latest_episode(demo_root):
 
 
 @pytest.mark.parametrize("custom_video_path", [False, True])
-def test_delete_middle_episode_and_new_sidecars(demo_root, tmp_path, custom_video_path):
-    root = copy_dataset(demo_root, tmp_path)
+def test_delete_middle_episode_and_new_sidecars(copy_dataset, custom_video_path):
+    root = copy_dataset()
     if custom_video_path:
         info_path = root / "meta/info.json"
         info = json.loads(info_path.read_text())
@@ -223,8 +205,8 @@ def test_delete_middle_episode_and_new_sidecars(demo_root, tmp_path, custom_vide
     assert read_dataset(root)["total_episodes"] == 0
 
 
-def test_delete_without_audio_and_reject_bad_inputs_before_writes(demo_root, tmp_path):
-    root = copy_dataset(demo_root, tmp_path)
+def test_delete_without_audio_and_reject_bad_inputs_before_writes(copy_dataset):
+    root = copy_dataset()
     (root / "episode_000001.actions.jsonl").write_text("{}\n")
     assert not EpisodeDeleter(root).delete_episode(1).dry_run
     assert not (root / "episode_000001.actions.jsonl").exists()
@@ -237,8 +219,8 @@ def test_delete_without_audio_and_reject_bad_inputs_before_writes(demo_root, tmp
     assert (root / "meta/info.json").read_bytes() == original_info
 
 
-def test_delete_rejects_symlink_and_path_escape(demo_root, tmp_path):
-    root = copy_dataset(demo_root, tmp_path)
+def test_delete_rejects_symlink_and_path_escape(copy_dataset, tmp_path):
+    root = copy_dataset()
     (root / "unsafe").symlink_to(tmp_path)
     with pytest.raises(ValueError, match="符号链接"):
         EpisodeDeleter(root).delete_episode(1)
@@ -261,8 +243,8 @@ def test_replay_loads_both_versions_and_preserves_pose(demo_root):
         assert len(points[0]["quaternion_xyzw"]) == 4
 
 
-def test_replay_prefers_trace_and_executes_gripper_with_fake_arm(demo_root, tmp_path):
-    root = copy_dataset(demo_root, tmp_path)
+def test_replay_prefers_trace_and_executes_gripper_with_fake_arm(copy_dataset):
+    root = copy_dataset()
     rows = [
         {
             "host_sample_monotonic_ns": 1_000_000_000 + i * 10_000_000,
@@ -291,9 +273,8 @@ def test_replay_prefers_trace_and_executes_gripper_with_fake_arm(demo_root, tmp_
 
 
 @pytest.mark.parametrize("dataset_id", ["demo_v21", "demo_v30"])
-def test_delete_api_runs_public_deleter_on_temporary_copy(demo_root, tmp_path, dataset_id):
-    root = tmp_path / dataset_id
-    shutil.copytree(demo_root / dataset_id, root)
+def test_delete_api_runs_public_deleter_on_temporary_copy(copy_dataset, tmp_path, dataset_id):
+    root = copy_dataset(dataset_id)
 
     class DeleteManager(OperationManager):
         def start(self, kind, command, **kwargs):

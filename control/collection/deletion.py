@@ -25,8 +25,9 @@ class EpisodeDeleter:
     """Delete saved v2/v3 episodes and renumber subsequent episodes atomically.
 
     Returns a result on success; invalid inputs and transaction failures raise
-    exceptions. Close recording resources before deletion and reopen the dataset
-    afterwards. A full dataset copy on the same filesystem is required.
+    exceptions. Finalize recording resources before deletion and resume afterwards.
+    v3 generates the edited dataset directly; v2 edits a full copy. Both stage on
+    the same filesystem before atomically exchanging directories.
     """
 
     def __init__(self, dataset_dir: str | Path) -> None:
@@ -37,7 +38,7 @@ class EpisodeDeleter:
         return self.delete_episode(episode_index, dry_run=True)
 
     def delete_episode(self, episode_index: int, *, dry_run: bool = False) -> EpisodeDeletionResult:
-        """Validate a full copy, update references, then exchange directories.
+        """Prepare and validate the result, then exchange directories.
 
         Preserves ASR annotations, updates VAD references, holds a deletion lock
         and checks the source for concurrent changes before committing.

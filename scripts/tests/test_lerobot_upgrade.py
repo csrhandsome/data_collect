@@ -1,6 +1,9 @@
 """Exercise upstream v3 writers and project tooling on real temporary files."""
 
+import hashlib
 import json
+import shutil
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +47,112 @@ def test_v3_deletion_rewrites_shared_data_and_sidecars(v3_collection):
     assert read_dataset(root)["total_episodes"] == 0
     dataset, _ = open_dataset(config)
     dataset.finalize()
+
+
+def _snapshot(root):
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in root.rglob("*") if path.is_file()
+    }
+
+
+def test_v3_deletion_copies_only_auxiliary_files_and_preserves_annotations(v3_collection, monkeypatch):
+    _, root = v3_collection
+    (root / "notes.txt").write_text("Keep this dataset note")
+    for index in range(3):
+        clips = root / f"audio/vad_segments/episode_{index:06d}"
+        clips.mkdir(parents=True)
+        (clips / "seg_000.wav").write_bytes(bytes([index]))
+        sync_path = root / f"audio/episode_{index:06d}.sync.json"
+        sync = json.loads(sync_path.read_text())
+        sync["vad_metadata"] = {"segments_dir": str(clips)}
+        sync["vad_segments"] = [{
+            "seg_id": f"episode_{index:06d}_vad_000",
+            "audio_wav_path": str(clips / "seg_000.wav"),
+            "asr_transcript": f"episode_{index:06d} stays in the text",
+            "verified": True,
+        }]
+        sync_path.write_text(json.dumps(sync))
+    copied = []
+    copyfile = shutil.copyfile
+
+    def copy(source, destination, *args, **kwargs):
+        copied.append(str(source))
+        return copyfile(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copyfile", copy)
+    EpisodeDeleter(root).delete_episode(1)
+    assert copied
+    assert not any(Path(path).is_relative_to(root / "data") for path in copied)
+    assert not any(Path(path).is_relative_to(root / "meta") for path in copied)
+    assert not any("episode_000001" in path for path in copied)
+    assert (root / "notes.txt").read_text() == "Keep this dataset note"
+    assert (root / "audio/vad_segments/episode_000001/seg_000.wav").read_bytes() == b"\x02"
+    sync = json.loads((root / "audio/episode_000001.sync.json").read_text())
+    segment = sync["vad_segments"][0]
+    assert segment["seg_id"] == "episode_000001_vad_000"
+    assert segment["asr_transcript"] == "episode_000002 stays in the text"
+    assert segment["verified"] is True
+    assert Path(segment["audio_wav_path"]).is_file()
+    assert Path(sync["vad_metadata"]["segments_dir"]).is_dir()
+    assert not list(root.parent.glob(f".{root.name}.delete-*"))
+
+
+@pytest.mark.parametrize("failure", ["generate", "sidecar", "patch", "validate", "fsync", "commit", "interrupt"])
+def test_v3_deletion_failure_keeps_source_byte_identical(v3_collection, monkeypatch, failure):
+    from lerobot.datasets import dataset_tools
+
+    from control.collection import _episode_deletion as deletion
+
+    _, root = v3_collection
+    before = _snapshot(root)
+
+    def fail(*args, **kwargs):
+        raise OSError("injected v3 deletion failure")
+
+    if failure in {"generate", "interrupt"}:
+        generate = dataset_tools.delete_episodes
+
+        def fail_after_generating(*args, **kwargs):
+            generate(*args, **kwargs)
+            if failure == "interrupt":
+                raise KeyboardInterrupt
+            fail()
+
+        monkeypatch.setattr(dataset_tools, "delete_episodes", fail_after_generating)
+    elif failure == "sidecar":
+        monkeypatch.setattr(shutil, "copy2", fail)
+    elif failure == "patch":
+        monkeypatch.setattr(deletion, "_patch_sync_json", fail)
+    elif failure == "validate":
+        monkeypatch.setattr(deletion, "_validate_result", fail)
+    elif failure == "fsync":
+        monkeypatch.setattr(deletion.os, "fsync", fail)
+    else:
+        monkeypatch.setattr(deletion, "_exchange_directories", fail)
+    with pytest.raises(KeyboardInterrupt if failure == "interrupt" else OSError):
+        EpisodeDeleter(root).delete_episode(1)
+    assert _snapshot(root) == before
+    assert not list(root.parent.glob(f".{root.name}.delete-*"))
+
+
+def test_v3_concurrent_source_change_cancels_commit(v3_collection, monkeypatch):
+    from control.collection import _episode_deletion as deletion
+
+    _, root = v3_collection
+    before = _snapshot(root)
+    validate = deletion._validate_result
+
+    def change_source(*args):
+        validate(*args)
+        (root / "new-record.txt").write_text("new data")
+
+    monkeypatch.setattr(deletion, "_validate_result", change_source)
+    with pytest.raises(RuntimeError, match="其他进程修改"):
+        EpisodeDeleter(root).delete_episode(1)
+    after = _snapshot(root)
+    assert after.pop("new-record.txt")
+    assert after == before
 
 
 def test_v3_task_rewrite_updates_every_episode_in_shared_shard(v3_collection):
