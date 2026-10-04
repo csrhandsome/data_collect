@@ -46,21 +46,15 @@ def test_v3_deletion_rewrites_shared_data_and_sidecars(v3_collection):
     dataset.finalize()
 
 
-def test_v3_asr_updates_every_episode_in_shared_shard(v3_collection):
+def test_v3_task_rewrite_updates_every_episode_in_shared_shard(v3_collection):
     from lerobot.datasets import LeRobotDataset
 
-    from data_analysis.convert_audio_dataset_to_asr import _rewrite_metadata_and_parquet
+    from data_analysis.dataset_io import rewrite_v3_tasks
 
     _, root = v3_collection
-    rows = episode_rows(root)
     prompts = {0: "Command A", 1: "Command B", 2: "Command A"}
-    preview = _rewrite_metadata_and_parquet(
-        dataset_dir=root, episode_rows=rows, prompts_by_episode=prompts, dry_run=True
-    )
-    assert preview["num_tasks"] == 2
-    _rewrite_metadata_and_parquet(
-        dataset_dir=root, episode_rows=rows, prompts_by_episode=prompts, dry_run=False
-    )
+    result = rewrite_v3_tasks(root, prompts)
+    assert result["num_tasks"] == 2
     paths = episode_paths(root)
     for row in episode_rows(root):
         index = row["episode_index"]
@@ -117,18 +111,3 @@ def test_resuming_converted_stats_keeps_metadata_shards_compatible(v3_collection
     paths = list((root / "meta/episodes").glob("chunk-*/file-*.parquet"))
     schemas = [pq.read_schema(path) for path in paths]
     assert all(schema.equals(schemas[0], check_metadata=False) for schema in schemas)
-
-
-def test_qwen_import_with_shared_hub1_environment():
-    import importlib.metadata
-
-    from data_analysis.convert_audio_dataset_to_asr_qwen import _import_qwen3_asr_model
-
-    assert importlib.metadata.version("huggingface-hub").startswith("1.")
-    model = _import_qwen3_asr_model()
-    from transformers import __version__
-    from transformers.dependency_versions_table import deps
-
-    assert __version__ == "4.57.6"
-    assert model.__name__ == "Qwen3ASRModel"
-    assert deps["huggingface-hub"] == "huggingface-hub>=0.34.0,<2.0"

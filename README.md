@@ -20,17 +20,16 @@ uv run pytest
 采集参数集中在 `config/panda.yaml`；现有相机字段、关节/末端动作、100 Hz 轨迹与音频 sidecar 继续使用原有约定。
 每次保存 episode 后会完成 LeRobot `finalize()` 并重新打开写入器，确保数据可以立即回放，也可以退出后续采。
 
-## Qwen3-ASR 共用环境
+## Legacy ASR 脚本
 
-Qwen3-ASR 子模块仍固定 Transformers 4.57.6，该版本的 `huggingface-hub<1` 限制不仅在包声明里，也在导入时检查。
-项目通过 `[tool.uv].override-dependencies` 放宽 Hub 约束，保留 Qwen 原有的 **Transformers 4.57.6**，共用 LeRobot 所需的 Hub 1.x。
-全部依赖安装在同一个 `.venv`，Qwen 子模块的依赖文件保持原样。
-项目的 LeRobot / Qwen / Whisper 加载器同步放宽 Transformers 的运行时 Hub 上限；其余依赖检查和模型实现保持原样。
-这个组合已用缓存中的 Qwen3-ASR-0.6B 对真实语音完成识别验证。
+当前仓库不再提供需要 ASR 的功能，不安装 `qwen-asr`，也不覆盖 Transformers / Hugging Face Hub 的依赖约束。
+音频采集、VAD、回放和已有标注的保留仍可使用。
 
-```bash
-uv run python -m data_analysis.convert_audio_dataset_to_asr_qwen --help
-```
+以下脚本仅作为 legacy 历史代码保留，当前项目环境不支持运行；使用需要自行配置独立的 legacy 环境：
+
+- `data_analysis/convert_audio_dataset_to_asr.py`（Whisper 转写）
+- `data_analysis/convert_audio_dataset_to_asr_qwen.py`（Qwen3-ASR 转写）
+- `scripts/precompute_instruction_features.py`（依赖外部 openpi 和 ASR 模型的音频特征提取）
 
 ## 旧数据
 
@@ -43,7 +42,7 @@ uv run python -m scripts.migrate_lerobot_dataset \
   --output data/dataset/new_dataset
 ```
 
-v2.1 与 v3.0 均支持质量检查、音频 ASR 标注和同格式数据合并。
+v2.1 与 v3.0 均支持质量检查和同格式数据合并。
 v3 删除使用 LeRobot 官方数据工具处理共享文件，并在已有事务内重排音频与轨迹编号。
 转换和合并不会上传到 Hub。真实机器人、相机和麦克风仍需在设备上验证。
 

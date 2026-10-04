@@ -25,10 +25,6 @@ def rewrite_v3_tasks(root: Path, prompts: dict[int, str]) -> dict:
     import numpy as np
     import pandas as pd
     import pyarrow as pa
-
-    from control.util.hub_compat import allow_hub1_for_transformers
-
-    allow_hub1_for_transformers()
     from lerobot.datasets.io_utils import write_tasks
 
     task_names = list(dict.fromkeys(prompts.values()))

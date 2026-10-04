@@ -29,17 +29,8 @@ dependencies = [
     "sounddevice>=0.5.5",
     "silero-vad>=6.2.1",
     "mink>=0.0.13",
-    "qwen-asr",
     "seaborn>=0.13.2",
 ]
-
-[tool.uv.sources]
-qwen-asr = { path = "third_party/Qwen3-ASR" }
-
-[tool.uv]
-# Keep Qwen's tested Transformers 4.57.6; relax its declared Hub <1 constraint.
-# control.util.hub_compat applies the matching, narrowly scoped runtime constraint.
-override-dependencies = ["huggingface-hub>=1.6,<2"]
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.11,<1"]

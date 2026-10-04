@@ -7,6 +7,12 @@
 1. 数据集质量检查
 2. 基于大模型的视频 CoT 分析
 
+## Legacy ASR 脚本
+
+`convert_audio_dataset_to_asr.py` 和 `convert_audio_dataset_to_asr_qwen.py` 仅保留历史代码。
+当前项目环境不支持 ASR，不安装 Qwen3-ASR 依赖，也不提供 Transformers / Hub 兼容补丁。
+使用这些脚本需要自行配置独立的 legacy 环境。
+
 ---
 
 ## 视频 CoT 分析

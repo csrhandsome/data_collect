@@ -39,9 +39,6 @@ def prepare_episode(root: Path, index: int, dry_run: bool, final_root: Path):
     if dry_run:
         return result
 
-    from control.util.hub_compat import allow_hub1_for_transformers
-
-    allow_hub1_for_transformers()
     from lerobot.datasets import LeRobotDataset
     from lerobot.datasets.dataset_tools import delete_episodes
 

@@ -4,10 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
-from control.util.hub_compat import allow_hub1_for_transformers
-
-allow_hub1_for_transformers()
-from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: E402
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
 def _looks_like_lerobot_dataset(path: Path) -> bool:

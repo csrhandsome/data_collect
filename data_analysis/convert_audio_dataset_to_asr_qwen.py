@@ -1,5 +1,8 @@
 """Convert an audio LeRobot dataset into a Qwen3-ASR-prompt dataset.
 
+LEGACY: 仅保留历史代码。当前仓库环境不支持 ASR 或 ASR 模型特征提取，
+不安装相关依赖，也不提供兼容补丁。使用需要自行配置独立的 legacy 环境。
+
 This is intentionally non-destructive: by default it copies the input dataset
 to a new directory whose name is suffixed with ``_qwen_asr`` and rewrites only
 the copy.
@@ -84,9 +87,6 @@ def _maybe_add_qwen3_asr_repo_to_path() -> None:
 
 
 def _import_qwen3_asr_model():
-    from control.util.hub_compat import allow_hub1_for_transformers
-
-    allow_hub1_for_transformers()
     try:
         from qwen_asr import Qwen3ASRModel
 

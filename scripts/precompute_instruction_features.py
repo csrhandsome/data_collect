@@ -1,5 +1,8 @@
 """Precompute static instruction-audio encoder features per episode.
 
+LEGACY: 仅保留历史代码。当前仓库环境不支持 ASR 或 ASR 模型特征提取，
+不安装相关依赖，也不提供兼容补丁。使用需要自行配置独立的 legacy 环境。
+
 Supports Franka realworld ASR sidecars under ``data/dataset/...`` and pluggable
 encoders from the sibling openpi checkout (``openpi.shared.audio_tools``):
 
@@ -30,15 +33,15 @@ Examples:
 from __future__ import annotations
 
 import argparse
-from concurrent import futures
 import contextlib
 import json
 import multiprocessing
 import os
-from pathlib import Path
 import re
 import sys
 import time
+from concurrent import futures
+from pathlib import Path
 from typing import Callable
 
 import numpy as np

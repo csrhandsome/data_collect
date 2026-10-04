@@ -6,9 +6,6 @@ from pathlib import Path
 
 
 def merge_v3(sources: list[Path], output: Path, overwrite: bool) -> Path:
-    from control.util.hub_compat import allow_hub1_for_transformers
-
-    allow_hub1_for_transformers()
     from lerobot.datasets import LeRobotDataset
     from lerobot.datasets.dataset_tools import merge_datasets
 

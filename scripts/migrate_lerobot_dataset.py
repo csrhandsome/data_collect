@@ -7,9 +7,6 @@ from pathlib import Path
 
 
 def migrate_dataset(source: Path, output: Path) -> Path:
-    from control.util.hub_compat import allow_hub1_for_transformers
-
-    allow_hub1_for_transformers()
     from lerobot.datasets.utils import (
         DEFAULT_DATA_FILE_SIZE_IN_MB,
         DEFAULT_VIDEO_FILE_SIZE_IN_MB,
