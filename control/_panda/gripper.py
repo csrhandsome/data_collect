@@ -11,6 +11,8 @@ from control.robotic_arm_types import CommandReceipt
 
 def command(arm, ratio, speed, force, wait, timeout):
     require_connected(arm)
+    if not arm.gripper.enabled:
+        raise RuntimeError("Gripper is disabled")
     if (
         not np.isfinite([ratio, speed, force]).all()
         or not 0 <= ratio <= 1

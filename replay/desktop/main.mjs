@@ -44,14 +44,14 @@ app.on('window-all-closed', () => app.quit())
 
 async function start() {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-  const resources = app.isPackaged ? process.resourcesPath : join(repoRoot, 'build/desktop')
+  const resources = app.isPackaged ? process.resourcesPath : join(repoRoot, 'build/desktop/cpu')
   const userData = app.getPath('userData')
   const workDir = join(userData, 'workspace')
   await mkdir(workDir, { recursive: true })
   await mkdir(join(userData, 'logs'), { recursive: true })
   const configPath = process.env.DATA_COLLECT_CONFIG ? resolve(process.env.DATA_COLLECT_CONFIG) : join(userData, 'panda.yaml')
   if (!process.env.DATA_COLLECT_CONFIG) {
-    await copyFile(join(resources, 'config/panda.yaml'), configPath, constants.COPYFILE_EXCL).catch((error) => {
+    await copyFile(join(resources, 'config/train/panda.yaml'), configPath, constants.COPYFILE_EXCL).catch((error) => {
       if (error.code !== 'EEXIST') throw error
     })
   }

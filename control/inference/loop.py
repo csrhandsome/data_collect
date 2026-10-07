@@ -8,6 +8,7 @@ import numpy as np
 
 from control.collection.devices import make_cameras, make_vr
 from control.collection.vr import EEMapper, VRResampler
+from control.inference.fingers import FingerImages
 from control.inference.policy import PolicyWorker, build_observation, validate_metadata
 from control.recording_writer import FreshCameraPair
 from control.robot_state import EEPose
@@ -45,6 +46,21 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
             stack.callback(vr.stop)
         if cfg.get("move_to_start", False):
             arm.move_to_start()
+        fingers = (
+            FingerImages(config, client.server_metadata)
+            if force and client.server_metadata.get("group") == "C"
+            else None
+        )
+        if fingers is not None:
+            fingers.start(arm)
+            stack.callback(fingers.close)
+            deadline = time.monotonic() + config["camera"].get("startup_timeout_s", 10)
+            while True:
+                if fingers.request_fields(time.monotonic()) is not None:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("C finger history is unavailable or stale")
+                time.sleep(0.01)
         # Warmup: wait for five inference responses and discard them before execution.
         for i in range(5):
             state = arm.get_state()
@@ -61,9 +77,15 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
                 config["dataset"]["instruction"],
                 cfg["action_space"],
                 tactile=arm.get_tactile_images()
-                if config.get("tactile", {}).get("enabled", False)
+                if config.get("tactile", {}).get("enabled", False) and fingers is None
                 else None,
+                fields=config.get("observation"),
             )
+            if fingers is not None:
+                contact = fingers.request_fields(state.sampled_monotonic_ns / 1e9)
+                if contact is None:
+                    raise RuntimeError("C finger history is unavailable or stale during warmup")
+                observation.update(contact)
             client.infer(observation)
             logger.info("Policy warmup %d/5 complete", i + 1)
         arm.start_stream()
@@ -149,10 +171,16 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
                             config["dataset"]["instruction"],
                             cfg["action_space"],
                             tactile=arm.get_tactile_images()
-                            if config.get("tactile", {}).get("enabled", False)
+                            if config.get("tactile", {}).get("enabled", False) and fingers is None
                             else None,
+                            fields=config.get("observation"),
                             step=steps,
                         )
+                        if fingers is not None:
+                            contact = fingers.request_fields(state.sampled_monotonic_ns / 1e9)
+                            if contact is None:
+                                raise RuntimeError("C finger history is unavailable or stale")
+                            observation.update(contact)
                         if worker.submit(observation, state):
                             requests += 1
                             last_request_ns = now

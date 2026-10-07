@@ -20,7 +20,8 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
-BUILD = REPO / "build/desktop"
+BUILD = REPO / "build/desktop/cpu"
+DATA_ANALYSIS_MODULES = ("preprocess_vad", "instruction_audio_window", "dataset_io")
 
 
 def run(command):
@@ -30,55 +31,60 @@ def run(command):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build-dir", type=Path, default=BUILD)
+    parser.add_argument("--dependency-python", type=Path, default=BUILD / "runtime-venv/bin/python",
+                        help="Interpreter of a separate runtime-only dependency environment")
     parser.add_argument("--skip-compile", action="store_true")
     parser.add_argument("--reuse-dependencies", action="store_true")
     parser.add_argument("--jobs", type=int, default=4)
     args = parser.parse_args()
+    build_root = args.build_dir.resolve()
     if sys.platform != "linux" or sys.version_info[:2] != (3, 12):
         raise SystemExit("Build this release on Linux with Python 3.12")
-    BUILD.mkdir(parents=True, exist_ok=True)
+    build_root.mkdir(parents=True, exist_ok=True)
     sources = [
         *sorted((REPO / "control").rglob("*.py")),
         *sorted((REPO / "replay/backend").rglob("*.py")),
         *sorted((REPO / "replay/scripts").rglob("*.py")),
-        REPO / "vr_collect.py", REPO / "data_analysis/preprocess_vad.py",
+        REPO / "vr_collect.py",
+        *(REPO / "data_analysis" / f"{name}.py" for name in DATA_ANALYSIS_MODULES),
         REPO / "replay/desktop/runtime/desktop_runtime.py",
     ]
     if not args.skip_compile:
         contents = {p.relative_to(REPO): p.read_bytes() for p in sources}
         snapshot = {str(p): hashlib.sha256(body).hexdigest() for p, body in contents.items()}
-        source_root = BUILD / "sources"
+        source_root = build_root / "sources"
         if source_root.exists():
             shutil.rmtree(source_root)
         for relative, body in contents.items():
             staged = source_root / relative
             staged.parent.mkdir(parents=True, exist_ok=True)
             staged.write_bytes(body)
-        compiler_env = {**os.environ, "NUITKA_CACHE_DIR": str(BUILD / "cache")}
+        compiler_env = {**os.environ, "NUITKA_CACHE_DIR": str(build_root / "cache")}
         command = [
             sys.executable, "-m", "nuitka", "--mode=module", "--nofollow-imports",
             "--include-package=control", "--include-package=replay.backend",
             "--include-package=replay.scripts", "--include-module=vr_collect",
             "--include-module=replay", "--include-module=data_analysis",
-            "--include-module=data_analysis.preprocess_vad",
-            "--output-dir=" + str(BUILD / "nuitka"),
-            "--report=" + str(BUILD / "compilation-report.xml"),
+            *(f"--include-module=data_analysis.{name}" for name in DATA_ANALYSIS_MODULES),
+            "--output-dir=" + str(build_root / "nuitka"),
+            "--report=" + str(build_root / "compilation-report.xml"),
             "--jobs=" + str(args.jobs),
             str(source_root / "replay/desktop/runtime/desktop_runtime.py"),
         ]
         print("Compiling project Python code with Nuitka", flush=True)
         subprocess.run(command, cwd=source_root, env=compiler_env, check=True)
-        (BUILD / "build-manifest.json").write_text(json.dumps({
+        (build_root / "build-manifest.json").write_text(json.dumps({
             "compiled_at": datetime.now(timezone.utc).isoformat(),
             "python": sys.version, "sources": snapshot,
         }, indent=2))
     artifacts = [
-        path for path in (BUILD / "nuitka").glob("desktop_runtime*")
+        path for path in (build_root / "nuitka").glob("desktop_runtime*")
         if any(path.name.endswith(suffix) for suffix in importlib.machinery.EXTENSION_SUFFIXES)
     ]
     if len(artifacts) != 1:
         raise SystemExit("Expected exactly one compiled desktop_runtime extension")
-    runtime = BUILD / "runtime"
+    runtime = build_root / "runtime"
     if runtime.exists() and not args.reuse_dependencies:
         shutil.rmtree(runtime)
     (runtime / "bin").mkdir(parents=True, exist_ok=True)
@@ -97,7 +103,17 @@ def main():
         soname = shared_library + ".1.0"
         if soname != shared_library and not (runtime / "lib" / soname).exists():
             (runtime / "lib" / soname).symlink_to(shared_library)
-    site = Path(sysconfig.get_path("purelib"))
+    dependency_info = json.loads(subprocess.check_output([
+        str(args.dependency_python.absolute()), "-I", "-c",
+        "import importlib.metadata, json, sys, sysconfig; print(json.dumps({"
+        "'version': list(sys.version_info[:2]), 'site': sysconfig.get_path('purelib'),"
+        "'dependencies': {d.metadata['Name']: d.version "
+        "for d in importlib.metadata.distributions()}}))",
+    ], text=True))
+    if dependency_info["version"] != list(sys.version_info[:2]):
+        raise SystemExit("Compiler and runtime dependencies must use the same Python version")
+    site = Path(dependency_info["site"])
+    dependencies = dependency_info["dependencies"]
     target_site = runtime / "lib/python3.12/site-packages"
     print(f"Bundling third-party dependencies from {site}", flush=True)
     if not args.reuse_dependencies or not target_site.exists():
@@ -115,7 +131,9 @@ def main():
         elif path.exists():
             path.unlink()
     shutil.copy2(artifacts[0], runtime / artifacts[0].name)
-    shutil.copy2(BUILD / "build-manifest.json", runtime / "build-manifest.json")
+    manifest = json.loads((build_root / "build-manifest.json").read_text())
+    manifest["dependencies"] = dict(sorted(dependencies.items()))
+    (runtime / "build-manifest.json").write_text(json.dumps(manifest, indent=2))
     shutil.copy2(REPO / "replay/desktop/runtime/bootstrap.py", runtime / "bootstrap.py")
     shutil.copytree(REPO / "data/franka_mjcf", runtime / "data/franka_mjcf", dirs_exist_ok=True)
     launcher = runtime / "bin/data-collect-runtime"
@@ -126,12 +144,16 @@ def main():
         'exec "$runtime_root/bin/python3.12" -I "$runtime_root/bootstrap.py" "$@"\n'
     )
     launcher.chmod(0o755)
-    # Publish a template, never a copy of machine credentials.
-    config = yaml.safe_load((REPO / "config/panda.yaml").read_text())
+    # Resolve inherited dataset definitions into a portable user template.
+    sys.path.insert(0, str(REPO))
+    from control.config import load_config
+
+    config = load_config(REPO / "config/train/panda.yaml")
     for key in ("username", "password"):
         config.get("robot", {}).pop(key, None)
-    (BUILD / "config").mkdir(exist_ok=True)
-    (BUILD / "config/panda.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    template = build_root / "config/train/panda.yaml"
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text(yaml.safe_dump(config, sort_keys=False))
     print(f"Runtime ready: {launcher}", flush=True)
     run([launcher, "doctor"])
 

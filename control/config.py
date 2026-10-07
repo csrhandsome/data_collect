@@ -9,11 +9,12 @@ from pathlib import Path
 
 import yaml
 
+from control.collection.schema import features
 from control.util.timing import positive_rate
 
 DEFAULT_CONFIG = Path(
     os.environ.get(
-        "DATA_COLLECT_CONFIG", Path(__file__).resolve().parents[1] / "config/panda.yaml"
+        "DATA_COLLECT_CONFIG", Path(__file__).resolve().parents[1] / "config/train/panda.yaml"
     )
 )
 
@@ -30,7 +31,10 @@ def load_config(path=DEFAULT_CONFIG, _seen=None):
     parent = payload.pop("extends", None)
     result = load_config(path.parent / parent, seen) if parent else {}
     merge(result, payload)
-    validate(result)
+    # Validate the merged child: inherited field choices may depend on its
+    # tactile/action-space settings rather than the defaults of a partial parent.
+    if _seen is None:
+        validate(result)
     return result
 
 
@@ -45,9 +49,18 @@ def merge(target, source):
 def validate(config):
     control = config.get("control", {})
     if control.get("mode", "ee") != "ee":
-        raise ValueError("control.mode must be ee; dataset.action_space selects joint/ee labels")
+        raise ValueError("control.mode must be ee; action fields select saved joint/ee labels")
     if config.get("dataset", {}).get("action_space", "joint") not in ("joint", "ee"):
         raise ValueError("dataset.action_space must be joint or ee")
+    if "fields" in config.get("dataset", {}):
+        raise ValueError("dataset.fields was replaced by observation/action mappings")
+    features(
+        int(config.get("camera", {}).get("image_hw", 224)),
+        config.get("dataset", {}).get("action_space", "joint"),
+        config.get("tactile", {}).get("enabled", False),
+        config.get("observation"),
+        config.get("action"),
+    )
     if config.get("gripper", {}).get("type", "franka") not in ("franka", "dh5", "none"):
         raise ValueError("gripper.type must be franka, dh5 or none")
     for section, key, default in [

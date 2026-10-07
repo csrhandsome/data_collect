@@ -41,16 +41,37 @@ def load_trajectory(root: Path, episode_index: int | None = None) -> tuple[int, 
         clock = "host_frame_monotonic_ns"
         scale = 1e9
     else:
-        key = next((key for key in ("ee_pose", "joint_position") if key in info["features"]), None)
+        key = next(
+            (
+                key
+                for key in (
+                    "observation.ee_pose",
+                    "observation.joint_position",
+                    "ee_pose",
+                    "joint_position",
+                )
+                if key in info["features"]
+            ),
+            None,
+        )
         if key is None:
             raise ValueError("回放需要完整 ee_pose 或 joint_position，只有 XYZ 位置不足以回放")
         rows = _episode_table(root, info, episode, key).to_pylist()
-        if "gripper_position" in info["features"]:
-            gripper = _episode_table(root, info, episode, "gripper_position")[
-                "gripper_position"
-            ].to_pylist()
+        grip_key = next(
+            (
+                key
+                for key in ("observation.gripper_position", "gripper_position")
+                if key in info["features"]
+            ),
+            None,
+        )
+        if grip_key is not None:
+            gripper = _episode_table(root, info, episode, grip_key)[grip_key].to_pylist()
             for row, ratio in zip(rows, gripper, strict=True):
                 row["gripper_position"] = ratio
+        rows = [
+            {key.removeprefix("observation."): value for key, value in row.items()} for row in rows
+        ]
         clock, scale = "timestamp", 1
     if not rows:
         raise ValueError("轨迹为空")

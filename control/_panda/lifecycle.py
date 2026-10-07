@@ -94,6 +94,7 @@ def close(arm):
 
 def initialize(arm, config, backend):
     from control._panda.backend import PandaBackend
+    from control.gripper_controller import GripperController
 
     arm._config = config or {}
     arm._backend = backend if backend is not None else PandaBackend(arm._config)
@@ -104,3 +105,4 @@ def initialize(arm, config, backend):
     arm._motion_done.set()
     arm._nullspace = None
     arm._gripper_executor = arm._gripper_future = None
+    arm._gripper = GripperController(arm)

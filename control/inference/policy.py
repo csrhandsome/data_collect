@@ -27,10 +27,10 @@ def validate_metadata(metadata, config):
     force = metadata.get("rlt_protocol") == "pytorch-rl-token-v1"
     if force:
         expected = 7
-        if metadata.get("group") == "C":
-            raise ValueError("Force RLT C needs a synchronized finger-history model adapter")
-        if metadata.get("rlt_actor_protocol") != "pytorch-force-rlt-actor-v1" or not metadata.get(
-            "actor_sha256"
+        if (
+            metadata.get("rlt_actor_protocol") != "pytorch-force-rlt-actor-v1"
+            or metadata.get("group") not in ("B", "C")
+            or space != "joint"
         ):
             raise ValueError("Force RLT actor metadata is invalid")
     if (
@@ -41,21 +41,39 @@ def validate_metadata(metadata, config):
         or int(metadata.get("action_dim", 0)) != expected
     ):
         raise ValueError("Policy metadata action space, dimension, horizon or fps mismatch")
+    required = {
+        "exterior_image",
+        "wrist_image_left",
+        "gripper_position",
+        "joint_position" if space == "joint" else "ee_pose",
+    }
+    if force and metadata.get("group") == "C":
+        required.update(("gripper_image_left", "gripper_image_right"))
+        if not config.get("tactile", {}).get("enabled", False):
+            raise ValueError("C requires tactile.enabled=true")
+        if metadata.get("finger_input_protocol") != "panda-finger-rgb-history-v1":
+            raise ValueError("C server needs the GPU finger RGB history adapter")
+    disabled = required - {key for key in required if config.get("observation", {}).get(key, True)}
+    if disabled:
+        raise ValueError(f"Policy requires enabled observation fields: {sorted(disabled)}")
     return force
 
 
-def build_observation(state, pair, prompt, space, *, tactile=None, step=0):
+def build_observation(state, pair, prompt, space, *, tactile=None, step=0, fields=None):
     result = {
-        "observation/exterior_image_1_left": pair.front.copy(),
-        "observation/wrist_image_left": pair.wrist.copy(),
-        "observation/gripper_position": np.array(
+        "observation.exterior_image": pair.front.copy(),
+        "observation.wrist_image_left": pair.wrist.copy(),
+        "observation.gripper_position": np.array(
             [state.gripper.commanded_open_ratio], dtype=np.float32
         ),
         "prompt": prompt,
     }
-    key = "ee_pose" if space == "ee" else "joint_position"
-    result[f"observation/{key}"] = (
-        state.ee_pose.vector if space == "ee" else state.joint_positions.astype(np.float32)
+    result.update(
+        {
+            "observation.ee_pose": state.ee_pose.vector,
+            "observation.ee_position": state.ee_position.astype(np.float32),
+            "observation.joint_position": state.joint_positions.astype(np.float32),
+        }
     )
     if tactile is not None:
         left, right = tactile
@@ -63,10 +81,16 @@ def build_observation(state, pair, prompt, space, *, tactile=None, step=0):
             raise ValueError("Tactile policy inputs are missing")
         result.update(
             {
-                "observation/gripper_image_left": left.copy(),
-                "observation/gripper_image_right": right.copy(),
+                "observation.gripper_image_left": left.copy(),
+                "observation.gripper_image_right": right.copy(),
             }
         )
+    if fields is not None:
+        result = {
+            key: value
+            for key, value in result.items()
+            if not key.startswith("observation.") or fields.get(key.split(".")[1], True)
+        }
     result.update(
         monotonic_ts=np.array(state.sampled_monotonic_ns / 1e9, dtype=np.float64),
         O_T_TCP=state.end_effector_pose.copy(),
@@ -85,7 +109,6 @@ def parse_response(response, observation_ns, state, metadata):
     if force and (
         not np.isfinite(reference)
         or response.get("group") != metadata.get("group")
-        or response.get("actor_sha256") != metadata.get("actor_sha256")
         or abs(reference - observation_ns / 1e9) > 1e-6
     ):
         raise ValueError("Force RLT response reference mismatch")

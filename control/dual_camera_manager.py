@@ -353,6 +353,7 @@ class DualRGBCameraManager:
         self._wrist_ok = False
         self._external_img: Optional[np.ndarray] = None
         self._wrist_img: Optional[np.ndarray] = None
+        self._external_ns = self._wrist_ns = None
 
     def _connect_cameras(self) -> None:
         if self._connected:
@@ -368,21 +369,25 @@ class DualRGBCameraManager:
         self._background_error = None
         print("[DualRGBCameraManager] 双 RGB 相机系统已连接")
 
-    def _cache_images(self, external_ok: bool, wrist_ok: bool) -> None:
+    def _cache_images(self, external_ok: bool, wrist_ok: bool, external_ns=None, wrist_ns=None) -> None:
         external_img = self.external_camera.img
         wrist_img = self.wrist_camera.img
         with self._image_lock:
             self._external_ok = bool(external_ok)
             self._wrist_ok = bool(wrist_ok)
-            if external_img is not None:
+            if external_ok and external_img is not None:
                 self._external_img = external_img
-            if wrist_img is not None:
+                self._external_ns = external_ns
+            if wrist_ok and wrist_img is not None:
                 self._wrist_img = wrist_img
+                self._wrist_ns = wrist_ns
 
     def _update_once(self, timeout_ms: int) -> Tuple[bool, bool]:
         external_ok = self.external_camera.update(timeout=timeout_ms)
+        external_ns = time.monotonic_ns()
         wrist_ok = self.wrist_camera.update(timeout=timeout_ms)
-        self._cache_images(external_ok, wrist_ok)
+        wrist_ns = time.monotonic_ns()
+        self._cache_images(external_ok, wrist_ok, external_ns, wrist_ns)
         return external_ok, wrist_ok
 
     def _background_worker(self) -> None:
@@ -433,6 +438,11 @@ class DualRGBCameraManager:
     def get_images(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         with self._image_lock:
             return self._external_img, self._wrist_img
+
+    def get_frames(self):
+        """Read images and host capture clocks atomically, in right/left order."""
+        with self._image_lock:
+            return self._external_img, self._wrist_img, self._external_ns, self._wrist_ns
 
     def get_depths(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         return None, None

@@ -5,7 +5,8 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable, Sequence
 
-from control._panda import gripper, lifecycle, motion
+from control._panda import lifecycle, motion
+from control.gripper_controller import GripperController
 from control.robot_state import EEPose
 from control.robotic_arm_types import (
     CommandReceipt,
@@ -57,8 +58,9 @@ class RoboticArmControler:
         return lifecycle.status(self)
 
     def get_capabilities(self) -> RobotCapabilities:
-        kind = self._config.get("gripper", {}).get("type", "franka")
-        return RobotCapabilities(gripper=kind != "none", tactile_images=kind == "dh5")
+        return RobotCapabilities(
+            gripper=self.gripper.enabled, tactile_images=self.gripper.supports_tactile_images
+        )
 
     def start_stream(self, space: str = "ee") -> None:
         if space != "ee":
@@ -111,8 +113,13 @@ class RoboticArmControler:
         return lifecycle.wait_stopped(self, timeout_s)
 
     @property
+    def gripper(self) -> GripperController:
+        """The arm-owned common gripper API, selected by gripper.type in YAML."""
+        return self._gripper
+
+    @property
     def gripper_busy(self) -> bool:
-        return lifecycle.status(self).gripper_busy
+        return self.gripper.busy
 
     def set_gripper(
         self,
@@ -123,21 +130,21 @@ class RoboticArmControler:
         wait: bool = True,
         timeout: float | None = None,
     ) -> CommandReceipt:
-        return gripper.command(self, open_ratio, speed, force, wait, timeout)
+        return self.gripper.set_open_ratio(
+            open_ratio, speed=speed, force=force, wait=wait, timeout=timeout
+        )
 
     def gripper_open(self, *, wait: bool = True, timeout: float | None = None) -> CommandReceipt:
-        return self.set_gripper(1.0, wait=wait, timeout=timeout)
+        return self.gripper.open(wait=wait, timeout=timeout)
 
     def gripper_close(self, *, wait: bool = True, timeout: float | None = None) -> CommandReceipt:
-        return self.set_gripper(0.0, wait=wait, timeout=timeout)
+        return self.gripper.close(wait=wait, timeout=timeout)
 
     def wait_gripper(self, timeout: float | None = None) -> None:
-        gripper.wait(self, timeout)
+        self.gripper.wait(timeout)
 
     def stop_gripper(self) -> None:
-        lifecycle.require_connected(self)
-        self._backend.stop_gripper()
+        self.gripper.stop()
 
     def get_tactile_images(self):
-        lifecycle.require_connected(self)
-        return self._backend.tactile_images()
+        return self.gripper.get_tactile_images()

@@ -1,4 +1,4 @@
-"""新的控制夹爪的sdk,需要更新robotic_arm_controller这个类里面的控制夹爪的函数(datacollect里面的都不要多线程控制夹爪了哈哈哈)"""
+"""DH5 serial SDK; collection accesses it through the arm-owned GripperController."""
 
 from __future__ import annotations
 

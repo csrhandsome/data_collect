@@ -1,0 +1,27 @@
+# Panda 采集、训练读取和服务请求的统一字段，由 config/train/panda.yaml 继承。
+# true 表示保存，false 表示不保存；存储与请求 key 由分组.字段名拼成（LeRobot 不允许斜线）。
+# RGB 图像尺寸为 [H,H,3]，H = camera.image_hw（当前 224）。
+observation:
+  exterior_image: true      # 外部相机 RGB
+  wrist_image_left: true    # 腕部相机 RGB
+  gripper_image_left: true  # 左触觉 RGB，仅 tactile.enabled=true 时保存
+  gripper_image_right: true # 右触觉 RGB，仅 tactile.enabled=true 时保存
+
+  joint_position: true     # float32[7]，实测关节角，rad
+  ee_pose: true            # float32[6]，xyz（m）+ roll/pitch/yaw（rad），ZYX 欧拉角约定
+  ee_position: true        # float32[3]，实测末端 xyz，m
+  gripper_position: true   # float32[1]，指令开合比例：0 闭合、1 全开
+
+# 动作标签使用下一帧观测时的实测状态，末帧使用 episode 结束时的实测状态。
+# joint 和 ee 标签同时保留，训练时选用所需标签并拼接夹爪比例。
+action:
+  joint_position: true     # float32[7]，下一帧关节角，rad
+  ee_pose: true            # float32[6]，下一帧末端位姿，m/rad
+  gripper_position: true   # float32[1]，下一帧指令开合比例
+
+# 示例：observation.exterior_image → 存储 key observation.exterior_image。
+# 新格式不保存全零占位图像，也不保存旧的拼接 actions 字段。
+# LeRobot 自动添加 timestamp/frame_index/episode_index/index/task_index，保持原名。
+# task 来自运行配置的 dataset.instruction，写入任务元数据。
+# 轨迹、同步信息和可选音频仍使用附加文件。
+# 与旧格式不兼容，使用新的 dataset.date 或数据目录创建数据集。

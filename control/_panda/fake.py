@@ -78,3 +78,9 @@ class FakeBackend:
 
     def tactile_images(self):
         return np.zeros((224, 224, 3), dtype=np.uint8), np.zeros((224, 224, 3), dtype=np.uint8)
+
+    def tactile_frames(self):
+        # A 30 Hz synthetic camera keeps repeated servo polls from inventing history.
+        stamp = (time.monotonic_ns() // 33_333_333) * 33_333_333
+        left, right = self.tactile_images()
+        return left, right, stamp, stamp

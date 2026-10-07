@@ -72,14 +72,16 @@ def test_complete_multirate_recording(tmp_path, space, tactile, audio):
     assert stats["ticks"] == 50
     assert info["fps"] == 30 and info["total_episodes"] == 1
     assert 10 <= info["total_frames"] <= 17
-    assert next(f for f in info["features"] if f["key"] == "actions")["shape"] == [
-        8 if space == "joint" else 7
-    ]
+    shapes = {f["key"]: f["shape"] for f in info["features"]}
+    assert shapes["action.joint_position"] == [7]
+    assert shapes["action.ee_pose"] == [6]
+    assert shapes["action.gripper_position"] == [1]
+    assert "actions" not in shapes and "exterior_image_2_left" not in shapes
     trace = read_action_trace(root, 0)
     assert trace["total_points"] >= 40
     if audio:
         assert read_audio(root, 0)["sample_rate"] == 16000
-    assert ("gripper_image_left" in {f["key"] for f in info["features"]}) == tactile
+    assert ("observation.gripper_image_left" in {f["key"] for f in info["features"]}) == tactile
     sync = next(root.rglob("*.sync.json"))
     payload = json.loads(sync.read_text())
     assert payload["control_mode"] == "ee" and payload["action_space"] == space
@@ -88,7 +90,7 @@ def test_complete_multirate_recording(tmp_path, space, tactile, audio):
         for r in payload["frame_records"]
     )
     # Changing labels/fps must never silently append to an existing dataset.
-    cfg["dataset"]["action_space"] = "ee" if space == "joint" else "joint"
+    cfg["action"]["ee_pose"] = False
     with pytest.raises(ValueError, match="schema/fps"):
         run_collection(cfg, dry_run=True, max_steps=5)
 

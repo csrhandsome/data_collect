@@ -7,7 +7,7 @@ from vr_collect import main
 
 def launch():
     warnings.warn(
-        "Historical entry: use vr_collect.py --config config/panda.yaml; all device options are in YAML",
+        "Historical entry: use vr_collect.py --config config/train/panda.yaml; all device options are in YAML",
         FutureWarning,
     )
     main()

@@ -27,13 +27,13 @@ pnpm --dir replay/frontend dev --host 127.0.0.1
 
 打开页面时自动扫描数据目录，左侧的数据集下拉框列出所有包含 `meta/info.json` 的直接子目录。默认目录为 `data/dataset/`，例如 `data/dataset/franka_lerobot_7_6_audio/meta/info.json`。放入新数据集或采集结束后，点击「重新扫描」更新列表和片段信息，无需重启服务。再选择数据集和 episode，查看字段的类型、shape 和名称。
 
-采集保存路径也默认为 `data/dataset/<数据集名称>/`，由 `config/panda.yaml` 的 `dataset.root` 配置；`openpi/franka_lerobot` 这样的 repo ID 只使用最后一段作为本地目录名称。回放目录由同一配置文件的 `replay.data_root` 配置，`REPLAY_DATA_ROOT` 可以覆盖它。已有 `data/openpi/` 数据已迁移到 `data/dataset/`。
+采集保存路径也默认为 `data/dataset/<数据集名称>/`，由 `config/train/panda.yaml` 的 `dataset.root` 配置；`openpi/franka_lerobot` 这样的 repo ID 只使用最后一段作为本地目录名称。回放目录由同一配置文件的 `replay.data_root` 配置，`REPLAY_DATA_ROOT` 可以覆盖它。已有 `data/openpi/` 数据已迁移到 `data/dataset/`。
 
 将视频或 EE 数据块拖到右侧参考栏，也可用添加按钮完成同样操作。添加多个视图后，用底部统一时间轴播放、暂停或跳转，同时查看相机画面、EE 空间轨迹和 XYZ 随时间的变化。视图可以单独移除或全部清空；切换 dataset / episode 会重置工作台。
 
 「采集与操作」栏提供：
 
-- **开启采集**：后端在仓库根目录运行 `uv run vr_collect`，使用 `config/panda.yaml` 的设备、采集任务及保存目录。左侧选择的数据集不会改变采集保存位置。
+- **开启采集**：后端在仓库根目录运行 `uv run vr_collect`，使用 `config/train/panda.yaml` 的设备、采集任务及保存目录。左侧选择的数据集不会改变采集保存位置。
 - **真机回放上一次**：回放当前数据集最大 `episode_index` 的已保存片段，与当前查看的 episode 无关。优先使用 100 Hz `actions.jsonl` 的实测位姿与夹爪记录，随后尝试同步帧记录、Parquet 的完整 `ee_pose` 或 `joint_position`。关节记录经控制器运动学转换为 EE 轨迹；回放实测路径。夹爪动作期间暂停回放时钟。
 - **删除当前片段**：调用已有按编号删除脚本，硬删除当前片段及其图像、视频、音频、100 Hz 记录和同步文件，重排后续文件、Parquet 索引及元数据。支持 v2.0/v2.1，以及通过新版 LeRobot 官方工具重写共享文件的 v3.0。
 

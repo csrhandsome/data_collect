@@ -1,5 +1,7 @@
-# EE control only. dataset.action_space selects joint (8D) or ee (7D) recorded labels.
+# EE control only. observation/action fields are inherited from the dataset schema.
+# Both joint and EE labels are saved when enabled; dataset.action_space is an episode annotation.
 # Credentials: FRANKA_USERNAME / FRANKA_PASSWORD. force: gripper.type=dh5, tactile.enabled=true.
+extends: ../dataset/panda.yaml
 dataset:
   repo_id: openpi/franka_lerobot
   date: test_100hz
@@ -47,10 +49,10 @@ camera:
   startup_timeout_s: 10
   max_age_s: 0.2
 gripper:
-  type: franka
-  open_width_m: 0.05
-  force: 50
-  velocity: 100
+  type: franka  # franka / dh5 / none; exposed through arm.gripper.
+  open_width_m: 0.05  # Franka full-open target width in metres.
+  force: 50  # Franka grasp force (N); DH5 native force setting (20..100).
+  velocity: 100  # DH5 native velocity setting (0..1000).
   dh5:
     com: /dev/ttyUSB0
     right_camera_device: 1

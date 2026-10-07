@@ -63,9 +63,9 @@ def test_same_recorder_saves_consecutive_episodes(tmp_path, audio, discard_betwe
         assert info["total_episodes"] == 2
         assert info["total_frames"] == 6
         for index, path in episode_paths(root).items():
-            rows = episode_dataframe(path, index, columns=["ee_position", "frame_index"])
+            rows = episode_dataframe(path, index, columns=["observation.ee_position", "frame_index"])
             assert rows["frame_index"].tolist() == [0, 1, 2]
-            np.testing.assert_allclose(np.stack(rows["ee_position"])[:, 0], 0.4 + index * 0.1)
+            np.testing.assert_allclose(np.stack(rows["observation.ee_position"])[:, 0], 0.4 + index * 0.1)
             sync_dir = root / "audio" if audio else root
             sync = json.loads((sync_dir / f"episode_{index:06d}.sync.json").read_text())
             assert sync["video_frames"] == 3
@@ -86,8 +86,8 @@ def test_same_recorder_saves_consecutive_episodes(tmp_path, audio, discard_betwe
         info = read_dataset(root)
         assert info["total_episodes"] == 2 and info["total_frames"] == 6
         for index, expected in enumerate((0.5, 0.7)):
-            rows = episode_dataframe(episode_paths(root)[index], index, columns=["ee_position"])
-            np.testing.assert_allclose(np.stack(rows["ee_position"])[:, 0], expected)
+            rows = episode_dataframe(episode_paths(root)[index], index, columns=["observation.ee_position"])
+            np.testing.assert_allclose(np.stack(rows["observation.ee_position"])[:, 0], expected)
         with pytest.raises(RuntimeError, match="closed"):
             recorder.start()
     finally:

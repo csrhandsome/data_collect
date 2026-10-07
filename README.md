@@ -5,7 +5,7 @@
 
 ```bash
 uv sync --locked
-uv run vr_collect --config config/panda.yaml
+uv run vr_collect --config config/train/panda.yaml
 bash dev.sh
 ```
 
@@ -20,10 +20,84 @@ uv run pytest
 ```
 
 `uv sync` 会按 `.python-version` 将项目 `.venv` 切换到 Python 3.12。
-采集参数集中在 `config/panda.yaml`；现有相机字段、关节/末端动作、100 Hz 轨迹与音频 sidecar 继续使用原有约定。
+
+## 夹爪接口
+
+机械臂持有公共的 `GripperController`（`arm.gripper`），连接、关闭和异步命令调度由机械臂统一管理。
+`config/train/panda.yaml` 的 `gripper.type` 选择 `franka`（默认）、`dh5` 或 `none`（禁用）。
+底层 `FrankaGripperBackend` 和 `DH5GripperBackend` 实现相同的 `GripperBackend` 接口；
+后续适配新夹爪时，实现该接口并加入工厂与配置校验即可。
+
+```python
+from control.config import load_config
+from control.robotic_arm_controller import RoboticArmControler
+
+with RoboticArmControler(config=load_config("config/train/panda.yaml")) as arm:
+    arm.gripper.open()
+    arm.gripper.set_open_ratio(0.75, wait=False)
+    arm.gripper.wait(timeout=5.0)
+    state = arm.gripper.get_state()
+    arm.gripper.close()  # 闭合夹爪；退出 with 时释放机械臂及夹爪资源。
+```
+
+开合比例统一为 `0=闭合、1=全开`，采集数据继续记录该比例。
+Franka 保留原有行为：比例 ≥ 0.5 时按 `open_width_m × 比例` 移动，小于 0.5 时执行抓取；
+命令的 `speed`、`force` 分别使用 m/s、N。DH5 将比例映射为 `round((1 - 比例) × 1000)` 的位置寄存器值，
+使用 YAML 的 `force`、`velocity` 原生参数和 `dh5.com` 串口配置；不把寄存器值换算成物理角度。
+DH5 的触觉相机仍由 `tactile.enabled` 控制，图像通过 `arm.gripper.get_tactile_images()` 读取。
+`arm.gripper.stop()` 支持 Franka；DH5 驱动没有确认可用的停止命令，会抛出 `NotImplementedError`。
+旧的 `arm.set_gripper()`、`arm.gripper_open()` 等方法保留，转发到同一个夹爪对象。
+
+## 采集行为
+
+采集运行参数集中在 `config/train/panda.yaml`；存储字段由 `config/dataset/panda.yaml` 定义。100 Hz 轨迹与音频 sidecar 保留原有约定。
 连续采集复用同一个 LeRobot 写入器，每条 episode 结束只调用 `save_episode()`，退出采集时统一 `finalize()`。
 录制过程中需要回放或删除时，先结束或丢弃当前 episode，再调用 `EpisodeRecorder.finalize()` 封口文件；
 下次 `start()` 会按最新元数据续采。`save_episode()` 后未封口的 v3 Parquet 文件不能直接用于回放。
+
+## 统一存储与推理 key
+
+配置按用途分为两个文件：
+
+- [config/train/panda.yaml](config/train/panda.yaml)：原有机器人、采集、推理和回放运行参数。
+- [config/dataset/panda.yaml](config/dataset/panda.yaml)：嵌套的观测和动作字段定义。
+
+运行配置通过 `extends: ../dataset/panda.yaml` 继承数据集配置，相对路径按配置文件所在目录解析。
+采集、推理请求、openpi-force 的 Panda 训练读取使用相同字段名；训练端无需复制这份 YAML。
+约定 `true` 表示保存、`false` 表示不保存，例如：
+
+```yaml
+observation:
+  exterior_image: true
+  ee_pose: true
+
+action:
+  ee_pose: true
+```
+
+| key | 类型 / 维度 | 内容 |
+| --- | --- | --- |
+| `observation.exterior_image` | RGB `[H,H,3]` | 外部相机 |
+| `observation.wrist_image_left` | RGB `[H,H,3]` | 腕部相机 |
+| `observation.gripper_image_left` / `observation.gripper_image_right` | RGB `[H,H,3]` | 可选左右触觉图像 |
+| `observation.joint_position` | `float32[7]` | 实测关节角，rad |
+| `observation.ee_pose` | `float32[6]` | xyz（m）+ roll/pitch/yaw（rad，ZYX 欧拉角约定） |
+| `observation.ee_position` | `float32[3]` | 实测末端 xyz，m |
+| `observation.gripper_position` | `float32[1]` | 指令开合比例，0 闭合、1 全开 |
+| `action.joint_position` | `float32[7]` | 下一帧实测关节角，rad |
+| `action.ee_pose` | `float32[6]` | 下一帧实测末端位姿，m/rad |
+| `action.gripper_position` | `float32[1]` | 下一帧指令开合比例 |
+
+`H = camera.image_hw`（当前 224）。joint 和 ee 动作标签同时保留，训练时选择所需标签并拼接夹爪比例。
+末帧动作使用 episode 结束时的实测状态。不保存全零占位图像和旧的拼接 `actions` 字段；训练端才拼接 joint/ee 与 gripper 标签。
+LeRobot 自动生成的 `timestamp`、`frame_index`、`episode_index`、`index`、`task_index` 保留原名；
+任务文本继续来自 `dataset.instruction`，写入任务元数据。
+
+存储 key 由分组和字段名拼接，例如 `observation` 下的 `exterior_image` 对应 `observation.exterior_image`。
+`.actions.jsonl` 继续保存实测状态、控制目标和 VR 输入，当前控制频率为 100 Hz；
+`.sync.json` 保存帧/动作时钟对齐和 episode 信息。
+音频 WAV 和音频元数据继续由 `audio.enabled` 控制，当前配置为 16 kHz 单声道。
+新旧字段格式不同，需更换 `dataset.date` 或数据目录。续采校验会拒绝混用 schema。
 
 ## Legacy ASR 脚本
 
@@ -56,3 +130,23 @@ v2 删除仍在完整副本上执行。两种格式都保留删除锁和提交�
 
 上游依据：[LeRobot 0.6.1](https://github.com/huggingface/lerobot/releases/tag/v0.6.1)、
 [Python 与依赖要求](https://github.com/huggingface/lerobot/blob/v0.6.1/pyproject.toml)。
+
+## Force RLT 推理
+
+推理不要求 `actor_sha256`。客户端仍校验动作空间、维度、频率、horizon、B/C 分组和响应观测时间。
+Force actor 使用 `inference.action_space: joint`，返回七维关节目标；普通 EE 策略返回六维位姿和夹爪比例。
+
+C 组开启 `gripper.type: dh5`、`tactile.enabled: true` 并启用左右触觉 observation 字段。
+启动 openpi-force 的 `scripts/serve_force_rlt_pytorch.py` 时加 `--finger-weights /path/to/resnet18.pth`，
+可用 `--finger-roi X0 Y0 X1 Y1` 设置接收到的图像上的 ROI。
+编码器权重、图像裁剪和 ROI 必须与 actor 训练一致；图像使用 `camera.image_hw`、`camera.crop_scale`，与采集保存的预处理相同。
+启动时夹爪须张开且没有接触，以首对图像建立基线。
+
+客户端维护四帧不重复的双指 RGB 历史和 host capture 时间戳，发送
+`observation.gripper_image_left`、`observation.gripper_image_right`（均为 `[4,H,H,3]`）、`finger_timestamps[4,2]`、
+`finger_valid_mask[4]`、基线和会话 ID。服务端批量编码并缓存重叠帧，计算与训练相同排列的 `z_grip`。
+编码和网络推理在异步请求中执行；控制线程不加载神经网络。历史缺帧或过期会停止推理。
+B 组无需双指输入。服务端仍兼容原有预计算 `z_grip` 请求。
+
+目前 Force RLT 真机执行仍需接入原代码要求的 TCP 安全投影器；本次完成协议与 dry-run 路径。
+真实 checkpoint 的端到端延迟需要在 GPU 和实际网络上测量。

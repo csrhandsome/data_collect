@@ -8,7 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
-from control.collection.dataset import open_dataset, recorded_action
+from control.collection.dataset import open_dataset
+from control.collection.schema import features
 from control.recording_writer import AsyncDatasetFrames, FreshCameraPair
 from control.util.lerobot_util import _discard_unsaved_episode
 
@@ -25,6 +26,15 @@ class EpisodeRecorder:
     def __init__(self, dataset, root, config, microphone=None):
         self.dataset, self.root, self.config = dataset, Path(root), config
         self.microphone = microphone
+        self.feature_keys = set(
+            features(
+                int(config["camera"].get("image_hw", 224)),
+                config["dataset"]["action_space"],
+                config.get("tactile", {}).get("enabled", False),
+                config.get("observation"),
+                config.get("action"),
+            )
+        )
         self.writer = AsyncDatasetFrames(dataset)
         self.active = False
         self.gate = FreshCameraPair()
@@ -100,27 +110,37 @@ class EpisodeRecorder:
         if pair.front.shape != (hw, hw, 3) or pair.wrist.shape != (hw, hw, 3):
             raise ValueError("Camera frame shape disagrees with configured schema")
         frame = {
-            "exterior_image_1_left": pair.front.copy(),
-            "exterior_image_2_left": np.zeros_like(pair.front),
-            "wrist_image_left": pair.wrist.copy(),
-            "joint_position": state.joint_positions.astype(np.float32),
-            "ee_pose": state.ee_pose.vector,
-            "ee_position": state.ee_position.astype(np.float32),
-            "gripper_position": np.array([state.gripper.commanded_open_ratio], dtype=np.float32),
+            "observation.joint_position": state.joint_positions.astype(np.float32),
+            "observation.ee_pose": state.ee_pose.vector,
+            "observation.ee_position": state.ee_position.astype(np.float32),
+            "observation.gripper_position": np.array(
+                [state.gripper.commanded_open_ratio], dtype=np.float32
+            ),
             "task": self.config["dataset"]["instruction"],
         }
-        if self.config.get("tactile", {}).get("enabled", False):
+        if "observation.exterior_image" in self.feature_keys:
+            frame["observation.exterior_image"] = pair.front.copy()
+        if "observation.wrist_image_left" in self.feature_keys:
+            frame["observation.wrist_image_left"] = pair.wrist.copy()
+        tactile_keys = self.feature_keys & {
+            "observation.gripper_image_left",
+            "observation.gripper_image_right",
+        }
+        if tactile_keys:
             from control.util.img_util import center_crop_and_resize_rgb_uint8
 
             left, right = tactile
-            if left is None or right is None:
-                raise RuntimeError("Configured tactile images are unavailable")
-            frame["gripper_image_left"] = center_crop_and_resize_rgb_uint8(
-                left, out_hw=hw, crop_scale=float(self.config["camera"].get("crop_scale", 0.9))
-            )
-            frame["gripper_image_right"] = center_crop_and_resize_rgb_uint8(
-                right, out_hw=hw, crop_scale=float(self.config["camera"].get("crop_scale", 0.9))
-            )
+            for key, image in [
+                ("observation.gripper_image_left", left),
+                ("observation.gripper_image_right", right),
+            ]:
+                if key not in tactile_keys:
+                    continue
+                if image is None:
+                    raise RuntimeError(f"Configured tactile image is unavailable: {key}")
+                frame[key] = center_crop_and_resize_rgb_uint8(
+                    image, out_hw=hw, crop_scale=float(self.config["camera"].get("crop_scale", 0.9))
+                )
         record = {
             "frame_index": len(self.records),
             "host_frame_monotonic_ns": state.sampled_monotonic_ns,
@@ -134,13 +154,28 @@ class EpisodeRecorder:
             "gripper_position": state.gripper.commanded_open_ratio,
         }
         self.records.append(record)
-        self.pending = frame, record
+        self.pending = (
+            {
+                key: value
+                for key, value in frame.items()
+                if key in self.feature_keys or key == "task"
+            },
+            record,
+        )
 
     def _complete(self, state, terminal=False):
         if self.pending is None:
             return
         frame, record = self.pending
-        frame["actions"] = recorded_action(state, self.config["dataset"]["action_space"])
+        for key, value in {
+            "action.joint_position": state.joint_positions.astype(np.float32),
+            "action.ee_pose": state.ee_pose.vector,
+            "action.gripper_position": np.array(
+                [state.gripper.commanded_open_ratio], dtype=np.float32
+            ),
+        }.items():
+            if key in self.feature_keys:
+                frame[key] = value
         record.update(
             {
                 "action_joint_position": state.joint_positions.tolist(),
@@ -178,6 +213,7 @@ class EpisodeRecorder:
             "success": success,
             "control_mode": "ee",
             "action_space": self.config["dataset"]["action_space"],
+            "action_target_offset_frames": 1,
             "action_semantics": "next_camera_observation_measured_state",
             "terminal_action_semantics": "final_measured_state",
             "control_frequency": self.config["control"]["frequency_hz"],

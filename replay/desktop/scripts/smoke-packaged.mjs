@@ -7,9 +7,9 @@ import { fileURLToPath } from 'node:url'
 import { _electron as electron, expect } from '@playwright/test'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
-let unpacked = process.env.DATA_COLLECT_PACKAGE_DIR || join(repo, 'dist/electron/linux-unpacked')
+let unpacked = process.env.DATA_COLLECT_PACKAGE_DIR || join(repo, 'dist/electron-cpu/linux-unpacked')
 let executable = process.env.DATA_COLLECT_ELECTRON_EXECUTABLE || join(unpacked, 'panda-data-workbench')
-const results = join(repo, 'replay/desktop/test-results')
+const results = process.env.DATA_COLLECT_TEST_RESULTS || join(repo, 'replay/desktop/test-results/cpu')
 const temporary = await mkdtemp(join(tmpdir(), 'panda-desktop-smoke-'))
 const appImage = executable.endsWith('.AppImage') ? executable : null
 if (appImage) {
@@ -53,7 +53,30 @@ function passed(name) { checks.push(name); console.log(`PASS ${name}`) }
 if (appImage) passed('final AppImage extracts successfully; all following tests use its contents')
 runtime(['doctor'])
 passed('native imports, compiled modules, bundled assets and spawned workers')
-for (const source of ['control/config.py', 'replay/backend/main.py', 'vr_collect.py', 'data_analysis/preprocess_vad.py']) {
+if (process.env.DATA_COLLECT_EXPECT_CPU !== '0') {
+  runtime(['-c', `
+import importlib.metadata
+import numpy as np
+import torch, torchvision, torchaudio
+assert torch.__version__.endswith('+cpu'), torch.__version__
+assert torch.version.cuda is None
+packages = {d.metadata['Name'].lower().replace('_', '-') for d in importlib.metadata.distributions()}
+assert not any(name.startswith('nvidia-') or name in {'triton', 'cuda-bindings', 'nuitka', 'ruff'} for name in packages), packages
+from data_analysis.preprocess_vad import _load_silero, _detect_segments
+model, timestamp_fn, info = _load_silero()
+segments, sample_rate = _detect_segments(
+    audio=np.zeros(16000, dtype=np.float32), sample_rate=16000,
+    model=model, timestamp_fn=timestamp_fn, threshold=0.5,
+    min_speech_duration_ms=250, max_speech_duration_s=30,
+    min_silence_duration_ms=100, speech_pad_ms=30, neg_threshold=None,
+)
+assert segments == [], segments
+assert sample_rate == 16000
+print('CPU VAD OK', torch.__version__, info)
+`])
+  passed('CPU PyTorch/audio/vision, no GPU/Nuitka/Ruff dependencies, compiled Silero inference')
+}
+for (const source of ['control/config.py', 'replay/backend/main.py', 'vr_collect.py', 'data_analysis/preprocess_vad.py', 'data_analysis/instruction_audio_window.py', 'data_analysis/dataset_io.py']) {
   await assert.rejects(access(join(unpacked, 'resources/runtime', source)))
   await assert.rejects(access(join(unpacked, 'resources/runtime/lib/python3.12/site-packages', source)))
 }
@@ -62,7 +85,7 @@ runtime(['generate-demo', datasets])
 runtime(['-c', `
 import yaml
 from pathlib import Path
-c = yaml.safe_load(Path(${JSON.stringify(join(unpacked, 'resources/config/panda.yaml'))}).read_text())
+c = yaml.safe_load(Path(${JSON.stringify(join(unpacked, 'resources/config/train/panda.yaml'))}).read_text())
 assert 'password' not in c['robot'] and 'username' not in c['robot']
 c['dataset'].update(root=${JSON.stringify(datasets)}, repo_id='local/desktop', date='smoke')
 c['audio'].update(enabled=False, vad_enabled=False)
