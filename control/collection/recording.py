@@ -188,7 +188,7 @@ class EpisodeRecorder:
         self.writer.submit(frame)
         self.pending = None
 
-    def finish(self, state, *, save=True, success=None):
+    def finish(self, state, *, save=True, success=None, publish=False):
         if not self.active:
             return
         self._complete(state, terminal=True)
@@ -251,9 +251,15 @@ class EpisodeRecorder:
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(sync, indent=2, ensure_ascii=False))
         self.dataset.save_episode()
-        temporary.replace(path)
         self.active = False
         self.records = []
+        if publish:
+            # Readers need sealed data AND metadata shards. Publish the sidecar
+            # last so the frontend only discovers complete, playable episodes.
+            self.finalize()
+            sync["saved_at_ns"] = time.time_ns()
+            temporary.write_text(json.dumps(sync, indent=2, ensure_ascii=False))
+        temporary.replace(path)
 
     def finalize(self):
         """Seal saved episodes for reading/editing; the next start resumes lazily.

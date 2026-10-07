@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 
 class APIModel(BaseModel):
@@ -51,6 +51,24 @@ class EpisodeList(APIModel):
 class EpisodeDetail(EpisodeSummary):
     dataset_id: str
     blocks: list[Feature]
+    success: StrictBool | None = None
+    saved_at_ns: str | None = None
+
+
+class EpisodeAnnotation(APIModel):
+    model_config = ConfigDict(extra="forbid")
+    success: StrictBool | None
+    expected_saved_at_ns: str | None = None
+
+
+class LatestEpisode(APIModel):
+    dataset_id: str
+    episode_index: int
+    saved_at_ns: str
+
+
+class LatestEpisodeResponse(APIModel):
+    episode: LatestEpisode | None
 
 
 class Bounds(APIModel):

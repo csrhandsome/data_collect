@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useOperations } from '../../hooks/useOperations'
-import { isOperationActive, type OperationKind } from '../../types/operation'
+import { isOperationActive, type Operation, type OperationKind } from '../../types/operation'
 import type { DatasetDetail } from '../../types/dataset'
 import { episodeLabel } from '../../lib/format'
 import { Button } from '../ui/Button'
@@ -24,7 +24,7 @@ export function OperationPanel({
 }: {
   dataset: DatasetDetail | null
   episodeIndex: number
-  onFinished: () => void
+  onFinished: (operation: Operation) => void
 }) {
   const tasks = useOperations(onFinished)
   const [confirmation, setConfirmation] = useState<{
@@ -55,7 +55,7 @@ export function OperationPanel({
         <div>
           <h2 className="font-display text-xl">采集与操作</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            启动 VR 采集，或在真机上重现最后保存的操作。
+            手柄保存片段后，在下方查看回放并标注成功或失败。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -86,9 +86,7 @@ export function OperationPanel({
         </div>
       </div>
       {dataset && !canDelete ? (
-        <p className="px-4 pb-3 text-xs text-muted-foreground">
-          此数据格式暂不支持删除。
-        </p>
+        <p className="px-4 pb-3 text-xs text-muted-foreground">此数据格式暂不支持删除。</p>
       ) : null}
       {tasks.error ? (
         <div

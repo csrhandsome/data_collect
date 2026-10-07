@@ -11,7 +11,16 @@ def read_episode(root: Path, episode_index: int) -> dict:
     info, episodes = _load_metadata(Path(root))
     episode = _get_episode(episodes, episode_index)
     result = {**_episode_summary(info, episode), "blocks": catalog(root, info, episode_index)}
-    frames = read_sync(root, episode_index).get("frame_records", [])
+    sync = read_sync(root, episode_index)
+    success = sync.get("success")
+    if success is not None and not isinstance(success, bool):
+        raise ValueError("Episode success must be boolean or null")
+    stamp = sync.get("saved_at_ns")
+    if stamp is not None and (isinstance(stamp, bool) or not isinstance(stamp, int) or stamp <= 0):
+        raise ValueError("Invalid episode publication timestamp")
+    # Nanosecond epoch values exceed JavaScript's exact integer range.
+    result.update(success=success, saved_at_ns=str(stamp) if stamp is not None else None)
+    frames = sync.get("frame_records", [])
     if frames:
         if len(frames) != episode["length"]:
             raise ValueError("Sync frame count disagrees with episode")

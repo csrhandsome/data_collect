@@ -8,6 +8,7 @@ import subprocess
 import threading
 import uuid
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -79,6 +80,19 @@ class OperationManager:
                 if self._operation
                 else None
             )
+
+    @contextmanager
+    def annotation_access(self):
+        # Serialize with task starts. Deletion renumbers episodes; annotation
+        # must not target an index while that mutation is in progress.
+        with self._lock:
+            if (
+                self._operation
+                and self._operation.kind == "delete"
+                and self._operation.state in ACTIVE_STATES
+            ):
+                raise ReplayError(409, "正在删除和重排片段，请等待完成后再标注。")
+            yield
 
     def start(self, kind, command, *, dataset_id=None, episode_index=None) -> Operation:
         with self._lock:

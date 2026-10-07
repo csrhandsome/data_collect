@@ -51,9 +51,18 @@ DH5 的触觉相机仍由 `tactile.enabled` 控制，图像通过 `arm.gripper.g
 ## 采集行为
 
 采集运行参数集中在 `config/train/panda.yaml`；存储字段由 `config/dataset/panda.yaml` 定义。100 Hz 轨迹与音频 sidecar 保留原有约定。
-连续采集复用同一个 LeRobot 写入器，每条 episode 结束只调用 `save_episode()`，退出采集时统一 `finalize()`。
-录制过程中需要回放或删除时，先结束或丢弃当前 episode，再调用 `EpisodeRecorder.finalize()` 封口文件；
-下次 `start()` 会按最新元数据续采。`save_episode()` 后未封口的 v3 Parquet 文件不能直接用于回放。
+采集完仍按原来的 Y 键保存。保存只结束并保留当前 episode，`success` 默认为 `null`（未标注）；
+X 键仍用于丢弃当前录制，不会把片段标成失败。
+采集流程每次保存都会 `finalize()` 封口 LeRobot v3 数据和元数据，再发布 `.sync.json`；
+下一条开始时按最新元数据续采，因此采集任务无需退出，已保存的片段就能回放。
+每条封口会增加保存和下次续采的开销；直接使用 `EpisodeRecorder` 批量写入时，
+仍可通过默认的 `finish(..., publish=False)` 复用写入器，在会话结束时统一 `finalize()`。
+
+保持前端页面打开并勾选「自动打开新采集片段」，页面每 1.5 秒自动检测新片段，
+打开该数据集的对应 episode，并添加相机画面和末端轨迹。视频准备完成后即可用时间轴回放。
+在「片段结果」区域点击「成功」或「失败」会立即保存标签，也可点「未标注」清除标签。
+标签保存在该条 `episode_XXXXXX.sync.json` 的 `success` 字段：`true` / `false` / `null`，
+刷新页面后仍保留，轨迹 Parquet 不会被重写。开启采集使用的目录须在回放服务的数据目录内。
 
 ## 统一存储与推理 key
 

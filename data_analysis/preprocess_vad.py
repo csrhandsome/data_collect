@@ -15,23 +15,23 @@ Example:
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import importlib.metadata
 import importlib.util
 import json
+import wave
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
-import wave
 
 import numpy as np
 
+from control.util.audio_util import read_wav_pcm
 from data_analysis.instruction_audio_window import (
     DEFAULT_POST_MARGIN_SEC,
     DEFAULT_PRE_MARGIN_SEC,
     refresh_dataset_instruction_audio_windows,
 )
-from control.util.audio_util import read_wav_pcm
-
+from replay.scripts.read_sidecars import update_sync
 
 SpeechTimestampFn = Callable[..., list[dict[str, int]]]
 
@@ -49,14 +49,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _json_float_or_none(value: float) -> float | None:
@@ -453,7 +445,9 @@ def process_episode(
         clips_dir=clips_dir,
     )
 
-    sync_data.update(
+    update_sync(
+        dataset_root,
+        episode_index,
         {
             "episode_index": int(sync_data.get("episode_index", episode_index)),
             "audio_path": _path_for_json(wav_path, dataset_root),
@@ -481,9 +475,9 @@ def process_episode(
                 },
             },
             "vad_segments": segments,
-        }
+        },
+        audio=True,
     )
-    _write_json(sync_path, sync_data)
 
     return {
         "episode_index": episode_index,

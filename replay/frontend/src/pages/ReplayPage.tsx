@@ -9,7 +9,9 @@ import { ReferencePanel } from '../components/workspace/ReferencePanel'
 import { Timeline } from '../components/workspace/Timeline'
 import { VisualizationCard } from '../components/workspace/VisualizationCard'
 import { OperationPanel } from '../components/workspace/OperationPanel'
+import { EpisodeAnnotation } from '../components/workspace/EpisodeAnnotation'
 import { useApiResource } from '../hooks/useApiResource'
+import { useLatestEpisode } from '../hooks/useLatestEpisode'
 import { usePlayback } from '../hooks/usePlayback'
 import { episodeUrl } from '../lib/api'
 import { episodeLabel } from '../lib/format'
@@ -19,6 +21,7 @@ import type {
   DatasetSummary,
   DragFeature,
   EpisodeDetail,
+  LatestEpisode,
 } from '../types/dataset'
 
 interface WorkspaceViews {
@@ -28,15 +31,21 @@ interface WorkspaceViews {
 
 export function ReplayPage() {
   const [params, setParams] = useSearchParams()
+  const [followLatest, setFollowLatest] = useState(true)
+  const [pendingLatest, setPendingLatest] = useState<LatestEpisode | null>(null)
   const list = useApiResource<{ datasets: DatasetSummary[] }>('/api/datasets')
   const health = useApiResource<{ status: string }>('/api/health')
   const datasets = list.data?.datasets || []
   const requestedDataset = params.get('dataset') || ''
-  const datasetId = list.data
-    ? datasets.find((item) => item.id === requestedDataset)?.id || datasets[0]?.id || ''
-    : requestedDataset
+  const datasetId =
+    pendingLatest?.dataset_id ||
+    (list.data
+      ? datasets.find((item) => item.id === requestedDataset)?.id || datasets[0]?.id || ''
+      : requestedDataset)
   const episodeParam = Number(params.get('episode') || '0')
-  const episodeIndex = Number.isSafeInteger(episodeParam) && episodeParam >= 0 ? episodeParam : 0
+  const episodeIndex =
+    pendingLatest?.episode_index ??
+    (Number.isSafeInteger(episodeParam) && episodeParam >= 0 ? episodeParam : 0)
   const dataset = useApiResource<DatasetDetail>(
     datasetId ? `/api/datasets/${encodeURIComponent(datasetId)}` : null,
   )
@@ -57,19 +66,64 @@ export function ReplayPage() {
   const ready = Boolean(episode.data && !episode.error && !episode.loading)
   const error = list.error || dataset.error || episode.error
   const loading = list.loading || dataset.loading || episode.loading
+  const latestError = useLatestEpisode(followLatest, (latest) => {
+    playback.pause()
+    setPendingLatest(latest)
+    setParams({ dataset: latest.dataset_id, episode: latest.episode_index.toString() })
+    list.retry()
+    dataset.retry()
+    episode.retry()
+  })
 
   useEffect(() => {
     setWorkspace({ selectionKey, features: [] })
   }, [selectionKey])
 
   useEffect(() => {
-    if (datasetId && params.get('dataset') !== datasetId) {
-      setParams({ dataset: datasetId, episode: episodeIndex.toString() }, { replace: true })
-    }
-  }, [datasetId, episodeIndex, params, setParams])
+    if (!pendingLatest || !error) return
+    // A following episode may be saving metadata while this one is fetched.
+    // Retry the pending publication instead of losing the automatic preview.
+    const timer = setTimeout(() => {
+      list.retry()
+      dataset.retry()
+      episode.retry()
+    }, 1500)
+    return () => clearTimeout(timer)
+  }, [pendingLatest, error, list.retry, dataset.retry, episode.retry])
 
   useEffect(() => {
     if (
+      pendingLatest &&
+      ready &&
+      episode.data &&
+      datasetId === pendingLatest.dataset_id &&
+      episodeIndex === pendingLatest.episode_index &&
+      episode.data.saved_at_ns === pendingLatest.saved_at_ns &&
+      list.data?.datasets.some((item) => item.id === datasetId)
+    ) {
+      const blocks = episode.data.blocks
+      const cameras = blocks.filter(
+        (feature) => feature.kind === 'video' || feature.kind === 'image',
+      )
+      const ee = blocks.find((feature) => feature.kind === 'ee')
+      setWorkspace({ selectionKey, features: [...cameras, ...(ee ? [ee] : [])] })
+      setPendingLatest(null)
+    }
+  }, [pendingLatest, ready, episode.data, datasetId, episodeIndex, list.data, selectionKey])
+
+  useEffect(() => {
+    if (
+      datasetId &&
+      (params.get('dataset') !== datasetId ||
+        (pendingLatest && params.get('episode') !== episodeIndex.toString()))
+    ) {
+      setParams({ dataset: datasetId, episode: episodeIndex.toString() }, { replace: true })
+    }
+  }, [datasetId, episodeIndex, params, setParams, pendingLatest])
+
+  useEffect(() => {
+    if (
+      !pendingLatest &&
       dataset.data?.episodes.length &&
       !dataset.data.episodes.some((item) => item.episode_index === episodeIndex)
     ) {
@@ -81,7 +135,7 @@ export function ReplayPage() {
         { replace: true },
       )
     }
-  }, [dataset.data, episodeIndex, datasetId, setParams])
+  }, [dataset.data, episodeIndex, datasetId, setParams, pendingLatest])
 
   const addFeature = useCallback(
     (feature: DataFeature) => {
@@ -136,12 +190,14 @@ export function ReplayPage() {
 
   const changeDataset = useCallback(
     (id: string) => {
+      setPendingLatest(null)
       setParams({ dataset: id, episode: '0' })
     },
     [setParams],
   )
   const changeEpisode = useCallback(
     (index: number) => {
+      setPendingLatest(null)
       setParams({ dataset: datasetId, episode: index.toString() })
     },
     [datasetId, setParams],
@@ -237,11 +293,28 @@ export function ReplayPage() {
           <OperationPanel
             dataset={dataset.data}
             episodeIndex={episodeIndex}
-            onFinished={() => {
-              clearWorkspace()
+            onFinished={(operation) => {
+              if (operation.kind !== 'collect') clearWorkspace()
               retry()
             }}
           />
+          <label className="mb-4 flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={followLatest}
+              onChange={(event) => setFollowLatest(event.target.checked)}
+              className="size-4 accent-foreground"
+            />
+            自动打开新采集片段
+          </label>
+          {latestError ? (
+            <p role="alert" className="mb-4 text-sm">
+              新片段检测暂不可用：{latestError}，正在重试。
+            </p>
+          ) : null}
+          {episode.data ? (
+            <EpisodeAnnotation key={selectionKey} episode={episode.data} onSaved={episode.update} />
+          ) : null}
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 pb-4 [&>div]:flex [&>div]:items-center [&>div]:gap-2 [&_h2]:font-display [&_h2]:text-xl">
             <div>
               <span aria-hidden="true" className="size-3 border-2 border-foreground" />
