@@ -104,7 +104,7 @@ test('automatic opening can be disabled and failed annotation requests can be re
     await page.goto(`/replay?dataset=${name}&episode=0`)
     await baseline
     await expect(page.getByTestId('episode-annotation')).toBeVisible()
-    await page.getByRole('checkbox', { name: '自动打开新采集片段' }).uncheck()
+    await page.getByRole('checkbox', { name: '自动打开新保存片段' }).uncheck()
     await mkdir(join(root, 'audio'), { recursive: true })
     const sync = join(root, 'audio', 'episode_000002.sync.json')
     await writeFile(

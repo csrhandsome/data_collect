@@ -7,9 +7,13 @@ import { Button } from '../ui/Button'
 export function EpisodeAnnotation({
   episode,
   onSaved,
+  disabled = false,
+  inferenceResult = false,
 }: {
   episode: EpisodeDetail
   onSaved: (episode: EpisodeDetail) => void
+  disabled?: boolean
+  inferenceResult?: boolean
 }) {
   const [success, setSuccess] = useState(episode.success ?? null)
   const [pending, setPending] = useState(false)
@@ -30,7 +34,7 @@ export function EpisodeAnnotation({
   }, [episode.success])
 
   async function annotate(value: boolean | null) {
-    if (submitting.current) return
+    if (submitting.current || disabled) return
     submitting.current = true
     setPending(true)
     setError(null)
@@ -61,10 +65,16 @@ export function EpisodeAnnotation({
       data-testid="episode-annotation"
       aria-busy={pending}
     >
-      <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div>
-          <h2 className="font-display text-xl">片段结果 · {episodeLabel(episode.episode_index)}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">查看回放后标注结果，选择后自动保存。</p>
+          <h2 className="font-display text-lg">
+            {inferenceResult ? '本次推理结果' : '片段结果'} · {episodeLabel(episode.episode_index)}
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {disabled
+              ? '推理正在运行或返回起始姿态，结束后再标注本次结果。'
+              : '查看回放后选择成功、失败或未标注，选择后自动保存。'}
+          </p>
         </div>
         <div className="flex flex-wrap gap-2" role="group" aria-label="选择片段结果">
           {(
@@ -78,7 +88,7 @@ export function EpisodeAnnotation({
               key={label}
               variant={success === value ? 'primary' : 'secondary'}
               aria-pressed={success === value}
-              disabled={pending}
+              disabled={pending || disabled}
               onClick={() => void annotate(value)}
             >
               {label}

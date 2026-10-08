@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useOperations } from '../../hooks/useOperations'
 import { isOperationActive, type Operation, type OperationKind } from '../../types/operation'
 import type { DatasetDetail } from '../../types/dataset'
@@ -7,8 +7,9 @@ import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { WaitingState } from '../ui/WaitingState'
 import { ConfirmDialog } from '../ui/ConfirmDialog'
+import { buttonClasses } from '../ui/buttonStyles'
 
-const labels = { collect: 'VR 采集', replay: '真机回放', delete: '删除片段' }
+const labels = { collect: 'VR 采集', inference: '策略推理', replay: '真机回放', delete: '删除片段' }
 const states = {
   running: '运行中',
   stopping: '正在停止',
@@ -21,12 +22,16 @@ export function OperationPanel({
   dataset,
   episodeIndex,
   onFinished,
+  onChanged,
 }: {
   dataset: DatasetDetail | null
   episodeIndex: number
   onFinished: (operation: Operation) => void
+  onChanged?: (operation: Operation | null) => void
 }) {
-  const tasks = useOperations(onFinished)
+  const tasks = useOperations(onFinished, onChanged)
+  const [selectedMode, setSelectedMode] = useState<'collect' | 'inference' | null>(null)
+  const more = useRef<HTMLDetailsElement>(null)
   const [confirmation, setConfirmation] = useState<{
     kind: OperationKind
     datasetId?: string
@@ -39,6 +44,22 @@ export function OperationPanel({
   const operation = tasks.operation
   const active = isOperationActive(operation)
   const disabled = !tasks.ready || tasks.busy
+  const mode =
+    active && (operation?.kind === 'collect' || operation?.kind === 'inference')
+      ? operation.kind
+      : (selectedMode ?? (operation?.kind === 'inference' ? 'inference' : 'collect'))
+  const canStop = active && operation?.kind !== 'delete'
+  const stopLabel =
+    operation?.kind === 'inference'
+      ? '结束推理'
+      : operation?.kind === 'collect'
+        ? '结束采集'
+        : '停止任务'
+
+  function requestConfirmation(value: NonNullable<typeof confirmation>) {
+    if (more.current) more.current.open = false
+    setConfirmation(value)
+  }
 
   async function confirm() {
     if (!confirmation) return
@@ -48,41 +69,84 @@ export function OperationPanel({
 
   return (
     <section
-      aria-label="采集与数据操作"
+      aria-label="采集推理与数据操作"
       className="mb-5 shrink-0 border-2 border-foreground bg-background"
     >
       <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-4">
         <div>
-          <h2 className="font-display text-xl">采集与操作</h2>
+          <h2 className="font-display text-xl">采集与推理</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            手柄保存片段后，在下方查看回放并标注成功或失败。
+            {mode === 'inference'
+              ? '结束推理后保存本次片段并回到起始姿态，再查看结果并标注。'
+              : '手柄保存片段后，在下方查看回放并标注成功或失败。'}
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button disabled={disabled} onClick={() => setConfirmation({ kind: 'collect' })}>
-            <Icon name="plus" size={14} />
-            开启采集
-          </Button>
-          <Button
-            variant="secondary"
-            disabled={disabled || latest < 0}
-            onClick={() =>
-              setConfirmation({ kind: 'replay', datasetId: dataset!.id, episodeIndex: latest })
-            }
-          >
-            <Icon name="reset" size={14} />
-            真机回放上一次
-          </Button>
-          <Button
-            variant="secondary"
-            disabled={disabled || !hasEpisode || !canDelete}
-            onClick={() =>
-              setConfirmation({ kind: 'delete', datasetId: dataset!.id, episodeIndex })
-            }
-          >
-            <Icon name="close" size={14} />
-            删除当前片段
-          </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex" role="group" aria-label="选择操作模式">
+            {(
+              [
+                ['collect', '采集'],
+                ['inference', '推理'],
+              ] as const
+            ).map(([value, label]) => (
+              <Button
+                key={value}
+                variant={mode === value ? 'primary' : 'secondary'}
+                aria-pressed={mode === value}
+                disabled={tasks.busy}
+                onClick={() => setSelectedMode(value)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+          {canStop ? (
+            <Button
+              disabled={tasks.pending || operation?.state === 'stopping'}
+              onClick={() => void tasks.stop()}
+            >
+              <Icon name="close" size={14} />
+              {operation?.state === 'stopping' ? '正在结束…' : stopLabel}
+            </Button>
+          ) : (
+            <Button disabled={disabled} onClick={() => requestConfirmation({ kind: mode })}>
+              <Icon name={mode === 'inference' ? 'play' : 'plus'} size={14} />
+              {mode === 'inference' ? '开始推理' : '开启采集'}
+            </Button>
+          )}
+          <details ref={more} className="relative">
+            <summary
+              className={`${buttonClasses('secondary')} cursor-pointer list-none [&::-webkit-details-marker]:hidden`}
+            >
+              更多操作
+            </summary>
+            <div className="absolute right-0 z-40 mt-2 flex min-w-48 flex-col gap-2 border-2 border-foreground bg-background p-2 shadow-lg">
+              <Button
+                variant="secondary"
+                disabled={disabled || latest < 0}
+                onClick={() =>
+                  requestConfirmation({
+                    kind: 'replay',
+                    datasetId: dataset!.id,
+                    episodeIndex: latest,
+                  })
+                }
+              >
+                <Icon name="reset" size={14} />
+                真机回放上一次
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={disabled || !hasEpisode || !canDelete}
+                onClick={() =>
+                  requestConfirmation({ kind: 'delete', datasetId: dataset!.id, episodeIndex })
+                }
+              >
+                <Icon name="close" size={14} />
+                删除当前片段
+              </Button>
+            </div>
+          </details>
         </div>
       </div>
       {dataset && !canDelete ? (
@@ -117,22 +181,14 @@ export function OperationPanel({
               label={`${labels[operation.kind]} · ${states[operation.state]}`}
               description={
                 operation.state === 'stopping'
-                  ? '等待设备停止及文件保存，请保持服务运行。'
+                  ? operation.kind === 'inference'
+                    ? '正在停止推理、保存片段并返回起始姿态，请等待完成。'
+                    : '等待设备停止及文件保存，请保持服务运行。'
                   : operation.kind === 'delete'
                     ? '正在删除文件并重排编号，请等待完成。'
                     : '任务运行中，可继续查看数据。'
               }
-            >
-              {operation.kind !== 'delete' ? (
-                <Button
-                  variant="secondary"
-                  disabled={tasks.pending || operation.state === 'stopping'}
-                  onClick={() => void tasks.stop()}
-                >
-                  停止任务
-                </Button>
-              ) : null}
-            </WaitingState>
+            />
           ) : (
             <p className="flex items-center gap-2 text-sm" role="status">
               <Icon name={operation.state === 'failed' ? 'warning' : 'check'} size={16} />
@@ -160,16 +216,20 @@ export function OperationPanel({
           title={
             confirmation.kind === 'collect'
               ? '开启 VR 采集'
-              : confirmation.kind === 'replay'
-                ? '在真机上回放'
-                : '删除当前片段'
+              : confirmation.kind === 'inference'
+                ? '开始策略推理'
+                : confirmation.kind === 'replay'
+                  ? '在真机上回放'
+                  : '删除当前片段'
           }
           confirmLabel={
             confirmation.kind === 'collect'
               ? '确认开启采集'
-              : confirmation.kind === 'replay'
-                ? '确认真机回放'
-                : '确认删除'
+              : confirmation.kind === 'inference'
+                ? '确认开始推理'
+                : confirmation.kind === 'replay'
+                  ? '确认真机回放'
+                  : '确认删除'
           }
           pending={tasks.pending}
           onConfirm={() => void confirm()}
@@ -179,6 +239,11 @@ export function OperationPanel({
             <p>
               采集将按 panda.yaml
               的设备和保存目录配置启动。机械臂可能移动至起始姿态，请确认工作区域已准备好。
+            </p>
+          ) : confirmation.kind === 'inference' ? (
+            <p>
+              推理将使用 panda.yaml 的策略服务和任务配置，控制机械臂与夹爪。
+              结束后保存本次推理片段，并将机械臂返回配置的起始姿态。请确认工作区域已准备好。
             </p>
           ) : confirmation.kind === 'replay' ? (
             <p>

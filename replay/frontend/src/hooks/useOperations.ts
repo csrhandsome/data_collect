@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { getJson, postJson } from '../lib/api'
 import { isOperationActive, type Operation, type OperationKind } from '../types/operation'
 
-export function useOperations(onFinished: (operation: Operation) => void) {
+export function useOperations(
+  onFinished: (operation: Operation) => void,
+  onChanged?: (operation: Operation | null) => void,
+) {
   const [operation, setOperation] = useState<Operation | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -11,14 +14,17 @@ export function useOperations(onFinished: (operation: Operation) => void) {
   const [attempt, setAttempt] = useState(0)
   const previous = useRef<Operation | null>(null)
   const finishedCallback = useRef(onFinished)
+  const changedCallback = useRef(onChanged)
   const submitting = useRef(false)
   const mutationVersion = useRef(0)
   finishedCallback.current = onFinished
+  changedCallback.current = onChanged
 
   const accept = useCallback((next: Operation | null) => {
     const before = previous.current
     previous.current = next
     setOperation(next)
+    changedCallback.current?.(next)
     if (
       next &&
       !isOperationActive(next) &&

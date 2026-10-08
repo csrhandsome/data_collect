@@ -15,6 +15,7 @@ import { useLatestEpisode } from '../hooks/useLatestEpisode'
 import { usePlayback } from '../hooks/usePlayback'
 import { episodeUrl } from '../lib/api'
 import { episodeLabel } from '../lib/format'
+import { isOperationActive, type Operation } from '../types/operation'
 import type {
   DataFeature,
   DatasetDetail,
@@ -33,6 +34,8 @@ export function ReplayPage() {
   const [params, setParams] = useSearchParams()
   const [followLatest, setFollowLatest] = useState(true)
   const [pendingLatest, setPendingLatest] = useState<LatestEpisode | null>(null)
+  const [operation, setOperation] = useState<Operation | null>(null)
+  const inferenceActive = operation?.kind === 'inference' && isOperationActive(operation)
   const list = useApiResource<{ datasets: DatasetSummary[] }>('/api/datasets')
   const health = useApiResource<{ status: string }>('/api/health')
   const datasets = list.data?.datasets || []
@@ -66,14 +69,22 @@ export function ReplayPage() {
   const ready = Boolean(episode.data && !episode.error && !episode.loading)
   const error = list.error || dataset.error || episode.error
   const loading = list.loading || dataset.loading || episode.loading
-  const latestError = useLatestEpisode(followLatest, (latest) => {
+  function openPublishedEpisode(latest: LatestEpisode) {
     playback.pause()
     setPendingLatest(latest)
     setParams({ dataset: latest.dataset_id, episode: latest.episode_index.toString() })
     list.retry()
     dataset.retry()
     episode.retry()
-  })
+  }
+  const latestError = useLatestEpisode(followLatest && !inferenceActive, openPublishedEpisode)
+  const inferenceResult = operation?.result_episode
+  const isInferenceResult = Boolean(
+    inferenceResult &&
+    inferenceResult.dataset_id === episode.data?.dataset_id &&
+    inferenceResult.episode_index === episode.data?.episode_index &&
+    inferenceResult.saved_at_ns === episode.data?.saved_at_ns,
+  )
 
   useEffect(() => {
     setWorkspace({ selectionKey, features: [] })
@@ -293,8 +304,13 @@ export function ReplayPage() {
           <OperationPanel
             dataset={dataset.data}
             episodeIndex={episodeIndex}
+            onChanged={setOperation}
             onFinished={(operation) => {
-              if (operation.kind !== 'collect') clearWorkspace()
+              if (operation.kind === 'inference' && operation.result_episode) {
+                openPublishedEpisode(operation.result_episode)
+                return
+              }
+              if (operation.kind === 'replay' || operation.kind === 'delete') clearWorkspace()
               retry()
             }}
           />
@@ -305,7 +321,7 @@ export function ReplayPage() {
               onChange={(event) => setFollowLatest(event.target.checked)}
               className="size-4 accent-foreground"
             />
-            自动打开新采集片段
+            自动打开新保存片段
           </label>
           {latestError ? (
             <p role="alert" className="mb-4 text-sm">
@@ -313,7 +329,13 @@ export function ReplayPage() {
             </p>
           ) : null}
           {episode.data ? (
-            <EpisodeAnnotation key={selectionKey} episode={episode.data} onSaved={episode.update} />
+            <EpisodeAnnotation
+              key={selectionKey}
+              episode={episode.data}
+              onSaved={episode.update}
+              disabled={inferenceActive}
+              inferenceResult={isInferenceResult}
+            />
           ) : null}
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 pb-4 [&>div]:flex [&>div]:items-center [&>div]:gap-2 [&_h2]:font-display [&_h2]:text-xl">
             <div>
