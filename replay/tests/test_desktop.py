@@ -21,6 +21,10 @@ def test_packaged_commands_are_fixed_and_use_the_user_config(tmp_path):
     ]
     replay = manager.command("replay", ["--dataset", "/data/demo"])
     assert "uv" not in replay and "--dry-run" in replay
+    assert manager.command("inference") == [
+        "/installed/bin/data-collect-runtime", "inference", "--config",
+        str(tmp_path / "panda.yaml"), "--record", "--dry-run", "--max-steps", "25",
+    ]
     deletion = manager.command("delete", ["--dataset", "/data/demo", "--yes"])
     assert deletion == [
         "/installed/bin/data-collect-runtime", "delete", "--dataset", "/data/demo", "--yes",

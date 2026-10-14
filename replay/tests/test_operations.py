@@ -79,6 +79,23 @@ def test_task_conflict_stop_and_cleanup():
         manager.close()
 
 
+def test_interrupted_inference_without_completion_is_failed():
+    manager = OperationManager()
+    try:
+        operation = manager.start(
+            "inference",
+            [sys.executable, "-u", "-c", "import time; print('READY'); time.sleep(20)"],
+        )
+        deadline = time.monotonic() + 5
+        while "READY" not in manager.snapshot().logs:
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        manager.stop(operation.id)
+        assert wait_finished(manager).state == "failed"
+    finally:
+        manager.close()
+
+
 class RecordingManager(OperationManager):
     def start(self, kind, command, **kwargs):
         self.last_command = command
@@ -94,6 +111,14 @@ def test_api_uses_fixed_commands_and_latest_episode(demo_root):
         assert started.status_code == 202
         assert manager.last_command == ["uv", "run", "vr_collect"]
         wait_finished(manager)
+        started = client.post("/api/operations", json={"kind": "inference"})
+        assert started.status_code == 202
+        assert started.json()["kind"] == "inference"
+        assert manager.last_command == ["uv", "run", "python", "-m", "inference", "--record"]
+        wait_finished(manager)
+        assert client.post(
+            "/api/operations", json={"kind": "inference", "dataset_id": "demo_v21"}
+        ).status_code == 422
         response = client.post(
             "/api/operations", json={"kind": "replay", "dataset_id": "demo_v21", "episode_index": 2}
         )

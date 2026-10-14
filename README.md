@@ -68,7 +68,8 @@ X 键仍用于丢弃当前录制，不会把片段标成失败。
 
 配置按用途分为两个文件：
 
-- [config/train/panda.yaml](config/train/panda.yaml)：原有机器人、采集、推理和回放运行参数。
+- [config/train/panda.yaml](config/train/panda.yaml)：机器人、采集和回放运行参数。
+- [config/inference/panda.yaml](config/inference/panda.yaml)：推理执行参数，继承训练配置。`model_horizon` 对齐服务器预测长度，`execute_steps` 是实际执行的前缀。
 - [config/dataset/panda.yaml](config/dataset/panda.yaml)：嵌套的观测和动作字段定义。
 
 运行配置通过 `extends: ../dataset/panda.yaml` 继承数据集配置，相对路径按配置文件所在目录解析。
@@ -140,9 +141,19 @@ v2 删除仍在完整副本上执行。两种格式都保留删除锁和提交�
 上游依据：[LeRobot 0.6.1](https://github.com/huggingface/lerobot/releases/tag/v0.6.1)、
 [Python 与依赖要求](https://github.com/huggingface/lerobot/blob/v0.6.1/pyproject.toml)。
 
+## 推理工作区
+
+前端「采集与推理」栏选择「推理」，点击「开始推理」启动策略执行，点击「结束推理」停止。
+结束后会保存本次推理 episode，再通过 `move_to_start()` 返回配置的起始姿态；完成后自动打开本次片段，
+可选择成功（`true`）、失败（`false`）或未标注（`null`）。启动前应运行策略服务，地址由 `inference.host/port` 配置。
+推理异常和回位失败会显示任务失败；运行异常时只停止控制流，不继续自动回位。
+
+命令行也可运行 `uv run python -m inference --record`，默认读取 `config/inference/panda.yaml`。
+不加 `--record` 时只执行推理；正常结束或 Ctrl+C 请求停止后仍会回到起始姿态。
+
 ## Force RLT 推理
 
-推理不要求 `actor_sha256`。客户端仍校验动作空间、维度、频率、horizon、B/C 分组和响应观测时间。
+推理不要求 `actor_sha256`。客户端仍校验动作空间、维度、频率、`model_horizon`、B/C 分组和响应观测时间，并只执行 `execute_steps` 步。
 Force actor 使用 `inference.action_space: joint`，返回七维关节目标；普通 EE 策略返回六维位姿和夹爪比例。
 
 C 组开启 `gripper.type: dh5`、`tactile.enabled: true` 并启用左右触觉 observation 字段。

@@ -70,12 +70,12 @@ export function OperationPanel({
   return (
     <section
       aria-label="采集推理与数据操作"
-      className="mb-5 shrink-0 border-2 border-foreground bg-background"
+      className="mb-3 shrink-0 border border-foreground bg-background [&_button]:px-3 [&_summary]:px-3"
     >
-      <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
         <div>
-          <h2 className="font-display text-xl">采集与推理</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <h2 className="font-display text-lg">采集与推理</h2>
+          <p className="mt-1 text-xs text-muted-foreground md:hidden xl:block">
             {mode === 'inference'
               ? '结束推理后保存本次片段并回到起始姿态，再查看结果并标注。'
               : '手柄保存片段后，在下方查看回放并标注成功或失败。'}

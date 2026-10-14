@@ -32,11 +32,11 @@ export function Timeline({
   const frame = Math.min(Math.floor(time * fps), Math.max(0, Math.ceil(duration * fps) - 1))
   return (
     <section
-      className="relative z-30 md:sticky md:bottom-0 isolate shrink-0 border-t-4 border-foreground bg-foreground px-4 py-4 text-background md:px-6 [&_:focus-visible]:outline-background"
+      className="relative isolate shrink-0 border-t-2 border-foreground bg-foreground px-4 py-2 text-background md:flex md:items-center md:gap-4 md:px-5 [&_:focus-visible]:outline-background"
       aria-label="工作区时间轴"
     >
       <Texture pattern="inverted" />
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3 md:order-2 md:flex-1">
         <span className="font-mono text-[10px]">00:00</span>
         <div className="relative flex min-w-0 flex-1 items-center">
           <div
@@ -72,8 +72,8 @@ export function Timeline({
         </div>
         <span className="font-mono text-[10px]">{timeLabel(duration)}</span>
       </div>
-      <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2 md:gap-3">
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-3 md:contents">
+        <div className="flex min-w-0 items-center gap-2 md:order-1">
           <button
             type="button"
             className={frameButton}
@@ -104,14 +104,14 @@ export function Timeline({
           >
             <Icon name="next" size={18} />
           </button>
-          <div className="ml-1 flex flex-col gap-1 font-mono sm:flex-row sm:items-baseline sm:gap-2">
+          <div className="ml-1 flex flex-col gap-1 font-mono sm:flex-row sm:items-baseline sm:gap-2 md:hidden lg:flex">
             <strong className="text-sm font-normal" data-testid="timeline-time">
               {timeLabel(time, true)}
             </strong>
             <span className="text-[10px]">/ {timeLabel(duration, true)}</span>
           </div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 md:order-3">
           <span className="hidden items-center gap-2 font-mono text-[10px] 2xl:flex">
             <Icon name={playing ? 'play' : 'pause'} size={12} />
             同步回放

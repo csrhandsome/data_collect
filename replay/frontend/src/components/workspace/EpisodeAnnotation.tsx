@@ -61,20 +61,23 @@ export function EpisodeAnnotation({
   return (
     <section
       aria-label="片段结果标注"
-      className="mb-5 shrink-0 border-2 border-foreground bg-background"
+      className="mb-3 shrink-0 border border-foreground bg-background"
       data-testid="episode-annotation"
       aria-busy={pending}
     >
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
         <div>
           <h2 className="font-display text-lg">
             {inferenceResult ? '本次推理结果' : '片段结果'} · {episodeLabel(episode.episode_index)}
           </h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {disabled
-              ? '推理正在运行或返回起始姿态，结束后再标注本次结果。'
-              : '查看回放后选择成功、失败或未标注，选择后自动保存。'}
+          <p role="status" className="mt-1 font-mono text-[11px] text-muted-foreground">
+            {pending ? '正在保存标注…' : `当前结果：${status}${saved ? ' · 已保存' : ''}`}
           </p>
+          {disabled ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              推理正在运行或返回起始姿态，结束后再标注本次结果。
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2" role="group" aria-label="选择片段结果">
           {(
@@ -96,9 +99,6 @@ export function EpisodeAnnotation({
           ))}
         </div>
       </div>
-      <p role="status" className="border-t border-foreground px-4 py-2 font-mono text-xs">
-        {pending ? '正在保存标注…' : `当前结果：${status}${saved ? ' · 已保存' : ''}`}
-      </p>
       {error ? (
         <p role="alert" className="px-4 pb-3 text-sm">
           {error}

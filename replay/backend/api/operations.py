@@ -24,7 +24,7 @@ Registry = Annotated[DatasetRegistry, Depends(get_registry)]
 
 class StartOperation(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["collect", "replay", "delete"]
+    kind: Literal["collect", "inference", "replay", "delete"]
     dataset_id: str | None = None
     episode_index: int | None = Field(default=None, ge=0, strict=True)
 
@@ -43,10 +43,10 @@ def start(payload: StartOperation, registry: Registry, manager: Manager):
     current = manager.snapshot()
     if current and current.state in ACTIVE_STATES:
         raise ReplayError(409, "已有任务在运行，请等待完成或先停止。")
-    if payload.kind == "collect":
+    if payload.kind in ("collect", "inference"):
         if payload.dataset_id is not None or payload.episode_index is not None:
-            raise ReplayError(422, "采集使用 panda.yaml 配置，无需指定回放数据集。")
-        return manager.start("collect", manager.command("collect"))
+            raise ReplayError(422, "采集和推理使用 panda.yaml 配置，无需指定回放数据集。")
+        return manager.start(payload.kind, manager.command(payload.kind))
     if not payload.dataset_id:
         raise ReplayError(422, "请选择数据集。")
     root = registry.get(payload.dataset_id)

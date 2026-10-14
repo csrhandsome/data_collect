@@ -23,6 +23,7 @@ class PolicyClient:
         *,
         connect_timeout_s=10.0,
         request_timeout_s=5.0,
+        stop_event=None,
     ) -> None:
         if host.startswith(("ws://", "wss://")):
             self._uri = host
@@ -33,6 +34,7 @@ class PolicyClient:
         self._packer = msgpack_numpy.Packer()
         self._request_timeout = request_timeout_s
         self._connect_timeout = connect_timeout_s
+        self._stop_event = stop_event
         self._ws, self.server_metadata = self._wait_for_server(timeout=connect_timeout_s)
 
     def _connect(
@@ -63,17 +65,24 @@ class PolicyClient:
         logger.info("Waiting for policy server at %s", self._uri)
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
+            if self._stop_event is not None and self._stop_event.is_set():
+                raise KeyboardInterrupt
             try:
                 conn, metadata = self._connect()
                 logger.info("Connected to policy server %s", self._uri)
                 return conn, metadata
             except (ConnectionRefusedError, OSError, TimeoutError):
+                if self._stop_event is not None and self._stop_event.is_set():
+                    raise KeyboardInterrupt
                 if deadline is not None and time.monotonic() >= deadline:
                     raise ConnectionRefusedError(
                         f"Timed out waiting for policy server at {self._uri}"
                     ) from None
                 logger.info("Still waiting for %s", self._uri)
-                time.sleep(1.0)
+                if self._stop_event is not None:
+                    self._stop_event.wait(1.0)
+                else:
+                    time.sleep(1.0)
 
     def infer(self, obs: dict[str, Any]) -> dict[str, Any]:
         data = self._packer.pack(obs)

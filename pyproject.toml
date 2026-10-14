@@ -55,7 +55,7 @@ vr_collect = "vr_collect:cli"
 episode-delete = "control.collection.deletion:cli"
 
 [tool.setuptools]
-py-modules = ["vr_collect"]
+py-modules = ["vr_collect", "inference"]
 
 [build-system]
 requires = ["setuptools>=68"]

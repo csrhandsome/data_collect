@@ -4,7 +4,7 @@ import time
 import numpy as np
 import pytest
 
-from control.config import load_config
+from control.config import INFERENCE_CONFIG, load_config
 from control.inference.loop import run_inference
 from control.inference.policy import ActionPlan, validate_metadata
 
@@ -13,7 +13,7 @@ class SlowPolicy:
     server_metadata = {
         "action_space": "ee",
         "action_fps": 30.0,
-        "action_horizon": 16,
+        "action_horizon": 50,
         "action_dim": 7,
     }
 
@@ -32,14 +32,14 @@ class SlowPolicy:
         pose[0] += 0.001
         if self.calls == 5:
             self.warmup_finished_at = time.monotonic()
-        return {"actions": np.tile(np.r_[pose, 1.0], (16, 1))}
+        return {"actions": np.tile(np.r_[pose, 1.0], (50, 1))}
 
     def close(self):
         self.closed = True
 
 
 def test_async_inference_preserves_servo_rate():
-    cfg = copy.deepcopy(load_config())
+    cfg = copy.deepcopy(load_config(INFERENCE_CONFIG))
     cfg["control"]["frequency_hz"] = 100.0
     policy = SlowPolicy()
     stats = run_inference(cfg, dry_run=True, max_steps=60, policy=policy)
@@ -62,12 +62,12 @@ def test_warmup_discards_five_responses_before_starting_stream(monkeypatch):
                 assert not backend.streaming
                 assert "target" not in backend.calls and "gripper" not in backend.calls
                 # These actions must never reach the robot.
-                return {"actions": np.full((16, 7), 100.0)}
+                return {"actions": np.full((50, 7), 100.0)}
             assert backend.streaming
-            return {"actions": np.tile(np.r_[obs["observation.ee_pose"], 1.0], (16, 1))}
+            return {"actions": np.tile(np.r_[obs["observation.ee_pose"], 1.0], (50, 1))}
 
     policy = WarmupPolicy()
-    stats = run_inference(load_config(), dry_run=True, max_steps=10, policy=policy)
+    stats = run_inference(load_config(INFERENCE_CONFIG), dry_run=True, max_steps=10, policy=policy)
     assert policy.calls == 6 and policy.closed
     assert stats["requests"] == 1 and stats["ticks"] == 10
 
@@ -87,7 +87,7 @@ def test_warmup_failure_does_not_start_stream(monkeypatch):
 
     policy = FailingPolicy()
     with pytest.raises(TimeoutError, match="warmup timeout"):
-        run_inference(load_config(), dry_run=True, max_steps=10, policy=policy)
+        run_inference(load_config(INFERENCE_CONFIG), dry_run=True, max_steps=10, policy=policy)
     assert policy.calls == 3 and policy.closed
     assert "start" not in backend.calls and not backend.connected
 
@@ -98,9 +98,9 @@ def test_action_timing_and_metadata_validation():
     assert plan.at(33_333_334, 30)[1] == 0
     assert plan.at(100_000_000, 30)[1] == 2
     assert plan.at(1_000_000_000, 30)[0] is None
-    assert not validate_metadata(SlowPolicy.server_metadata, load_config())
+    assert not validate_metadata(SlowPolicy.server_metadata, load_config(INFERENCE_CONFIG))
     with pytest.raises(ValueError):
-        validate_metadata({**SlowPolicy.server_metadata, "action_fps": 100}, load_config())
+        validate_metadata({**SlowPolicy.server_metadata, "action_fps": 100}, load_config(INFERENCE_CONFIG))
 
 
 @pytest.mark.parametrize("group", ["B", "C"])
@@ -108,7 +108,7 @@ def test_force_metadata_and_response_need_no_checksum(group):
     from control._panda.fake import FakeBackend
     from control.inference.policy import parse_response
 
-    cfg = load_config()
+    cfg = load_config(INFERENCE_CONFIG)
     cfg["inference"]["action_space"] = "joint"
     cfg["tactile"]["enabled"] = group == "C"
     metadata = {
@@ -123,17 +123,22 @@ def test_force_metadata_and_response_need_no_checksum(group):
     assert validate_metadata(metadata, cfg)
     state = FakeBackend().snapshot()
     response = {
-        "proposed_q": np.zeros((16, 7)),
+        "proposed_q": np.zeros((50, 7)),
         "group": group,
         "ref_obs_ts": state.sampled_monotonic_ns / 1e9,
     }
-    assert parse_response(response, state.sampled_monotonic_ns, state, metadata).actions.shape == (
-        16,
-        7,
-    )
-    for changed in ({"group": "wrong"}, {"ref_obs_ts": 0}, {"proposed_q": np.zeros((16, 8))}):
+    assert parse_response(
+        response, state.sampled_monotonic_ns, state, metadata, cfg["inference"]["execute_steps"]
+    ).actions.shape == (10, 7)
+    for changed in ({"group": "wrong"}, {"ref_obs_ts": 0}, {"proposed_q": np.zeros((50, 8))}):
         with pytest.raises(ValueError):
-            parse_response({**response, **changed}, state.sampled_monotonic_ns, state, metadata)
+            parse_response(
+                {**response, **changed},
+                state.sampled_monotonic_ns,
+                state,
+                metadata,
+                cfg["inference"]["execute_steps"],
+            )
 
 
 def test_request_observation_keys_match_recording_schema():
@@ -142,7 +147,7 @@ def test_request_observation_keys_match_recording_schema():
     from control.collection.schema import features
     from control.inference.policy import build_observation
 
-    cfg = load_config()
+    cfg = load_config(INFERENCE_CONFIG)
     backend = FakeBackend()
     cameras = FakeCameras(cfg["camera"])
     try:
@@ -189,12 +194,12 @@ def test_c_slow_policy_does_not_starve_rgb_history_or_servo():
                 self.warmup_finished_at = time.monotonic()
             targets = np.r_[obs["observation.ee_pose"][:3], np.zeros(4)]
             return {
-                "proposed_q": np.tile(targets, (16, 1)),
+                "proposed_q": np.tile(targets, (50, 1)),
                 "group": "C",
                 "ref_obs_ts": obs["monotonic_ts"],
             }
 
-    cfg = load_config()
+    cfg = load_config(INFERENCE_CONFIG)
     cfg["inference"]["action_space"] = "joint"
     cfg["tactile"]["enabled"] = True
     cfg["gripper"]["type"] = "dh5"
@@ -216,7 +221,7 @@ def test_finger_history_rejects_duplicate_and_stale_frames():
         get_state=lambda: SimpleNamespace(commanded_open_ratio=1.0),
     )
     history = FingerImages(
-        load_config(),
+        load_config(INFERENCE_CONFIG),
         {
             "finger_input_protocol": "panda-finger-rgb-history-v1",
             "finger_max_skew_s": 0.02,

@@ -17,6 +17,7 @@ DEFAULT_CONFIG = Path(
         "DATA_COLLECT_CONFIG", Path(__file__).resolve().parents[1] / "config/train/panda.yaml"
     )
 )
+INFERENCE_CONFIG = Path(__file__).resolve().parents[1] / "config/inference/panda.yaml"
 
 
 def load_config(path=DEFAULT_CONFIG, _seen=None):
@@ -70,6 +71,22 @@ def validate(config):
         ("audio", "sample_rate", 16000),
     ]:
         positive_rate(config.get(section, {}).get(key, default), f"{section}.{key}")
+    inference = config.get("inference")
+    if inference is not None:
+        model_horizon = inference.get("model_horizon")
+        execute_steps = inference.get("execute_steps")
+        if isinstance(model_horizon, bool) or not isinstance(model_horizon, int) or model_horizon <= 0:
+            raise ValueError("inference.model_horizon must be a positive integer")
+        if (
+            isinstance(execute_steps, bool)
+            or not isinstance(execute_steps, int)
+            or not 1 <= execute_steps <= model_horizon
+        ):
+            raise ValueError("inference.execute_steps must be an integer in 1..model_horizon")
+        if "action_horizon" in inference or "replan_every_steps" in inference:
+            raise ValueError(
+                "inference.action_horizon and replan_every_steps were replaced by model_horizon and execute_steps"
+            )
     if float(control.get("frequency_hz", 100)) < float(config.get("camera", {}).get("fps", 30)):
         raise ValueError("Control rate must not be lower than camera rate")
     if (

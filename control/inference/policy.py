@@ -37,8 +37,9 @@ def validate_metadata(metadata, config):
         space not in ("ee", "joint")
         or space != cfg["action_space"]
         or float(metadata.get("action_fps", 0)) != float(cfg["action_fps"])
-        or int(metadata.get("action_horizon", 0)) != int(cfg["action_horizon"])
+        or int(metadata.get("action_horizon", 0)) != int(cfg["model_horizon"])
         or int(metadata.get("action_dim", 0)) != expected
+        or not 1 <= int(cfg["execute_steps"]) <= int(cfg["model_horizon"])
     ):
         raise ValueError("Policy metadata action space, dimension, horizon or fps mismatch")
     required = {
@@ -99,12 +100,14 @@ def build_observation(state, pair, prompt, space, *, tactile=None, step=0, field
     return result
 
 
-def parse_response(response, observation_ns, state, metadata):
+def parse_response(response, observation_ns, state, metadata, execute_steps):
     force = metadata.get("rlt_protocol") == "pytorch-rl-token-v1"
     actions = np.asarray(response.get("proposed_q" if force else "actions", []), dtype=np.float64)
     shape = (int(metadata["action_horizon"]), int(metadata["action_dim"]))
-    if actions.shape != shape or not np.isfinite(actions).all():
+    steps = int(execute_steps)
+    if actions.shape != shape or not np.isfinite(actions).all() or not 1 <= steps <= actions.shape[0]:
         raise ValueError(f"Expected finite policy action chunk {shape}, got {actions.shape}")
+    actions = actions[:steps].copy()
     reference = float(response.get("ref_obs_ts", float("nan")))
     if force and (
         not np.isfinite(reference)
@@ -116,8 +119,9 @@ def parse_response(response, observation_ns, state, metadata):
 
 
 class PolicyWorker:
-    def __init__(self, policy):
+    def __init__(self, policy, execute_steps):
         self.policy = policy
+        self.execute_steps = int(execute_steps)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="policy")
         self.future = None
         self.generation = 0
@@ -130,7 +134,11 @@ class PolicyWorker:
         def request():
             response = self.policy.infer(observation)
             return generation, parse_response(
-                response, state.sampled_monotonic_ns, state, self.policy.server_metadata
+                response,
+                state.sampled_monotonic_ns,
+                state,
+                self.policy.server_metadata,
+                self.execute_steps,
             )
 
         self.future = self.pool.submit(request)

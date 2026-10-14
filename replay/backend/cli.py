@@ -2,6 +2,7 @@
 
 import argparse
 import os
+from pathlib import Path
 
 from control.config import DEFAULT_CONFIG, load_config
 
@@ -12,6 +13,7 @@ def main():
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     args = parser.parse_args()
+    os.environ["DATA_COLLECT_CONFIG"] = str(Path(args.config).resolve())
     config = load_config(args.config).get("replay", {})
     os.environ.setdefault("REPLAY_DATA_ROOT", config.get("data_root", "data/dataset"))
     import uvicorn

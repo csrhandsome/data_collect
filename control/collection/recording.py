@@ -188,7 +188,7 @@ class EpisodeRecorder:
         self.writer.submit(frame)
         self.pending = None
 
-    def finish(self, state, *, save=True, success=None, publish=False):
+    def finish(self, state, *, save=True, success=None, publish=False, source="collection"):
         if not self.active:
             return
         self._complete(state, terminal=True)
@@ -211,6 +211,7 @@ class EpisodeRecorder:
             "task": self.config["dataset"]["instruction"],
             "label": self.config["dataset"].get("label", "none"),
             "success": success,
+            "source": source,
             "control_mode": "ee",
             "action_space": self.config["dataset"]["action_space"],
             "action_target_offset_frames": 1,

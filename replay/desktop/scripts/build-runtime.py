@@ -65,6 +65,7 @@ def main():
             sys.executable, "-m", "nuitka", "--mode=module", "--nofollow-imports",
             "--include-package=control", "--include-package=replay.backend",
             "--include-package=replay.scripts", "--include-module=vr_collect",
+            "--include-module=inference",
             "--include-module=replay", "--include-module=data_analysis",
             *(f"--include-module=data_analysis.{name}" for name in DATA_ANALYSIS_MODULES),
             "--output-dir=" + str(build_root / "nuitka"),
@@ -148,7 +149,7 @@ def main():
     sys.path.insert(0, str(REPO))
     from control.config import load_config
 
-    config = load_config(REPO / "config/train/panda.yaml")
+    config = load_config(REPO / "config/inference/panda.yaml")
     for key in ("username", "password"):
         config.get("robot", {}).pop(key, None)
     template = build_root / "config/train/panda.yaml"

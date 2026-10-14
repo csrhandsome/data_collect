@@ -52,17 +52,17 @@ export const DataSidebar = memo(function DataSidebar({
   const supportedCount = features.filter((field) => field.kind !== 'unsupported').length
   return (
     <aside
-      className="relative flex min-h-0 min-w-0 flex-col border-b-4 border-foreground bg-background md:max-h-[max(960px,calc(100dvh-84px))] md:overflow-hidden md:border-r md:border-b-0"
+      className="relative flex min-w-0 flex-col border-b-2 border-foreground bg-background md:min-h-0 md:overflow-y-auto md:border-r md:border-b-0"
       aria-label="数据栏"
     >
-      <div className="flex shrink-0 items-center gap-3 border-b border-border-light px-5 py-4 md:px-6">
+      <div className="flex shrink-0 items-center gap-3 border-b border-border-light px-5 py-3 md:px-6">
         <Icon name="database" />
-        <h2 className="font-display text-2xl">数据资源</h2>
+        <h2 className="font-display text-xl">数据资源</h2>
         <span className="ml-auto font-mono text-[10px] tracking-widest text-muted-foreground">
           EXPLORER
         </span>
       </div>
-      <div className="shrink-0 border-b-4 border-foreground px-5 py-4 md:px-6">
+      <div className="shrink-0 border-b-2 border-foreground px-5 py-3 md:px-6">
         <div className="mb-2 flex items-center justify-between gap-2">
           <label className="block font-mono text-xs tracking-widest" htmlFor="dataset-select">
             数据集
@@ -106,7 +106,7 @@ export const DataSidebar = memo(function DataSidebar({
         </p>
         {dataset ? (
           <>
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               <span className="border border-foreground bg-foreground px-2 py-1 font-mono text-[10px] text-background">
                 LeRobot {dataset.version}
               </span>
@@ -115,7 +115,7 @@ export const DataSidebar = memo(function DataSidebar({
               </span>
             </div>
             <label
-              className="mt-4 mb-2 flex justify-between font-mono text-xs tracking-widest [&>span]:text-muted-foreground"
+              className="mt-3 mb-2 flex justify-between font-mono text-xs tracking-widest [&>span]:text-muted-foreground"
               htmlFor="episode-select"
             >
               当前片段 <span>EPISODE</span>
@@ -139,18 +139,17 @@ export const DataSidebar = memo(function DataSidebar({
             </div>
             {episode?.tasks.length ? (
               <p
-                className="mt-3 flex items-start gap-2 text-sm leading-relaxed text-muted-foreground [&>.inline-block]:mt-2"
+                className="mt-3 line-clamp-2 text-sm leading-relaxed text-muted-foreground"
                 title={episode.tasks.join(' / ')}
               >
-                <span className="inline-block size-1.5 shrink-0 bg-current" />
                 {episode.tasks.join(' / ')}
               </p>
             ) : null}
           </>
         ) : null}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col p-5 md:p-6">
-        <div className="mb-4 flex shrink-0 items-center justify-between [&>h3]:font-display [&>h3]:text-xl [&>span]:font-mono [&>span]:text-xs">
+      <div className="flex flex-col p-5 md:min-h-48 md:flex-1 md:px-6 md:py-4">
+        <div className="mb-2 flex shrink-0 items-center justify-between [&>h3]:font-display [&>h3]:text-lg [&>span]:font-mono [&>span]:text-xs">
           <h3>数据字段</h3>
           <span>{features.length.toString().padStart(2, '0')}</span>
         </div>
@@ -177,11 +176,11 @@ export const DataSidebar = memo(function DataSidebar({
           </p>
         ) : (
           <>
-            <p className="my-4 flex shrink-0 flex-wrap justify-between gap-2 font-mono text-[10px] text-muted-foreground">
+            <p className="my-3 flex shrink-0 flex-wrap justify-between gap-2 font-mono text-[10px] text-muted-foreground">
               <span>{supportedCount} 个可视化字段</span>
               <span>拖动或点击 +</span>
             </p>
-            <div className="flex max-h-[360px] flex-col gap-3 overflow-y-auto px-1 py-1 md:max-h-none md:flex-1">
+            <div className="flex min-h-0 max-h-[360px] flex-col gap-3 overflow-y-auto px-1 py-1 md:max-h-none md:flex-1">
               {filtered.map((feature) => (
                 <DataBlock
                   key={feature.key}
@@ -200,10 +199,6 @@ export const DataSidebar = memo(function DataSidebar({
             ) : null}
           </>
         )}
-      </div>
-      <div className="mt-auto flex shrink-0 items-center gap-2 border-t border-border-light px-5 py-5 font-mono text-[10px] text-muted-foreground md:px-6">
-        <Icon name="layers" size={14} />
-        <span>完整 Schema · 图像 / 音频 / 状态可视化</span>
       </div>
     </aside>
   )

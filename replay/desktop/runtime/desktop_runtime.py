@@ -105,7 +105,7 @@ def main(argv=None):
 
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        raise SystemExit("Expected server, collect, replay, delete, doctor or generate-demo")
+        raise SystemExit("Expected server, collect, inference, replay, delete, doctor or generate-demo")
     command, rest = args[0], args[1:]
     if command == "server":
         return serve(rest)
@@ -118,6 +118,11 @@ def main(argv=None):
         from replay.scripts.replay_robot import main as replay
 
         replay(rest)
+        return 0
+    if command == "inference":
+        from inference import main as infer
+
+        infer(rest)
         return 0
     if command == "delete":
         from control.collection.deletion import cli
