@@ -1,4 +1,4 @@
-"""Single EE collection entry point; configure joint/EE labels in panda.yaml."""
+"""Single EE collection entry point; configure joint/EE labels in config/train/panda.yaml."""
 
 import argparse
 import logging

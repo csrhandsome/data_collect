@@ -119,7 +119,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                         recorder.finish(
                             arm.get_state(),
                             save=not sample.discard,
-                            success=True if sample.save else None,
+                            publish=True,
                         )
                         reset_requested = True
                 diagnostics.mark("recording_and_camera")
@@ -156,7 +156,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
             diagnostics.event("loop_end", ticks=steps, overruns=rate.overruns, failed=failed)
             finish_stream(arm)
             if recorder is not None:
-                recorder.finish(arm.get_state(), save=not failed)
+                recorder.finish(arm.get_state(), save=not failed, publish=True)
         logger.info("Acquisition finished: %s ticks, %s overruns", steps, rate.overruns)
     if recorder is not None and config.get("audio", {}).get("vad_enabled", False) and not dry_run:
         audio_files = (recorder.root / "audio").glob("episode_*.wav")

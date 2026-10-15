@@ -262,9 +262,13 @@ def check_action_data(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any
         "anomalies": [],
     }
 
-    # 获取动作维度
-    if "actions" in info["features"]:
-        results["action_dim"] = info["features"]["actions"]["shape"][0]
+    action_keys = [key for key in ("action.joint_position", "action.ee_pose", "action.gripper_position")
+                   if key in info["features"]]
+    if not action_keys and "actions" in info["features"]:
+        action_keys = ["actions"]
+    # Report split labels together, retaining support for legacy datasets.
+    if action_keys:
+        results["action_dim"] = sum(info["features"][key]["shape"][0] for key in action_keys)
         print(f"  动作维度: {results['action_dim']}")
     else:
         print("  ⚠ 数据集中没有动作数据")
@@ -279,10 +283,9 @@ def check_action_data(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any
 
     for ep_idx, ep_file in tqdm(paths.items(), desc="  处理中"):
         try:
-            df = episode_dataframe(ep_file, ep_idx, columns=["actions"])
-            if "actions" in df.columns:
-                actions = np.stack(df["actions"].values)
-                all_actions.append(actions)
+            df = episode_dataframe(ep_file, ep_idx, columns=action_keys)
+            arrays = [np.stack(df[key].values).reshape(len(df), -1) for key in action_keys]
+            all_actions.append(np.concatenate(arrays, axis=-1))
         except Exception as e:
             results["anomalies"].append(f"{ep_file.name}: 读取失败 - {e}")
 

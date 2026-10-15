@@ -1,13 +1,19 @@
 """100 Hz EE executor, 30 Hz policy action timebase and optional VR takeover."""
 
+import json
 import logging
+import sys
+import threading
 import time
 from contextlib import ExitStack
 
 import numpy as np
 
-from control.collection.devices import make_cameras, make_vr
-from control.collection.vr import EEMapper, VRResampler
+from control.collection.dataset import open_dataset
+from control.collection.devices import make_cameras, make_microphone, make_vr
+from control.collection.recording import EpisodeRecorder
+from control.collection.vr import EEMapper, ResampledVR, VRResampler
+from control.inference.fingers import FingerImages
 from control.inference.policy import PolicyWorker, build_observation, validate_metadata
 from control.recording_writer import FreshCameraPair
 from control.robot_state import EEPose
@@ -19,25 +25,70 @@ from control.util.timing import FixedRate
 logger = logging.getLogger(__name__)
 
 
-def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
+def _check_stop(stop_event):
+    if stop_event.is_set():
+        raise KeyboardInterrupt
+
+
+def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=False, stop_event=None):
+    """Stop cooperatively, seal the run, then return to start before releasing the arm.
+
+    Workflow failures stop the stream without commanding another finite move.
+    A failed return-to-start propagates so the workspace cannot report success.
+    """
     from control._panda.fake import FakeBackend
     from control.inference.client import PolicyClient
 
     cfg = config["inference"]
+    stop_event = stop_event if stop_event is not None else threading.Event()
+    stats = {"ticks": 0, "requests": 0, "overruns": 0}
+    try:
+        with ExitStack() as stack:
+            _check_stop(stop_event)
+            client = policy or PolicyClient(
+                host=cfg["host"],
+                port=int(cfg["port"]),
+                connect_timeout_s=cfg.get("connect_timeout_s", 10),
+                request_timeout_s=cfg.get("request_timeout_s", 5),
+                stop_event=stop_event,
+            )
+            stack.callback(client.close)
+            _check_stop(stop_event)
+            force = validate_metadata(client.server_metadata, config)
+            if force and not dry_run:
+                raise ValueError("Force RLT real execution needs a calibrated TCP safety projector")
+            arm = stack.enter_context(
+                RoboticArmControler(config=config, backend=FakeBackend() if dry_run else None)
+            )
+            try:
+                try:
+                    _execute_inference(
+                        config, arm=arm, client=client, force=force, dry_run=dry_run,
+                        max_steps=max_steps, record=record, stop_event=stop_event, stats=stats,
+                    )
+                except KeyboardInterrupt:
+                    logger.info("Stopping inference")
+            finally:
+                failed = sys.exc_info()[0] is not None
+                finish_stream(arm)
+                if not failed:
+                    logger.info("Returning robot to start pose")
+                    result = arm.move_to_start()
+                    if result.status != "succeeded":
+                        raise RuntimeError("Return to start pose was not completed")
+                    logger.info("Robot returned to start pose")
+    except KeyboardInterrupt:
+        logger.info("Inference stopped before execution")
+    return stats
+
+
+def _execute_inference(
+    config, *, arm, client, force, dry_run, max_steps, record, stop_event, stats,
+):
+    cfg = config["inference"]
+    recorder = None
     with ExitStack() as stack:
-        client = policy or PolicyClient(
-            host=cfg["host"],
-            port=int(cfg["port"]),
-            connect_timeout_s=cfg.get("connect_timeout_s", 10),
-            request_timeout_s=cfg.get("request_timeout_s", 5),
-        )
-        stack.callback(client.close)
-        force = validate_metadata(client.server_metadata, config)
-        if force and not dry_run:
-            raise ValueError("Force RLT real execution needs a calibrated TCP safety projector")
-        arm = stack.enter_context(
-            RoboticArmControler(config=config, backend=FakeBackend() if dry_run else None)
-        )
+        _check_stop(stop_event)
         cameras = make_cameras(config, dry_run)
         stack.callback(cameras.close)
         vr = make_vr(config, dry_run) if cfg.get("enable_vr_takeover", False) else None
@@ -45,8 +96,25 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
             stack.callback(vr.stop)
         if cfg.get("move_to_start", False):
             arm.move_to_start()
+        fingers = (
+            FingerImages(config, client.server_metadata)
+            if force and client.server_metadata.get("group") == "C"
+            else None
+        )
+        if fingers is not None:
+            fingers.start(arm)
+            stack.callback(fingers.close)
+            deadline = time.monotonic() + config["camera"].get("startup_timeout_s", 10)
+            while True:
+                _check_stop(stop_event)
+                if fingers.request_fields(time.monotonic()) is not None:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("C finger history is unavailable or stale")
+                time.sleep(0.01)
         # Warmup: wait for five inference responses and discard them before execution.
         for i in range(5):
+            _check_stop(stop_event)
             state = arm.get_state()
             pair = cameras.get_frames()
             if (
@@ -61,13 +129,28 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
                 config["dataset"]["instruction"],
                 cfg["action_space"],
                 tactile=arm.get_tactile_images()
-                if config.get("tactile", {}).get("enabled", False)
+                if config.get("tactile", {}).get("enabled", False) and fingers is None
                 else None,
+                fields=config.get("observation"),
             )
+            if fingers is not None:
+                contact = fingers.request_fields(state.sampled_monotonic_ns / 1e9)
+                if contact is None:
+                    raise RuntimeError("C finger history is unavailable or stale during warmup")
+                observation.update(contact)
             client.infer(observation)
             logger.info("Policy warmup %d/5 complete", i + 1)
+        _check_stop(stop_event)
+        if record:
+            microphone = make_microphone(config, dry_run)
+            if microphone is not None:
+                stack.callback(microphone.stop)
+            dataset, root = open_dataset(config)
+            recorder = EpisodeRecorder(dataset, root, config, microphone)
+            stack.callback(recorder.close)
+            recorder.start()
         arm.start_stream()
-        worker = PolicyWorker(client)
+        worker = PolicyWorker(client, int(cfg["execute_steps"]))
         stack.callback(worker.close)
         resampler, mapper = VRResampler(), EEMapper(config.get("vr", {}))
         rate = FixedRate(config["control"]["frequency_hz"])
@@ -78,10 +161,12 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
         takeover = False
         requests = 0
         last_axis_ns = 0
-        horizon_ns = round(1e9 * cfg["replan_every_steps"] / cfg["action_fps"])
+        failed = False
+        horizon_ns = round(1e9 * int(cfg["execute_steps"]) / cfg["action_fps"])
         limit = max_steps or int(cfg.get("max_steps", 0))
+        logger.info("Inference execution started")
         try:
-            while limit <= 0 or steps < limit:
+            while not stop_event.is_set() and (limit <= 0 or steps < limit):
                 rate.tick()
                 state = arm.get_state()
                 pair = cameras.get_frames()
@@ -93,8 +178,13 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
                     > config["camera"].get("max_age_s", 0.2) * 1e9
                 ):
                     raise RuntimeError("Inference camera frame is unavailable or stale")
-                sample = resampler.sample(raw_sample, now) if vr else None
-                enabled = sample is not None and sample.enabled
+                sample = resampler.sample(raw_sample, now) if vr else ResampledVR(
+                    position=state.ee_position, quaternion_xyzw=state.ee_quaternion_xyzw,
+                    enabled=False, save=False, discard=False, close=False, open=False,
+                    axis=0.0, source_ns=0, source_seq=0,
+                )
+                enabled = sample.enabled
+                position, quat = state.ee_position, state.ee_quaternion_xyzw
                 if enabled != takeover:
                     worker.invalidate()
                     plan = None
@@ -134,6 +224,7 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
                                     "Policy target exceeds configured measured pose guard"
                                 )
                             arm.send_ee_target(desired.xyz_m, desired.quaternion_xyzw())
+                            position, quat = desired.xyz_m, desired.quaternion_xyzw()
                             if not force:
                                 ratio = float(action[-1])
                                 if not np.isfinite(ratio) or not 0 <= ratio <= 1:
@@ -149,16 +240,46 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None):
                             config["dataset"]["instruction"],
                             cfg["action_space"],
                             tactile=arm.get_tactile_images()
-                            if config.get("tactile", {}).get("enabled", False)
+                            if config.get("tactile", {}).get("enabled", False) and fingers is None
                             else None,
+                            fields=config.get("observation"),
                             step=steps,
                         )
+                        if fingers is not None:
+                            contact = fingers.request_fields(state.sampled_monotonic_ns / 1e9)
+                            if contact is None:
+                                raise RuntimeError("C finger history is unavailable or stale")
+                            observation.update(contact)
                         if worker.submit(observation, state):
                             requests += 1
                             last_request_ns = now
+                if recorder is not None:
+                    recorder.trace(state, sample, position, quat)
+                    recorder.frame(
+                        state, pair,
+                        arm.get_tactile_images()
+                        if config.get("tactile", {}).get("enabled", False)
+                        else (None, None),
+                    )
                 steps += 1
         except KeyboardInterrupt:
             logger.info("Stopping inference")
+        except BaseException:
+            failed = True
+            raise
         finally:
+            stats.update(ticks=steps, requests=requests, overruns=rate.overruns)
             finish_stream(arm)
-    return {"ticks": steps, "requests": requests, "overruns": rate.overruns}
+            if recorder is not None:
+                index = recorder.index
+                recorder.finish(arm.get_state(), save=not failed, publish=True, source="inference")
+                if not failed and recorder.dataset.meta.total_episodes > index:
+                    sidecar = (
+                        recorder.root / "audio" if recorder.audio_path else recorder.root
+                    ) / f"episode_{index:06d}.sync.json"
+                    sync = json.loads(sidecar.read_text())
+                    stats["episode"] = {
+                        "dataset_id": recorder.root.name,
+                        "episode_index": index,
+                        "saved_at_ns": str(sync["saved_at_ns"]),
+                    }

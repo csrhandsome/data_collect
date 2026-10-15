@@ -1,6 +1,9 @@
 """Shared confined lookup for historical audio/ and new root-level sidecars."""
 
+import fcntl
 import json
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -21,6 +24,47 @@ def read_sync(root, episode_index):
                 raise ValueError("Sync sidecar episode mismatch")
             return payload
     return {}
+
+
+def update_sync(root, episode_index, changes, *, audio=False):
+    """Merge sidecar fields under a process lock, publishing JSON atomically.
+
+    Collection, annotations and offline audio processing share sidecars. Merge
+    only changed fields so a slow audio job cannot overwrite a newer annotation.
+    """
+    root = Path(root).resolve()
+    lock_path = root / ".episode-sync.lock"
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    temporary = None
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        sync = read_sync(root, episode_index)
+        name = f"episode_{episode_index:06d}.sync.json"
+        relative = Path("audio" if audio else "") / name
+        for folder in ["audio", ""]:
+            candidate = root / folder / name
+            if candidate.exists() or candidate.is_symlink():
+                relative = Path(folder) / name
+                break
+        path = root / relative
+        if path.resolve() != path:
+            raise ValueError("Cannot write a symlinked sidecar")
+        sync.update(changes)
+        sync["episode_index"] = episode_index
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, suffix=".sync.tmp", delete=False
+        ) as file:
+            temporary = Path(file.name)
+            json.dump(sync, file, indent=2, ensure_ascii=False, allow_nan=False)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        temporary.replace(path)
+        return sync
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        os.close(descriptor)
 
 
 def origin_ns(sync):

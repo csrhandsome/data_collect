@@ -15,6 +15,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+from replay.scripts.read_sidecars import update_sync
 
 DEFAULT_PRE_MARGIN_SEC = 0.2
 DEFAULT_POST_MARGIN_SEC = 0.4
@@ -24,13 +25,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _safe_float(value: Any) -> float | None:
@@ -274,7 +268,7 @@ def refresh_dataset_instruction_audio_windows(
         sync["instruction_audio_window"] = window
         updated += 1
         if not dry_run:
-            _write_json(path, sync)
+            update_sync(dataset_root, index, {"instruction_audio_window": window}, audio=True)
 
     return {
         "dataset_path": str(dataset_root),

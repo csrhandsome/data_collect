@@ -18,6 +18,9 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 _EE_KEYS = {
+    "observation.ee_pose",
+    "observation.ee_position",
+    "action.ee_pose",
     "ee_pose",
     "observation.ee_pose",
     "observation.end_effector_pose",
@@ -122,6 +125,10 @@ def _feature_blocks(info: dict) -> list[dict]:
         if key in _EE_KEYS and len(shape) == 1 and shape[0] in (3, 6, 7):
             kind = "ee"
         labels = {
+            "observation.ee_pose": "末端位姿",
+            "observation.ee_position": "末端位置",
+            "observation.exterior_image": "外部相机",
+            "observation.wrist_image_left": "腕部相机",
             "ee_pose": "末端位姿",
             "ee_position": "末端位置",
             "exterior_image_1_left": "外部相机",

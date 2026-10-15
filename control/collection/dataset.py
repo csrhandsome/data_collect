@@ -3,37 +3,8 @@
 import json
 from pathlib import Path
 
-import numpy as np
-
+from control.collection.schema import features
 from control.util.lerobot_util import _resume_existing_dataset_for_recording
-
-
-def features(image_hw, action_space, tactile):
-    image = {
-        "dtype": "image",
-        "shape": (image_hw, image_hw, 3),
-        "names": ["height", "width", "channel"],
-    }
-    result = {
-        key: image.copy()
-        for key in ["exterior_image_1_left", "exterior_image_2_left", "wrist_image_left"]
-    }
-    if tactile:
-        result.update({key: image.copy() for key in ["gripper_image_left", "gripper_image_right"]})
-    for key, names in {
-        "joint_position": [f"joint_{i}" for i in range(7)],
-        "ee_pose": ["x", "y", "z", "roll", "pitch", "yaw"],
-        "ee_position": ["x", "y", "z"],
-        "gripper_position": ["commanded_open_ratio"],
-        "actions": (
-            [f"joint_{i}" for i in range(7)]
-            if action_space == "joint"
-            else ["x", "y", "z", "roll", "pitch", "yaw"]
-        )
-        + ["commanded_open_ratio"],
-    }.items():
-        result[key] = {"dtype": "float32", "shape": (len(names),), "names": names}
-    return result
 
 
 def open_dataset(config):
@@ -48,14 +19,18 @@ def open_dataset(config):
         int(config["camera"].get("image_hw", 224)),
         cfg["action_space"],
         config.get("tactile", {}).get("enabled", False),
+        config.get("observation"),
+        config.get("action"),
     )
     if root.exists():
+        from lerobot.utils.constants import DEFAULT_FEATURES
+
         info = json.loads((root / "meta/info.json").read_text())
         expected = {key: (value["dtype"], list(value["shape"])) for key, value in schema.items()}
         actual = {
             key: (value["dtype"], value["shape"])
             for key, value in info["features"].items()
-            if key in schema
+            if key not in DEFAULT_FEATURES
         }
         if info["fps"] != fps or expected != actual:
             raise ValueError(
@@ -74,8 +49,3 @@ def open_dataset(config):
             metadata_buffer_size=1,
         )
     return dataset, root
-
-
-def recorded_action(state, action_space):
-    values = state.joint_positions if action_space == "joint" else state.ee_pose.vector
-    return np.concatenate([values, [state.gripper.commanded_open_ratio]]).astype(np.float32)

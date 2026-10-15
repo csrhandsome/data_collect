@@ -39,7 +39,13 @@ export function useApiResource<T>(url: string | null) {
   }, [url, attempt])
 
   const retry = useCallback(() => setAttempt((value) => value + 1), [])
+  const update = useCallback(
+    (data: T) => {
+      setState((previous) => (previous.url === url ? { ...previous, data } : previous))
+    },
+    [url],
+  )
   const current =
     state.url === url ? state : { url, data: null, error: null, loading: Boolean(url) }
-  return { ...current, retry }
+  return { ...current, retry, update }
 }

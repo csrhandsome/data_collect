@@ -11,24 +11,9 @@ from replay.backend.main import create_app
 
 
 @pytest.fixture(scope="module")
-def demo_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    from replay.scripts.generate_demo import generate_demo
-
-    root = tmp_path_factory.mktemp("api-demo")
-    generate_demo(root)
-    return root
-
-
-@pytest.fixture(scope="module")
 def client(demo_root: Path):
     with TestClient(create_app(demo_root)) as connection:
         yield connection
-
-
-def _copy_dataset(source: Path, destination: Path, name: str = "demo_v21") -> Path:
-    target = destination / name
-    shutil.copytree(source / name, target)
-    return target
 
 
 def test_health_and_empty_registry(tmp_path: Path):
@@ -178,11 +163,11 @@ def test_single_dataset_root_and_environment(demo_root: Path, monkeypatch: pytes
         assert [dataset["id"] for dataset in datasets] == ["demo_v30"]
 
 
-def test_dataset_scan_detects_added_and_moved_datasets(demo_root: Path, tmp_path: Path):
+def test_dataset_scan_detects_added_and_moved_datasets(copy_dataset, tmp_path: Path):
     with TestClient(create_app(tmp_path)) as connection:
         assert connection.get("/api/datasets").json() == {"datasets": []}
-        first = _copy_dataset(demo_root, tmp_path)
-        _copy_dataset(demo_root, tmp_path, "demo_v30")
+        first = copy_dataset()
+        copy_dataset("demo_v30")
         response = connection.get("/api/datasets")
         assert response.status_code == 200
         assert [item["id"] for item in response.json()["datasets"]] == ["demo_v21", "demo_v30"]
@@ -194,8 +179,8 @@ def test_dataset_scan_detects_added_and_moved_datasets(demo_root: Path, tmp_path
         assert connection.get("/api/datasets/demo_v21").status_code == 404
 
 
-def test_malformed_metadata_is_422_without_local_path(demo_root: Path, tmp_path: Path):
-    root = _copy_dataset(demo_root, tmp_path)
+def test_malformed_metadata_is_422_without_local_path(copy_dataset):
+    root = copy_dataset()
     (root / "meta/info.json").write_text("{bad json")
     with TestClient(create_app(root)) as connection:
         response = connection.get("/api/datasets/demo_v21")
@@ -204,8 +189,8 @@ def test_malformed_metadata_is_422_without_local_path(demo_root: Path, tmp_path:
 
 
 @pytest.mark.parametrize("operation", ["missing", "malformed", "escape"])
-def test_episode_parquet_errors(demo_root: Path, tmp_path: Path, operation: str):
-    root = _copy_dataset(demo_root, tmp_path)
+def test_episode_parquet_errors(copy_dataset, tmp_path: Path, operation: str):
+    root = copy_dataset()
     path = sorted((root / "data").rglob("*.parquet"))[0]
     if operation == "missing":
         path.unlink()
@@ -223,10 +208,10 @@ def test_episode_parquet_errors(demo_root: Path, tmp_path: Path, operation: str)
 
 
 @pytest.mark.parametrize("operation", ["missing", "escape"])
-def test_video_file_is_confined(demo_root: Path, tmp_path: Path, operation: str):
+def test_video_file_is_confined(copy_dataset, tmp_path: Path, operation: str):
     from replay.scripts.resolve_video import resolve_video
 
-    root = _copy_dataset(demo_root, tmp_path)
+    root = copy_dataset()
     path = resolve_video(root, 0, "exterior_image_1_left")["path"]
     if operation == "escape":
         outside = tmp_path / "outside.mp4"
@@ -241,11 +226,11 @@ def test_video_file_is_confined(demo_root: Path, tmp_path: Path, operation: str)
             assert str(tmp_path) not in response.text
 
 
-def test_external_dataset_symlink_is_not_registered(demo_root: Path, tmp_path: Path):
+def test_external_dataset_symlink_is_not_registered(copy_dataset, tmp_path: Path):
     registry = tmp_path / "registered"
     registry.mkdir()
-    _copy_dataset(demo_root, registry)
-    outside = _copy_dataset(demo_root, tmp_path, "demo_v30")
+    copy_dataset(destination=registry)
+    outside = copy_dataset("demo_v30")
     (registry / "external").symlink_to(outside, target_is_directory=True)
     with TestClient(create_app(registry)) as connection:
         datasets = connection.get("/api/datasets").json()["datasets"]
@@ -253,8 +238,8 @@ def test_external_dataset_symlink_is_not_registered(demo_root: Path, tmp_path: P
         assert connection.get("/api/datasets/external").status_code == 404
 
 
-def test_metadata_symlink_is_rejected(demo_root: Path, tmp_path: Path):
-    root = _copy_dataset(demo_root, tmp_path)
+def test_metadata_symlink_is_rejected(copy_dataset, tmp_path: Path):
+    root = copy_dataset()
     metadata = root / "meta/info.json"
     outside = tmp_path / "outside-info.json"
     shutil.copyfile(metadata, outside)

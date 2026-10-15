@@ -1,4 +1,6 @@
-export type OperationKind = 'collect' | 'replay' | 'delete'
+import type { LatestEpisode } from './dataset'
+
+export type OperationKind = 'collect' | 'inference' | 'replay' | 'delete'
 
 export interface Operation {
   id: string
@@ -9,6 +11,7 @@ export interface Operation {
   started_at: string
   finished_at: string | null
   return_code: number | null
+  result_episode?: LatestEpisode | null
   logs: string[]
 }
 

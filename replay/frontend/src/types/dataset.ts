@@ -32,6 +32,14 @@ export interface DatasetDetail extends DatasetSummary {
 export interface EpisodeDetail extends EpisodeSummary {
   dataset_id: string
   blocks: DataFeature[]
+  success: boolean | null
+  saved_at_ns: string | null
+}
+
+export interface LatestEpisode {
+  dataset_id: string
+  episode_index: number
+  saved_at_ns: string
 }
 
 export interface EEData {
@@ -65,7 +73,16 @@ export interface DragFeature {
 }
 
 export interface AudioData {
-  sample_rate: number; channels: number; num_samples: number; duration_s: number; offset_s: number; waveform: number[];
-  vad_segments: { start_sec?: number; end_sec?: number; start?: number; end?: number }[];
-  instruction_audio_window: { start_sec: number | null; end_sec: number | null; audio_valid: boolean } | null;
+  sample_rate: number
+  channels: number
+  num_samples: number
+  duration_s: number
+  offset_s: number
+  waveform: number[]
+  vad_segments: { start_sec?: number; end_sec?: number; start?: number; end?: number }[]
+  instruction_audio_window: {
+    start_sec: number | null
+    end_sec: number | null
+    audio_valid: boolean
+  } | null
 }

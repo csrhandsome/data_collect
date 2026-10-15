@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 from pathlib import Path
 
 import yaml
 
+from control.collection.schema import features
 from control.util.timing import positive_rate
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config/panda.yaml"
+DEFAULT_CONFIG = Path(
+    os.environ.get(
+        "DATA_COLLECT_CONFIG", Path(__file__).resolve().parents[1] / "config/train/panda.yaml"
+    )
+)
+INFERENCE_CONFIG = Path(__file__).resolve().parents[1] / "config/inference/panda.yaml"
 
 
 def load_config(path=DEFAULT_CONFIG, _seen=None):
@@ -25,7 +32,10 @@ def load_config(path=DEFAULT_CONFIG, _seen=None):
     parent = payload.pop("extends", None)
     result = load_config(path.parent / parent, seen) if parent else {}
     merge(result, payload)
-    validate(result)
+    # Validate the merged child: inherited field choices may depend on its
+    # tactile/action-space settings rather than the defaults of a partial parent.
+    if _seen is None:
+        validate(result)
     return result
 
 
@@ -40,9 +50,18 @@ def merge(target, source):
 def validate(config):
     control = config.get("control", {})
     if control.get("mode", "ee") != "ee":
-        raise ValueError("control.mode must be ee; dataset.action_space selects joint/ee labels")
+        raise ValueError("control.mode must be ee; action fields select saved joint/ee labels")
     if config.get("dataset", {}).get("action_space", "joint") not in ("joint", "ee"):
         raise ValueError("dataset.action_space must be joint or ee")
+    if "fields" in config.get("dataset", {}):
+        raise ValueError("dataset.fields was replaced by observation/action mappings")
+    features(
+        int(config.get("camera", {}).get("image_hw", 224)),
+        config.get("dataset", {}).get("action_space", "joint"),
+        config.get("tactile", {}).get("enabled", False),
+        config.get("observation"),
+        config.get("action"),
+    )
     if config.get("gripper", {}).get("type", "franka") not in ("franka", "dh5", "none"):
         raise ValueError("gripper.type must be franka, dh5 or none")
     for section, key, default in [
@@ -52,6 +71,22 @@ def validate(config):
         ("audio", "sample_rate", 16000),
     ]:
         positive_rate(config.get(section, {}).get(key, default), f"{section}.{key}")
+    inference = config.get("inference")
+    if inference is not None:
+        model_horizon = inference.get("model_horizon")
+        execute_steps = inference.get("execute_steps")
+        if isinstance(model_horizon, bool) or not isinstance(model_horizon, int) or model_horizon <= 0:
+            raise ValueError("inference.model_horizon must be a positive integer")
+        if (
+            isinstance(execute_steps, bool)
+            or not isinstance(execute_steps, int)
+            or not 1 <= execute_steps <= model_horizon
+        ):
+            raise ValueError("inference.execute_steps must be an integer in 1..model_horizon")
+        if "action_horizon" in inference or "replan_every_steps" in inference:
+            raise ValueError(
+                "inference.action_horizon and replan_every_steps were replaced by model_horizon and execute_steps"
+            )
     if float(control.get("frequency_hz", 100)) < float(config.get("camera", {}).get("fps", 30)):
         raise ValueError("Control rate must not be lower than camera rate")
     if (

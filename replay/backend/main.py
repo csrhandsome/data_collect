@@ -6,7 +6,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from replay.backend.api import datasets, ee, episodes, health, operations, streams, video
 from replay.backend.config import configured_data_root
@@ -16,14 +17,17 @@ from replay.backend.registry import DatasetRegistry
 
 
 def create_app(
-    data_root: Path | None = None, operation_manager: OperationManager | None = None
+    data_root: Path | None = None,
+    operation_manager: OperationManager | None = None,
+    frontend_root: Path | None = None,
+    shutdown_timeout: float | None = 30,
 ) -> FastAPI:
     manager = operation_manager or OperationManager()
 
     @asynccontextmanager
     async def lifespan(_application):
         yield
-        await asyncio.to_thread(manager.close)
+        await asyncio.to_thread(manager.close, timeout=shutdown_timeout)
 
     application = FastAPI(title="Franka Replay", version="0.1.0", lifespan=lifespan)
     application.state.dataset_registry = DatasetRegistry(configured_data_root(data_root))
@@ -53,6 +57,14 @@ def create_app(
         operations.router,
     ):
         application.include_router(router, prefix="/api")
+    if frontend_root is not None:
+        frontend_root = frontend_root.resolve()
+
+        @application.get("/replay", include_in_schema=False)
+        def replay_page():
+            return FileResponse(frontend_root / "index.html")
+
+        application.mount("/", StaticFiles(directory=frontend_root, html=True))
     return application
 
 

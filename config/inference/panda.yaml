@@ -1,0 +1,15 @@
+# 工控机推理执行参数。模型仍预测 model_horizon 步，这里只执行前 execute_steps 步。
+extends: ../train/panda.yaml
+inference:
+  host: 127.0.0.1
+  port: 8001
+  action_fps: 30.0
+  model_horizon: 50          # 必须等于策略服务元数据里的 action_horizon
+  execute_steps: 10          # 1..model_horizon；只执行返回 chunk 的前这么多步，并按这个间隔重规划
+  action_space: ee
+  max_steps: 0
+  move_to_start: false
+  max_plan_age_s: 0.6
+  max_translation_step_m: 0.03
+  max_rotation_step_rad: 0.15
+  enable_vr_takeover: false
