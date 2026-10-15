@@ -25,10 +25,9 @@ from data_analysis.dataset_io import episode_dataframe, episode_paths
 
 
 def load_dataset_info(dataset_path: Path) -> Dict[str, Any]:
-    """加载数据集元信息"""
-    info_path = dataset_path / "meta" / "info.json"
-    with open(info_path, "r") as f:
-        return json.load(f)
+    from replay.scripts._common import _load_metadata
+
+    return _load_metadata(dataset_path)[0]
 
 
 def load_episodes_info(dataset_path: Path) -> List[Dict[str, Any]]:
@@ -156,97 +155,43 @@ def check_data_completeness(dataset_path: Path, info: Dict[str, Any]) -> Dict[st
 def check_image_quality(
     dataset_path: Path, info: Dict[str, Any], sample_size: int = 5
 ) -> Dict[str, Any]:
-    """检查图像质量（采样检查）"""
-    print("\n" + "=" * 60)
-    print("2. 图像质量检查")
-    print("=" * 60)
+    """Sample RGB frames from the episode's shared MP4 interval."""
+    import av
 
-    results = {
-        "image_keys": [],
-        "expected_shape": None,
-        "issues": [],
-    }
+    from replay.scripts.resolve_video import resolve_video
 
-    # 获取图像特征
-    image_features = {
-        k: v for k, v in info["features"].items() if v["dtype"] == "image"
-    }
-    results["image_keys"] = list(image_features.keys())
-
-    if not image_features:
-        print("  ⚠ 数据集中没有图像数据")
+    video_features = {key: ft for key, ft in info["features"].items() if ft["dtype"] == "video"}
+    results = {"image_keys": list(video_features), "expected_shape": None, "issues": []}
+    if not video_features:
         return results
-
-    # 获取期望的图像形状
-    first_img_key = list(image_features.keys())[0]
-    results["expected_shape"] = tuple(image_features[first_img_key]["shape"])
-    print(f"  期望图像形状: {results['expected_shape']}")
-    print(f"  图像特征: {', '.join(results['image_keys'])}")
-
-    # 随机采样检查
-    paths = episode_paths(dataset_path)
-    episode_files = list(paths.values())
-    sample_episodes = np.random.choice(
-        len(episode_files), min(sample_size, len(episode_files)), replace=False
-    )
-
-    print(f"\n  随机采样 {len(sample_episodes)} 个 episodes 进行检查...")
-
-    for ep_idx in sample_episodes:
-        ep_file = episode_files[ep_idx]
-        try:
-            df = episode_dataframe(ep_file, ep_idx, columns=results["image_keys"])
-
-            # 检查每个图像特征
-            for img_key in results["image_keys"]:
-                if img_key not in df.columns:
-                    results["issues"].append(
-                        f"Episode {ep_idx}: 缺少图像特征 {img_key}"
+    results["expected_shape"] = tuple(next(iter(video_features.values()))["shape"])
+    episodes = load_episodes_info(dataset_path)
+    rng = np.random.default_rng(0)
+    selected = rng.choice(len(episodes), min(sample_size, len(episodes)), replace=False)
+    for position in selected:
+        episode = episodes[int(position)]["episode_index"]
+        for key, feature in video_features.items():
+            try:
+                video = resolve_video(dataset_path, episode, key)
+                with av.open(str(video["path"])) as container:
+                    stream = container.streams.video[0]
+                    container.seek(
+                        int(video["start_time_s"] / stream.time_base), stream=stream, backward=True
                     )
-                    continue
-
-                # 检查第一帧图像
-                img = df[img_key].iloc[0]
-
-                # LeRobot 可能将图像存储为 dict 格式
-                if isinstance(img, dict):
-                    if "bytes" in img and "path" in img:
-                        # 这是 LeRobot 的图像引用格式，跳过检查
-                        continue
-                    else:
-                        results["issues"].append(
-                            f"Episode {ep_idx}: {img_key} 是未知的 dict 格式"
+                    frame = next(
+                        frame
+                        for frame in container.decode(stream)
+                        if frame.time is not None and frame.time + 1e-6 >= video["start_time_s"]
+                    )
+                    if frame.time >= video["end_time_s"]:
+                        raise ValueError("Decoded frame lies outside episode")
+                    image = frame.to_ndarray(format="rgb24")
+                    if list(image.shape) != feature["shape"]:
+                        raise ValueError(
+                            f"Frame shape {image.shape} differs from {feature['shape']}"
                         )
-                        continue
-
-                if img is None:
-                    results["issues"].append(f"Episode {ep_idx}: {img_key} 为 None")
-                elif not isinstance(img, np.ndarray):
-                    results["issues"].append(
-                        f"Episode {ep_idx}: {img_key} 类型错误 ({type(img)})"
-                    )
-                elif img.shape != results["expected_shape"]:
-                    results["issues"].append(
-                        f"Episode {ep_idx}: {img_key} 形状错误 "
-                        f"(期望 {results['expected_shape']}, 实际 {img.shape})"
-                    )
-                elif img.min() < 0 or img.max() > 255:
-                    results["issues"].append(
-                        f"Episode {ep_idx}: {img_key} 像素值超出范围 "
-                        f"(min={img.min()}, max={img.max()})"
-                    )
-        except Exception as e:
-            results["issues"].append(f"Episode {ep_idx}: 读取失败 - {e}")
-
-    if results["issues"]:
-        print(f"\n  ✗ 发现 {len(results['issues'])} 个问题:")
-        for issue in results["issues"][:10]:  # 只显示前10个
-            print(f"    - {issue}")
-        if len(results["issues"]) > 10:
-            print(f"    ... 还有 {len(results['issues']) - 10} 个问题")
-    else:
-        print("  ✓ 采样检查通过，图像质量正常")
-
+            except Exception as exc:
+                results["issues"].append(f"Episode {episode}, {key}: {exc}")
     return results
 
 
@@ -262,11 +207,14 @@ def check_action_data(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any
         "anomalies": [],
     }
 
-    action_keys = [key for key in ("action.joint_position", "action.ee_pose", "action.gripper_position")
-                   if key in info["features"]]
+    action_keys = [
+        key
+        for key in ("action.joint_position", "action.ee_pose", "action.gripper_position")
+        if key in info["features"]
+    ]
     if not action_keys and "actions" in info["features"]:
         action_keys = ["actions"]
-    # Report split labels together, retaining support for legacy datasets.
+    # Action columns follow the dataset feature schema.
     if action_keys:
         results["action_dim"] = sum(info["features"][key]["shape"][0] for key in action_keys)
         print(f"  动作维度: {results['action_dim']}")
@@ -363,10 +311,7 @@ def check_timestamps(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any]
                 continue
 
             timestamps = np.array(
-                [
-                    t[0] if isinstance(t, np.ndarray) else t
-                    for t in df["timestamp"].values
-                ]
+                [t[0] if isinstance(t, np.ndarray) else t for t in df["timestamp"].values]
             )
 
             # 计算时间间隔
@@ -379,12 +324,10 @@ def check_timestamps(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any]
                 results["actual_fps"].append(actual_fps)
 
                 # 检查帧率偏差
-                fps_error = (
-                    abs(actual_fps - results["expected_fps"]) / results["expected_fps"]
-                )
+                fps_error = abs(actual_fps - results["expected_fps"]) / results["expected_fps"]
                 if fps_error > 0.1:  # 超过 10% 偏差
                     results["issues"].append(
-                        f"{ep_file.name}: 帧率偏差 {fps_error*100:.1f}% "
+                        f"{ep_file.name}: 帧率偏差 {fps_error * 100:.1f}% "
                         f"(期望 {results['expected_fps']:.1f} Hz, 实际 {actual_fps:.1f} Hz)"
                     )
 
@@ -411,9 +354,9 @@ def check_timestamps(dataset_path: Path, info: Dict[str, Any]) -> Dict[str, Any]
 
         fps_error = abs(avg_fps - results["expected_fps"]) / results["expected_fps"]
         if fps_error < 0.05:
-            print(f"  ✓ 帧率稳定，偏差 {fps_error*100:.1f}%")
+            print(f"  ✓ 帧率稳定，偏差 {fps_error * 100:.1f}%")
         else:
-            print(f"  ⚠ 帧率偏差较大: {fps_error*100:.1f}%")
+            print(f"  ⚠ 帧率偏差较大: {fps_error * 100:.1f}%")
 
     # 报告时间戳跳跃
     if results["timestamp_gaps"]:
@@ -499,7 +442,7 @@ def _compute_voice_activity_ratio(
     frames = trimmed.reshape(num_frames, frame_size)
 
     # 计算每帧 RMS
-    frame_rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    frame_rms = np.sqrt(np.mean(frames**2, axis=1))
 
     # 判断是否有声音
     voice_frames = frame_rms >= energy_threshold
@@ -572,12 +515,8 @@ def check_audio_quality(
     rms_ratios = []
     clipping_ratios = []
 
-    for episode_index in tqdm(
-        range(results["episodes_expected"]), desc="  检查音频", leave=False
-    ):
-        wav_path, sync_path, metadata_path = _episode_audio_paths(
-            dataset_path, episode_index
-        )
+    for episode_index in tqdm(range(results["episodes_expected"]), desc="  检查音频", leave=False):
+        wav_path, sync_path, metadata_path = _episode_audio_paths(dataset_path, episode_index)
         if not wav_path.is_file():
             results["missing_audio"].append(episode_index)
             continue
@@ -593,9 +532,7 @@ def check_audio_quality(
         try:
             audio, wav_sample_rate = read_wav_pcm(wav_path, require_nonempty=True)
         except Exception as exc:
-            results["issues"].append(
-                f"Episode {episode_index:06d}: WAV 读取失败 - {exc}"
-            )
+            results["issues"].append(f"Episode {episode_index:06d}: WAV 读取失败 - {exc}")
             continue
 
         wav_num_samples = int(audio.shape[0])
@@ -634,30 +571,24 @@ def check_audio_quality(
 
             start_ns = _to_optional_int(metadata.get("audio_start_monotonic_ns"))
             stop_ns = _to_optional_int(metadata.get("audio_stop_monotonic_ns"))
-            if (
-                start_ns is not None
-                and stop_ns is not None
-                and stop_ns > start_ns
-            ):
+            if start_ns is not None and stop_ns is not None and stop_ns > start_ns:
                 monotonic_duration_s = float(stop_ns - start_ns) / 1e9
                 duration_error_ratio = abs(duration_from_wav - monotonic_duration_s) / max(
                     monotonic_duration_s, 1e-9
                 )
-                effective_sample_rate = float(wav_num_samples) / max(
-                    monotonic_duration_s, 1e-9
-                )
+                effective_sample_rate = float(wav_num_samples) / max(monotonic_duration_s, 1e-9)
 
                 if duration_error_ratio > duration_error_threshold:
                     results["issues"].append(
                         f"Episode {episode_index:06d}: 音频时长不匹配, "
                         f"WAV={duration_from_wav:.3f}s, monotonic={monotonic_duration_s:.3f}s, "
-                        f"误差={duration_error_ratio*100:.1f}%"
+                        f"误差={duration_error_ratio * 100:.1f}%"
                     )
                 elif duration_error_ratio > duration_warning_threshold:
                     results["warnings"].append(
                         f"Episode {episode_index:06d}: 音频时长有轻微偏差, "
                         f"WAV={duration_from_wav:.3f}s, monotonic={monotonic_duration_s:.3f}s, "
-                        f"误差={duration_error_ratio*100:.1f}%"
+                        f"误差={duration_error_ratio * 100:.1f}%"
                     )
 
                 rate_error_ratio = abs(effective_sample_rate - wav_sample_rate) / max(
@@ -667,18 +598,16 @@ def check_audio_quality(
                     results["issues"].append(
                         f"Episode {episode_index:06d}: 有效采样率异常, "
                         f"header={wav_sample_rate} Hz, effective={effective_sample_rate:.1f} Hz, "
-                        f"误差={rate_error_ratio*100:.1f}%"
+                        f"误差={rate_error_ratio * 100:.1f}%"
                     )
                 elif rate_error_ratio > effective_rate_warning_threshold:
                     results["warnings"].append(
                         f"Episode {episode_index:06d}: 有效采样率有轻微偏差, "
                         f"header={wav_sample_rate} Hz, effective={effective_sample_rate:.1f} Hz, "
-                        f"误差={rate_error_ratio*100:.1f}%"
+                        f"误差={rate_error_ratio * 100:.1f}%"
                     )
 
-            overflow_count = max(
-                0, _to_optional_int(metadata.get("num_input_overflows")) or 0
-            )
+            overflow_count = max(0, _to_optional_int(metadata.get("num_input_overflows")) or 0)
             if overflow_count > 0:
                 results["overflow_episodes"].append(
                     {
@@ -710,7 +639,7 @@ def check_audio_quality(
         if level_stats["clipping_ratio"] > clipping_ratio_threshold:
             results["warnings"].append(
                 f"Episode {episode_index:06d}: 裁剪比例偏高 "
-                f"(clipping={level_stats['clipping_ratio']*100:.2f}%)"
+                f"(clipping={level_stats['clipping_ratio'] * 100:.2f}%)"
             )
 
         if duration_error_ratio is not None:
@@ -743,7 +672,7 @@ def check_audio_quality(
                 )
                 results["warnings"].append(
                     f"Episode {episode_index:06d}: 有声音部分占比过低 "
-                    f"({voice_stats['voice_ratio']*100:.1f}%, "
+                    f"({voice_stats['voice_ratio'] * 100:.1f}%, "
                     f"{voice_stats['num_voice_frames']}/{voice_stats['num_frames']} 帧)"
                 )
 
@@ -777,11 +706,7 @@ def check_audio_quality(
     results["clipping_ratio"] = _summarize_numeric(clipping_ratios)
 
     # 汇总有效语音占比统计（仅针对声音不过小的文件）
-    voice_ratios = [
-        ep["voice_ratio"]
-        for ep in results["per_episode"]
-        if "voice_ratio" in ep
-    ]
+    voice_ratios = [ep["voice_ratio"] for ep in results["per_episode"] if "voice_ratio" in ep]
     results["voice_activity"] = _summarize_numeric(voice_ratios)
 
     print(f"  期望 episode 数: {results['episodes_expected']}")
@@ -790,8 +715,8 @@ def check_audio_quality(
     if duration_errors:
         print(
             "  时长一致性误差: "
-            f"均值 {results['duration_alignment']['mean']*100:.2f}%, "
-            f"最大 {results['duration_alignment']['max']*100:.2f}%"
+            f"均值 {results['duration_alignment']['mean'] * 100:.2f}%, "
+            f"最大 {results['duration_alignment']['max'] * 100:.2f}%"
         )
     else:
         print("  ⚠ 没有可用于时长一致性检查的音频 metadata")
@@ -808,26 +733,18 @@ def check_audio_quality(
             "  波形电平: "
             f"peak 均值 {results['peak_ratio']['mean']:.4f}, "
             f"rms 均值 {results['rms_ratio']['mean']:.4f}, "
-            f"clipping 均值 {results['clipping_ratio']['mean']*100:.3f}%"
+            f"clipping 均值 {results['clipping_ratio']['mean'] * 100:.3f}%"
         )
 
     if results["missing_audio"]:
-        print(
-            f"  ⚠ 缺少音频的 episodes: {len(results['missing_audio'])} 个"
-        )
+        print(f"  ⚠ 缺少音频的 episodes: {len(results['missing_audio'])} 个")
     if results["missing_metadata"]:
-        print(
-            f"  ⚠ 缺少 audio metadata 的 episodes: {len(results['missing_metadata'])} 个"
-        )
+        print(f"  ⚠ 缺少 audio metadata 的 episodes: {len(results['missing_metadata'])} 个")
     if results["missing_sync"]:
-        print(
-            f"  ⚠ 缺少 sync metadata 的 episodes: {len(results['missing_sync'])} 个"
-        )
+        print(f"  ⚠ 缺少 sync metadata 的 episodes: {len(results['missing_sync'])} 个")
 
     if results["overflow_episodes"]:
-        overflow_total = sum(
-            item["num_input_overflows"] for item in results["overflow_episodes"]
-        )
+        overflow_total = sum(item["num_input_overflows"] for item in results["overflow_episodes"])
         print(
             f"  ⚠ 发现输入溢出: {len(results['overflow_episodes'])} 个 episodes, "
             f"共 {overflow_total} 次"
@@ -837,29 +754,24 @@ def check_audio_quality(
     if voice_ratios:
         print(
             f"  有效语音占比（排除声音过小文件）: "
-            f"均值 {results['voice_activity']['mean']*100:.1f}%, "
-            f"最小 {results['voice_activity']['min']*100:.1f}%, "
-            f"最大 {results['voice_activity']['max']*100:.1f}% "
+            f"均值 {results['voice_activity']['mean'] * 100:.1f}%, "
+            f"最小 {results['voice_activity']['min'] * 100:.1f}%, "
+            f"最大 {results['voice_activity']['max'] * 100:.1f}% "
             f"({len(voice_ratios)} 个文件)"
         )
     else:
         print("  ⚠ 没有声音不过小的文件可用于有效语音占比分析")
 
     if results["low_voice_ratio_episodes"]:
-        print(
-            f"  ⚠ 有声音部分占比过低的 episodes: "
-            f"{len(results['low_voice_ratio_episodes'])} 个"
-        )
+        print(f"  ⚠ 有声音部分占比过低的 episodes: {len(results['low_voice_ratio_episodes'])} 个")
         for item in results["low_voice_ratio_episodes"][:10]:
             print(
                 f"    - Episode {item['episode_index']:06d}: "
-                f"{item['voice_ratio']*100:.1f}% "
+                f"{item['voice_ratio'] * 100:.1f}% "
                 f"({item['num_voice_frames']}/{item['num_frames']} 帧)"
             )
         if len(results["low_voice_ratio_episodes"]) > 10:
-            print(
-                f"    ... 还有 {len(results['low_voice_ratio_episodes']) - 10} 个"
-            )
+            print(f"    ... 还有 {len(results['low_voice_ratio_episodes']) - 10} 个")
 
     if results["issues"]:
         print(f"\n  ✗ 发现 {len(results['issues'])} 个问题:")
@@ -913,16 +825,12 @@ def analyze_episode_statistics(
     # 任务统计
     print("\n  任务分布:")
     for task, count in results["tasks"].items():
-        print(
-            f"    - {task}: {count} episodes ({100*count/results['num_episodes']:.1f}%)"
-        )
+        print(f"    - {task}: {count} episodes ({100 * count / results['num_episodes']:.1f}%)")
 
     return results
 
 
-def generate_visualizations(
-    dataset_path: Path, results: Dict[str, Any], output_dir: Path
-):
+def generate_visualizations(dataset_path: Path, results: Dict[str, Any], output_dir: Path):
     """生成可视化图表"""
     print("\n" + "=" * 60)
     print("7. 生成可视化图表")
@@ -933,9 +841,7 @@ def generate_visualizations(
     # 1. Episode 长度分布
     if "episode_stats" in results and results["episode_stats"]["episode_lengths"]:
         plt.figure(figsize=(10, 6))
-        plt.hist(
-            results["episode_stats"]["episode_lengths"], bins=20, edgecolor="black"
-        )
+        plt.hist(results["episode_stats"]["episode_lengths"], bins=20, edgecolor="black")
         plt.xlabel("Episode Length (frames)")
         plt.ylabel("Count")
         plt.title("Episode Length Distribution")
@@ -989,8 +895,7 @@ def generate_visualizations(
             variation_tol = max(abs(mean_fps) * 1e-4, 1e-6)
             if fps_range <= variation_tol:
                 print(
-                    "  ⊘ 跳过帧率分布图（帧率变化极小: "
-                    f"{mean_fps:.4f} ± {fps_range / 2:.6f} Hz）"
+                    f"  ⊘ 跳过帧率分布图（帧率变化极小: {mean_fps:.4f} ± {fps_range / 2:.6f} Hz）"
                 )
             else:
                 plt.figure(figsize=(10, 6))
@@ -1133,9 +1038,7 @@ def main():
     all_results = {}
 
     all_results["completeness"] = check_data_completeness(dataset_path, info)
-    all_results["image_quality"] = check_image_quality(
-        dataset_path, info, args.sample_size
-    )
+    all_results["image_quality"] = check_image_quality(dataset_path, info, args.sample_size)
     all_results["action_data"] = check_action_data(dataset_path, info)
     all_results["timestamp_data"] = check_timestamps(dataset_path, info)
     all_results["audio_quality"] = check_audio_quality(dataset_path, info)

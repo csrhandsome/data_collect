@@ -44,11 +44,11 @@ def _edit_data(root: Path, function) -> None:
     pq.write_table(pa.Table.from_pylist(rows), path)
 
 
-@pytest.mark.parametrize("version_index", [0, 1])
+@pytest.mark.parametrize("version_index", [0])
 def test_complete_catalog_and_episode_blocks(demo_roots: list[Path], version_index: int) -> None:
     root = demo_roots[version_index]
     dataset = read_dataset(root)
-    assert dataset["version"] == ["v2.1", "v3.0"][version_index]
+    assert dataset["version"] == "v3.0"
     assert (dataset["total_episodes"], dataset["total_frames"], dataset["fps"]) == (3, 540, 30)
     assert [episode["episode_index"] for episode in dataset["episodes"]] == [0, 1, 2]
     features = {block["key"]: block for block in dataset["features"]}
@@ -62,7 +62,7 @@ def test_complete_catalog_and_episode_blocks(demo_roots: list[Path], version_ind
     assert episode["tasks"] == ["Trace a placement arc"]
 
 
-@pytest.mark.parametrize("version_index", [0, 1])
+@pytest.mark.parametrize("version_index", [0])
 def test_collector_fields_match_standard_aliases(
     demo_roots: list[Path], version_index: int
 ) -> None:
@@ -73,11 +73,7 @@ def test_collector_fields_match_standard_aliases(
         assert blocks[key]["shape"] == shape
         assert blocks[key]["dtype"] == "float32"
         assert blocks[key]["kind"] == "series"
-    if version_index == 0:
-        tables = [pq.read_table(path) for path in sorted((root / "data").glob("*/*.parquet"))]
-        table = pa.concat_tables(tables)
-    else:
-        table = pq.read_table(root / "data/chunk-000/file-000.parquet")
+    table = pq.read_table(root / "data/chunk-000/file-000.parquet")
     rows = table.to_pylist()
     assert len(rows) == 540
     for row in rows:
@@ -92,18 +88,16 @@ def test_collector_fields_match_standard_aliases(
 
 
 @pytest.mark.parametrize("episode_index", [0, 1, 2])
-def test_both_formats_produce_same_isolated_episode(
+def test_shared_shard_produces_isolated_episode(
     demo_roots: list[Path],
     episode_index: int,
 ) -> None:
-    old = read_ee(demo_roots[0], episode_index)
-    packed = read_ee(demo_roots[1], episode_index)
-    assert old == packed
+    packed = read_ee(demo_roots[0], episode_index)
     assert packed["point_count"] == packed["total_points"] == 180
     assert packed["timestamps"][0] == 0
     assert packed["timestamps"][-1] == pytest.approx(179 / 30)
     assert packed["units"] == ["m", "m", "m", "rad", "rad", "rad"]
-    raw = pq.read_table(demo_roots[1] / "data/chunk-000/file-000.parquet").to_pylist()
+    raw = pq.read_table(demo_roots[0] / "data/chunk-000/file-000.parquet").to_pylist()
     expected = [row["ee_pose"] for row in raw if row["episode_index"] == episode_index]
     np.testing.assert_allclose(packed["values"], expected)
     assert packed["bounds"]["min"] == np.min(expected, axis=0).tolist()
@@ -115,8 +109,8 @@ def test_downsampling_keeps_endpoints_and_complete_bounds(
     demo_roots: list[Path],
     max_points: int,
 ) -> None:
-    full = read_ee(demo_roots[1], 1)
-    sampled = read_ee(demo_roots[1], 1, max_points=max_points)
+    full = read_ee(demo_roots[0], 1)
+    sampled = read_ee(demo_roots[0], 1, max_points=max_points)
     assert sampled["point_count"] == min(max_points, 180)
     assert sampled["total_points"] == 180
     for key in ("values", "timestamps"):
@@ -128,7 +122,7 @@ def test_downsampling_keeps_endpoints_and_complete_bounds(
 
 @pytest.mark.parametrize("camera", ["exterior_image_1_left", "wrist_image_left"])
 def test_packed_video_offsets_and_actual_h264(demo_roots: list[Path], camera: str) -> None:
-    videos = [resolve_video(demo_roots[1], episode, camera) for episode in range(3)]
+    videos = [resolve_video(demo_roots[0], episode, camera) for episode in range(3)]
     assert len({video["path"] for video in videos}) == 1
     assert [video["start_time_s"] for video in videos] == [0, 6, 12]
     assert [video["end_time_s"] for video in videos] == [6, 12, 18]
@@ -148,9 +142,6 @@ def test_packed_video_offsets_and_actual_h264(demo_roots: list[Path], camera: st
         assert len(frames) == 3 and len(set(frames)) == 3
     finally:
         reader.close()
-    old = resolve_video(demo_roots[0], 2, camera)
-    assert old["start_time_s"] == 0 and old["end_time_s"] == 6
-    assert old["path"].name == "episode_000002.mp4"
 
 
 def test_video_fps_is_separate_from_dataset_fps(editable_v3: Path) -> None:
@@ -209,11 +200,11 @@ def test_timestamp_normalization_and_frame_order(editable_v3: Path) -> None:
 @pytest.mark.parametrize("bad_points", [0, 1, -5, 2.5, True])
 def test_invalid_max_points(demo_roots: list[Path], bad_points) -> None:
     with pytest.raises(ValueError, match="max_points"):
-        read_ee(demo_roots[1], 0, max_points=bad_points)
+        read_ee(demo_roots[0], 0, max_points=bad_points)
 
 
 def test_unknown_episode_feature_and_unsupported_field(demo_roots: list[Path]) -> None:
-    root = demo_roots[1]
+    root = demo_roots[0]
     with pytest.raises(KeyError):
         read_episode(root, 99)
     with pytest.raises(KeyError):
@@ -319,7 +310,7 @@ def test_stats_are_coherent_and_inspector_exposes_offsets(demo_roots: list[Path]
         np.testing.assert_allclose(stats["ee_pose"]["std"], values.std(axis=0))
         assert stats["ee_pose"]["count"] == [540]
         assert stats["wrist_image_left"]["count"] == [540]
-    inspected = inspect_dataset(demo_roots[1], 2)
+    inspected = inspect_dataset(demo_roots[0], 2)
     assert inspected["previews"]["wrist_image_left"]["start_time_s"] == 12
     assert len(inspected["previews"]["ee_pose"]["values"]) == 8
 
@@ -342,15 +333,8 @@ def test_v3_task_table_preserves_upstream_string_index(tmp_path: Path) -> None:
     ]
 
 
-def test_v20_metadata_is_supported(copy_dataset) -> None:
-    root = copy_dataset()
-    _edit_info(root, codebase_version="v2.0")
-    assert read_dataset(root)["version"] == "v2.0"
-    assert read_ee(root, 2)["total_points"] == 180
-
-
 def test_generator_refuses_unmarked_or_symlink_targets(tmp_path: Path) -> None:
-    target = tmp_path / "demo_v21"
+    target = tmp_path / "demo_v30"
     target.mkdir()
     important = target / "important.txt"
     important.write_text("keep")

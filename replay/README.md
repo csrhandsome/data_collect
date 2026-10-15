@@ -25,7 +25,7 @@ pnpm --dir replay/frontend dev --host 127.0.0.1
 
 ## 页面操作
 
-打开页面时自动扫描数据目录，左侧的数据集下拉框列出所有包含 `meta/info.json` 的直接子目录。默认目录为 `data/dataset/`，例如 `data/dataset/franka_lerobot_7_6_audio/meta/info.json`。放入新数据集或采集结束后，点击「重新扫描」更新列表和片段信息，无需重启服务。再选择数据集和 episode，查看字段的类型、shape 和名称。
+打开页面时自动扫描数据目录，左侧的数据集下拉框列出所有包含 `meta/info.json` 的直接子目录。默认目录为 `data/dataset/`，例如 `data/dataset/franka_lerobot_7_6_audio_v3_mp4/meta/info.json`。放入新数据集或采集结束后，点击「重新扫描」更新列表和片段信息，无需重启服务。再选择数据集和 episode，查看字段的类型、shape 和名称。
 
 采集保存路径也默认为 `data/dataset/<数据集名称>/`，由 `config/train/panda.yaml` 的 `dataset.root` 配置；`openpi/franka_lerobot` 这样的 repo ID 只使用最后一段作为本地目录名称。回放目录由同一配置文件的 `replay.data_root` 配置，`REPLAY_DATA_ROOT` 可以覆盖它。已有 `data/openpi/` 数据已迁移到 `data/dataset/`。
 
@@ -36,7 +36,7 @@ pnpm --dir replay/frontend dev --host 127.0.0.1
 - **开启采集**：后端在仓库根目录运行 `uv run vr_collect`，使用 `config/train/panda.yaml` 的设备、采集任务及保存目录。左侧选择的数据集不会改变采集保存位置。
 - **开始推理 / 结束推理**：选择「推理」模式，后端启动 `uv run python -m inference --record`，使用配置中的 `inference.host`、`inference.port` 和任务指令连接策略服务。每次推理保存一个独立 episode，默认结果为 `null`。结束时先停止控制流并保存本次片段，再调用 `move_to_start()` 返回 `robot.start_joint_position`；回位完成前保持「正在停止」，其他设备操作不可启动。正常达到 `inference.max_steps` 也执行同样的保存和回位流程。预热期间停止会回位，但不生成空片段；运行异常停止控制流并报告失败，不继续自动回位。回位失败也报告任务失败。
 - **真机回放上一次**：回放当前数据集最大 `episode_index` 的已保存片段，与当前查看的 episode 无关。优先使用 100 Hz `actions.jsonl` 的实测位姿与夹爪记录，随后尝试同步帧记录、Parquet 的完整 `ee_pose` 或 `joint_position`。关节记录经控制器运动学转换为 EE 轨迹；回放实测路径。夹爪动作期间暂停回放时钟。
-- **删除当前片段**：调用已有按编号删除脚本，硬删除当前片段及其图像、视频、音频、100 Hz 记录和同步文件，重排后续文件、Parquet 索引及元数据。支持 v2.0/v2.1，以及通过新版 LeRobot 官方工具重写共享文件的 v3.0。
+- **删除当前片段**：调用已有按编号删除脚本，硬删除当前片段及其图像、视频、音频、100 Hz 记录和同步文件，重排后续文件、Parquet 索引及元数据。使用 LeRobot v3 MP4，由官方工具重写共享文件。
 
 真机回放和删除收在「更多操作」中。启动和删除操作先展示确认弹窗，再提交任务；结束操作直接请求停止。任务进程由后端管理，浏览器关闭或刷新不会结束任务。一次只运行一个任务；等待区显示耗时、状态和最近 80 行日志。结束采集/推理或停止真机回放通过 SIGINT 请求清理；删除更新文件期间不能中途停止。推理结束后自动打开本次保存的片段和相机/EE 视图，可以选择成功（`true`）、失败（`false`）或未标注（`null`），选择后自动保存；此行为不受自动打开新片段复选框影响。推理运行及回位期间标注按钮不可用。后端重启不会保留任务历史；停止任务后应等待状态确认再关闭服务。不要同时从终端启动另一个采集或推理进程。配置中的 `dataset.root` 保存目录应位于 `replay.data_root` 的扫描范围内。
 
@@ -54,7 +54,7 @@ uv run python -m replay.scripts.replay_robot --dataset data/dataset/<数据集�
 
 `WaitingState` 是通用黑白等待组件，支持紧凑布局、说明文字、计时及操作插槽；数据读取、提交和长任务共用它，系统开启减少动画时停止旋转。
 
-支持 MP4、嵌入 Parquet 的图像、音频、EE 和数值曲线。其他字段仍完整列在数据栏中。EE 空间图为带坐标轴的投影，时间曲线使用 episode 内的秒数，位置单位为米。
+支持 v3 MP4、音频、EE 和数值曲线。其他字段仍完整列在数据栏中。EE 空间图为带坐标轴的投影，时间曲线使用 episode 内的秒数，位置单位为米。
 
 ## 前端样式
 
@@ -66,10 +66,9 @@ Playfair Display、Source Serif 4 和 JetBrains Mono 通过 Fontsource 随应用
 
 演示数据在 `replay/demo_data/`，需要手动生成，未纳入 Git。两套数据均含三个 episode、两路实际 H.264 MP4 视频以及与本项目一致的 `ee_pose`、`joint_position`、`gripper_position`、`actions` 等字段。每个 episode 为 30 Hz、180 帧，演示场景为合成工作台，不包含真实机器人记录。
 
-- `demo_v21`：`meta/episodes.jsonl`，每个 episode 一个 Parquet / MP4。
 - `demo_v30`：`meta/episodes/...parquet`，多个 episode 共用 Parquet / MP4；episode 1、2 有非零视频偏移，用于验证正确读取和播放。
 
-目录与元数据依据 [LeRobot 官方格式说明](https://huggingface.co/docs/lerobot/main/porting_datasets_v3)。解析器直接读取 JSON、JSONL 和 Parquet，无需安装 LeRobot / PyTorch；这是本地回放读取支持，未声称覆盖整个 LeRobot 训练 SDK。
+目录与元数据依据 [LeRobot 官方格式说明](https://huggingface.co/docs/lerobot/main/porting_datasets_v3)。解析器直接读取 JSON 和 Parquet，无需安装 LeRobot / PyTorch；这是本地回放读取支持，未声称覆盖整个 LeRobot 训练 SDK。
 
 ```bash
 # 生成 / 重新生成专用演示数据
@@ -79,7 +78,7 @@ env -u PYTHONPATH uv run python -m replay.scripts.generate_demo
 REPLAY_DATA_ROOT="$PWD/replay/demo_data" bash dev.sh
 
 # 查看数据集结构和字段
-env -u PYTHONPATH uv run python -m replay.scripts.inspect_dataset replay/demo_data/demo_v21
+env -u PYTHONPATH uv run python -m replay.scripts.inspect_dataset replay/demo_data/demo_v30
 env -u PYTHONPATH uv run python -m replay.scripts.inspect_dataset replay/demo_data/demo_v30 --episode 1
 ```
 
@@ -90,7 +89,7 @@ env -u PYTHONPATH uv run python -m replay.scripts.inspect_dataset replay/demo_da
 REPLAY_DATA_ROOT=/absolute/path/to/datasets bash dev.sh
 ```
 
-后端只允许通过配置目录内的数据集 ID 访问数据，HTTP 参数不接受任意磁盘路径或命令。读取接口不写数据；删除需在页面确认后执行。`meta/info.json` 中声明的模板、v3 episode 的 chunk/file 索引和视频时间边界用于解析文件。v2.0 / v2.1 和 v3.0 自动识别；未知版本和损坏数据会返回明确错误。
+后端只允许通过配置目录内的数据集 ID 访问数据，HTTP 参数不接受任意磁盘路径或命令。读取接口不写数据；删除需在页面确认后执行。`meta/info.json` 中声明的模板、v3 episode 的 chunk/file 索引和视频时间边界用于解析文件。只接受 v3.0 MP4；未知版本和损坏数据会返回明确错误。
 
 ## 代码分层
 
@@ -107,7 +106,7 @@ replay/
 │   ├── api/           # HTTP 路由和依赖
 │   ├── services/      # 一个公共业务函数一个文件
 │   └── main.py        # FastAPI app / app factory
-├── scripts/           # 双格式解析、演示生成、独立查看 CLI
+├── scripts/           # v3 MP4 解析、演示生成、独立查看 CLI
 ├── tests/             # 先解析、后 API 验证
 └── pyproject.toml     # 独立 Python 项目
 ```
@@ -116,29 +115,9 @@ replay/
 
 业务调用关系：路由 → 对应 service 函数 → `read_dataset` / `read_episode` / `read_ee` / `resolve_video`。视频元数据与视频文件响应分开，文件接口支持 Range 请求，供浏览器 seek；v3 播放器依据片段起止时间限制在当前 episode 内。前后端约定可见 [CONTRACT.md](CONTRACT.md)，完整接口可在 `/docs` 查看。
 
-相机字段为 `dtype=image` 时，首次打开会把当前 episode 的 PNG / JPEG 图像转换为 H.264 MP4，缓存到数据集内的 `.replay-cache/video/`，随后与已有 MP4 共用原生 `<video>` 播放器和 HTTP Range 接口。使用已安装的 `imageio-ffmpeg`，无需另装系统 FFmpeg。转换保留原始分辨率（奇数边长补齐一个像素）、按采集同步时间在相机 FPS 上重采样，使用 CRF 18、每秒关键帧及 faststart；它是用于查看的有损副本，原始 Parquet 和图像保留。无同步记录时按数据集 FPS 播放。
-
-只有首次读取或数据变化后需要转换；缓存命中不再读取相机 Parquet 列或编码。源 Parquet、元数据、片段边界、同步记录或引用图片改变时自动重建。同一相机的并发请求共用一次转换，完成后原子发布，失败可重试；重建时删除该相机旧 MP4 缓存。数据集目录需要可写，`.replay-cache/` 可删除并自动再生成。
-
-原先的 `ImageStream.tsx`、`read_image.py` 和 `/image`、`/image/metadata` 接口已移除。播放中由浏览器持续解码，只在用户定位、播放/暂停或缓冲恢复时设置视频时间；数据栏通过 React memo 避免跟随时间轴反复渲染。
-
-也可提前转换，省去首次打开的等待（省略 `--episode` 会处理所有片段，可重复指定 `--episode` / `--feature`）：
-
-```bash
-uv run python -m replay.scripts.prepare_video data/dataset/franka_lerobot_7_6_audio --episode 0
-```
-
-页面启动后，可用新脚本测量三路视频的实际呈现帧率、解码掉帧、seek、缓冲和请求数量；默认连续测 8 秒，片段需长于 9 秒。脚本使用本机 Chrome，低于源 FPS 的 85%、掉帧超过 5%、反复 seek 或发生缓冲时返回失败。短演示数据可用 `--seconds 4` 和 `--cameras camera_png,camera_jpeg`：
-
-```bash
-node replay/frontend/scripts/benchmark-video.mjs --dataset franka_lerobot_7_6_audio \
-  --output data/replay_benchmarks/playback.json
-# 增加每个请求的延迟，验证播放不会被逐帧请求拖慢
-node replay/frontend/scripts/benchmark-video.mjs --dataset franka_lerobot_7_6_audio \
-  --latency-ms 120 --output data/replay_benchmarks/latency120.json
-```
-
-改前/改后实测与测试范围见 [视频播放验证记录](VIDEO_PLAYBACK_TEST.md)。
+相机字段固定为 `dtype=video`，直接读取共享 MP4 及 episode 时间区间。
+没有图片转视频缓存，也不提供 PNG/JPEG 内嵌数据的播放分支。
+此前对比和整理说明见 [v3 MP4 说明](../LEROBOT_V3_MP4.md)。
 
 ## 真实 Panda 小范围轨迹记录
 
@@ -195,7 +174,7 @@ REPLAY_DATA_ROOT="$PWD/data/replay_real" bash dev.sh
 ```bash
 env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest replay/tests/test_readers.py -q
 env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest replay/tests/test_api.py replay/tests/test_images.py -q
-env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest replay/tests/test_operations.py tests/test_episode_deleter.py -q
+env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest replay/tests/test_operations.py scripts/tests/test_lerobot_upgrade.py -q
 pnpm --dir replay/frontend build
 env -u PYTHONPATH uv run ruff check replay
 ```
@@ -205,7 +184,7 @@ env -u PYTHONPATH uv run ruff check replay
 浏览器测试会自动启动本地 API 和 Vite，验证拖拽、真实视频解码、EE 曲线/空间轨迹、共享视频片段边界、窄屏操作及错误重试：
 
 ```bash
-# 默认使用本机 Google Chrome；自动生成 MP4 和嵌入 PNG/JPEG 演示数据
+# 默认使用本机 Google Chrome；自动生成 v3 MP4 演示数据
 pnpm --dir replay/frontend test:e2e
 
 # 没有 Google Chrome 时，可安装 Playwright 的 Chromium

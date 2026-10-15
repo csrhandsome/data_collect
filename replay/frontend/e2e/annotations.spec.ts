@@ -37,10 +37,10 @@ test('a save opens the new dataset and both cameras, then labels persist after r
   await mockCollection(page)
   try {
     const baseline = page.waitForResponse('**/api/datasets/latest-episode')
-    await page.goto('/replay?dataset=demo_v21&episode=0')
+    await page.goto('/replay?dataset=demo_v30&episode=0')
     await baseline
     await expect(page.getByTestId('episode-annotation')).toContainText('当前结果：未标注')
-    await cp(join(demoRoot, 'demo_v21'), root, { recursive: true })
+    await cp(join(demoRoot, 'demo_v30'), root, { recursive: true })
     const sync = join(root, 'episode_000002.sync.json')
     const payload = { episode_index: 2, success: null, saved_at_ns: Date.now() * 1_000_000 }
     await writeFile(`${sync}.tmp`, JSON.stringify(payload))
@@ -97,7 +97,7 @@ test('automatic opening can be disabled and failed annotation requests can be re
   const name = 'test_annotation_manual'
   const root = join(demoRoot, name)
   await rm(root, { recursive: true, force: true })
-  await cp(join(demoRoot, 'demo_v21'), root, { recursive: true })
+  await cp(join(demoRoot, 'demo_v30'), root, { recursive: true })
   await mockCollection(page)
   try {
     const baseline = page.waitForResponse('**/api/datasets/latest-episode')

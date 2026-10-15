@@ -1,4 +1,4 @@
-"""Local v2/v3 metadata and per-episode tables, including shared v3 shards."""
+"""LeRobot v3 MP4 metadata and per-episode tables from shared shards."""
 
 from pathlib import Path
 

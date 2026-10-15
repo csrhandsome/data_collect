@@ -47,9 +47,7 @@ def serve(argv):
                 port = self.servers[0].sockets[0].getsockname()[1]
                 print(json.dumps({"event": "ready", "port": port}), flush=True)
 
-    DesktopServer(
-        uvicorn.Config(application, host="127.0.0.1", port=0, log_level="info")
-    ).run()
+    DesktopServer(uvicorn.Config(application, host="127.0.0.1", port=0, log_level="info")).run()
     return 0
 
 
@@ -59,9 +57,19 @@ def doctor():
     import multiprocessing as mp
 
     modules = [
-        "numpy", "pyarrow", "av", "torch", "lerobot.datasets.lerobot_dataset",
-        "pyrealsense2", "panda_py", "sounddevice", "teleop_xr", "mink",
-        "data_analysis.preprocess_vad", "control.microphone_connector", "control.vr_input",
+        "numpy",
+        "pyarrow",
+        "av",
+        "torch",
+        "lerobot.datasets.lerobot_dataset",
+        "pyrealsense2",
+        "panda_py",
+        "sounddevice",
+        "teleop_xr",
+        "mink",
+        "data_analysis.preprocess_vad",
+        "control.microphone_connector",
+        "control.vr_input",
     ]
     for name in modules:
         importlib.import_module(name)
@@ -105,7 +113,9 @@ def main(argv=None):
 
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        raise SystemExit("Expected server, collect, inference, replay, delete, doctor or generate-demo")
+        raise SystemExit(
+            "Expected server, collect, inference, replay, delete, doctor or generate-demo"
+        )
     command, rest = args[0], args[1:]
     if command == "server":
         return serve(rest)
@@ -132,10 +142,8 @@ def main(argv=None):
         return doctor()
     if command == "generate-demo":
         from replay.scripts.generate_demo import generate_demo
-        from replay.scripts.generate_image_demo import generate_image_demo
 
         root = Path(rest[0]).resolve()
         generate_demo(root)
-        generate_image_demo(root / "demo_z_images")
         return 0
     raise SystemExit(f"Unknown runtime command: {command}")

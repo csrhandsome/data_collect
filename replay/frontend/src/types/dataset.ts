@@ -1,7 +1,7 @@
 export interface DataFeature {
   key: string
   label: string
-  kind: 'video' | 'ee' | 'image' | 'audio' | 'series' | 'unsupported'
+  kind: 'video' | 'ee' | 'audio' | 'series' | 'unsupported'
   dtype: string
   shape: number[]
   names: string[] | null

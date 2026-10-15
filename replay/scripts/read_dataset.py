@@ -7,7 +7,7 @@ from .read_sidecars import catalog
 
 
 def read_dataset(root: Path) -> dict:
-    """Return JSON-compatible metadata for LeRobot v2.0/v2.1 and v3.0 layouts."""
+    """Return JSON-compatible metadata for LeRobot v3.0 MP4 datasets."""
     root = Path(root).resolve()
     info, episodes = _load_metadata(root)
     return {

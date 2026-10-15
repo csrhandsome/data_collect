@@ -40,7 +40,7 @@ export function OperationPanel({
   const latest =
     dataset?.episodes.reduce((max, item) => Math.max(max, item.episode_index), -1) ?? -1
   const hasEpisode = Boolean(dataset?.episodes.some((item) => item.episode_index === episodeIndex))
-  const canDelete = ['v2.0', 'v2.1', 'v3.0'].includes(dataset?.version ?? '')
+  const canDelete = dataset?.version === 'v3.0'
   const operation = tasks.operation
   const active = isOperationActive(operation)
   const disabled = !tasks.ready || tasks.busy

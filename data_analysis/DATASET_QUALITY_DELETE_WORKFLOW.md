@@ -98,7 +98,7 @@ each call reads the dataset at its current path.
 
 ## Notes
 
-- `episode_index` comes from `meta/episodes.jsonl`.
+- `episode_index` comes from `meta/episodes/chunk-*/file-*.parquet`.
 - Episode numbering starts from `0`.
-- If `episode_index=12`, it usually corresponds to `episode_000012.parquet` and `audio/episode_000012.*`.
+- Locate the shared data/video files through episode metadata; their file numbers do not equal `episode_index`. Audio sidecars still use names such as `audio/episode_000012.*`.
 - Prefer deleting one confirmed bad episode at a time, then rerun the quality check.

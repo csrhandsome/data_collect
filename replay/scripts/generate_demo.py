@@ -1,4 +1,4 @@
-"""Generate matching LeRobot v2.1/v3.0 fixtures with browser-playable H264 cameras.
+"""Generate LeRobot v3 MP4 fixtures with browser-playable H264 cameras.
 
 Run from repository root: uv run python -m replay.scripts.generate_demo
 """
@@ -30,20 +30,19 @@ from ._demo import (
     _table,
     _tasks_table,
     _write_json,
-    _write_jsonl,
     _write_table,
 )
 
 
 def generate_demo(output: Path | None = None) -> list[Path]:
-    """Build 3 x 6-second episodes in both formats, replacing only marked demo datasets.
+    """Build 3 x 6-second episodes in v3 MP4 format, replacing only marked demo datasets.
 
     Existing unmarked datasets and symlink targets are refused. New fixtures are
     staged completely before replacing prior generated targets.
     """
     output = Path(output or Path(__file__).resolve().parents[1] / "demo_data").resolve()
     output.mkdir(parents=True, exist_ok=True)
-    targets = [output / "demo_v21", output / "demo_v30"]
+    targets = [output / "demo_v30"]
     for target in targets:
         if target.is_symlink():
             raise ValueError("Refusing to overwrite a symlink demo target")
@@ -54,7 +53,7 @@ def generate_demo(output: Path | None = None) -> list[Path]:
         ):
             raise ValueError(f"Refusing to overwrite unmarked dataset: {target.name}")
     with tempfile.TemporaryDirectory(prefix=".replay-build-", dir=output) as temporary:
-        v21, v30 = [Path(temporary) / name for name in ("demo_v21", "demo_v30")]
+        clips, v30 = Path(temporary) / "clips", Path(temporary) / "demo_v30"
         signals = [_signals(episode) for episode in range(_EPISODES)]
         episode_stats = [_stats(values) for values in signals]
         summaries = [
@@ -62,12 +61,9 @@ def generate_demo(output: Path | None = None) -> list[Path]:
             for episode in range(_EPISODES)
         ]
         for episode in range(_EPISODES):
-            _write_table(
-                v21 / f"data/chunk-000/episode_{episode:06d}.parquet", _table(signals[episode])
-            )
             for camera in _CAMERAS:
                 episode_stats[episode][camera] = _encode_episode(
-                    v21 / f"videos/chunk-000/{camera}/episode_{episode:06d}.mp4",
+                    clips / camera / f"episode_{episode:06d}.mp4",
                     episode,
                     camera,
                     signals[episode],
@@ -79,10 +75,7 @@ def generate_demo(output: Path | None = None) -> list[Path]:
         for camera in _CAMERAS:
             global_stats[camera] = _aggregate_video_stats(episode_stats, camera)
             _concat_videos(
-                [
-                    v21 / f"videos/chunk-000/{camera}/episode_{episode:06d}.mp4"
-                    for episode in range(_EPISODES)
-                ],
+                [clips / camera / f"episode_{episode:06d}.mp4" for episode in range(_EPISODES)],
                 v30 / f"videos/{camera}/chunk-000/file-000.mp4",
             )
         _write_table(v30 / "data/chunk-000/file-000.parquet", _table(global_signals))
@@ -110,28 +103,14 @@ def generate_demo(output: Path | None = None) -> list[Path]:
                 for statistic, value in statistics.items():
                     metadata[f"stats/{key}/{statistic}"] = value
             packed_episodes.append(metadata)
-        _write_jsonl(v21 / "meta/episodes.jsonl", summaries)
-        _write_jsonl(
-            v21 / "meta/episodes_stats.jsonl",
-            [
-                {"episode_index": episode, "stats": statistics}
-                for episode, statistics in enumerate(episode_stats)
-            ],
-        )
         _write_table(
             v30 / "meta/episodes/chunk-000/file-000.parquet", pa.Table.from_pylist(packed_episodes)
         )
-        task_records = [
-            {"task_index": episode, "task": task} for episode, task in enumerate(_TASKS)
-        ]
-        for root, version in ((v21, "v2.1"), (v30, "v3.0")):
-            _write_json(root / "meta/info.json", _info(version))
-            _write_json(root / "meta/stats.json", global_stats)
-            _write_jsonl(root / "meta/tasks.jsonl", task_records)
-            (root / _MARKER).write_text(_MARKER_TEXT)
-        # Current LeRobot v3 releases use tasks.parquet; keep JSONL for older v3 readers too.
+        _write_json(v30 / "meta/info.json", _info())
+        _write_json(v30 / "meta/stats.json", global_stats)
+        (v30 / _MARKER).write_text(_MARKER_TEXT)
         _write_table(v30 / "meta/tasks.parquet", _tasks_table())
-        for source, target in zip((v21, v30), targets, strict=True):
+        for source, target in zip((v30,), targets, strict=True):
             if target.exists():
                 shutil.rmtree(target)
             source.rename(target)
@@ -140,7 +119,9 @@ def generate_demo(output: Path | None = None) -> list[Path]:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, help="Parent directory for both generated datasets")
+    parser.add_argument(
+        "--output", type=Path, help="Parent directory for the generated v3 MP4 dataset"
+    )
     arguments = parser.parse_args()
     for dataset in generate_demo(arguments.output):
         print(f"Created {dataset} (3 episodes, 540 frames, 2 H264 cameras)")

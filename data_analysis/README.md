@@ -7,13 +7,7 @@
 1. 数据集质量检查
 2. 基于大模型的视频 CoT 分析
 
-## Legacy ASR 脚本
-
-`convert_audio_dataset_to_asr.py` 和 `convert_audio_dataset_to_asr_qwen.py` 仅保留历史代码。
-当前项目环境不支持 ASR，不安装 Qwen3-ASR 依赖，也不提供 Transformers / Hub 兼容补丁。
-使用这些脚本需要自行配置独立的 legacy 环境。
-
----
+仅处理 LeRobot v3 MP4 数据集；存储约定与整理结果见 [v3 MP4 说明](../LEROBOT_V3_MP4.md)。
 
 ## 视频 CoT 分析
 
@@ -140,7 +134,7 @@ uv run data_analysis/check_dataset_quality.py \
 
 ```
 ============================================================
-LeRobot 数据集质量检查
+LeRobot v3 MP4 数据集质量检查
 ============================================================
 数据集路径: data/dataset/franka_droid_lerobot_20260130_161202
 输出目录: data_analysis/quality_reports

@@ -58,27 +58,31 @@ def start(payload: StartOperation, registry: Registry, manager: Manager):
         index = max(indices)
         if payload.episode_index is not None and payload.episode_index != index:
             raise ReplayError(409, "最后保存的 episode 已变化，请刷新数据后重新确认。")
-        command = manager.command("replay", [
-            "--dataset",
-            str(root),
-            "--episode-index",
-            str(index),
-        ])
+        command = manager.command(
+            "replay",
+            [
+                "--dataset",
+                str(root),
+                "--episode-index",
+                str(index),
+            ],
+        )
     else:
         index = payload.episode_index
         if index is None or index not in indices:
             raise ReplayError(404, "待删除的 episode 不存在。")
-        if detail.version not in ("v2.0", "v2.1", "v3.0"):
-            raise ReplayError(
-                422, "删除仅支持 LeRobot v2/v3 数据集。"
-            )
-        command = manager.command("delete", [
-            "--dataset",
-            str(root),
-            "--episode-index",
-            str(index),
-            "--yes",
-        ])
+        if detail.version != "v3.0":
+            raise ReplayError(422, "删除仅支持 LeRobot v3 MP4 数据集。")
+        command = manager.command(
+            "delete",
+            [
+                "--dataset",
+                str(root),
+                "--episode-index",
+                str(index),
+                "--yes",
+            ],
+        )
     return manager.start(payload.kind, command, dataset_id=payload.dataset_id, episode_index=index)
 
 

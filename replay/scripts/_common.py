@@ -1,7 +1,6 @@
 """Shared, private metadata and path validation for the four reader entry points.
 
-Layouts follow the upstream v0.3.3 (v2.1) and v3 dataset metadata:
-https://github.com/huggingface/lerobot/blob/v0.3.3/src/lerobot/datasets/utils.py
+LeRobot v3 Parquet metadata and shared MP4 video files:
 https://github.com/huggingface/lerobot/blob/main/src/lerobot/datasets/dataset_metadata.py
 """
 
@@ -27,12 +26,10 @@ _EE_KEYS = {
     "ee_position",
     "observation.ee_position",
 }
-_V2_DATA = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
-_V2_VIDEO = "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
 _V3_DATA = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
 _V3_VIDEO = "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
 _V3_EPISODES = "meta/episodes/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
-_PATH_FIELDS = {"episode_chunk", "episode_index", "chunk_index", "file_index", "video_key"}
+_PATH_FIELDS = {"chunk_index", "file_index", "video_key"}
 
 
 class MissingDatasetFile(ValueError):
@@ -108,14 +105,14 @@ def _feature_blocks(info: dict) -> list[dict]:
             raise ValueError(f"Malformed feature schema: {key}")
         if not shape or any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in shape):
             raise ValueError(f"Invalid feature shape: {key}")
-        # Older image datasets used a names dictionary; do not hide their fields.
+        # Converted datasets retain their original feature label dictionaries.
         if isinstance(names, dict):
             names = next((v for v in names.values() if isinstance(v, list)), None)
         if names is not None and (
             not isinstance(names, list) or not all(isinstance(v, str) for v in names)
         ):
             raise ValueError(f"Invalid feature names: {key}")
-        kind = "video" if dtype == "video" else "image" if dtype == "image" else "unsupported"
+        kind = "video" if dtype == "video" else "unsupported"
         if (
             dtype.startswith(("float", "int"))
             and len(shape) == 1
@@ -160,59 +157,50 @@ def _load_metadata(root: Path) -> tuple[dict, dict[int, dict]]:
     if not isinstance(info, dict):
         raise ValueError("Dataset info must be an object")
     version = info.get("codebase_version")
-    if version not in {"v2.0", "v2.1", "v3.0"}:
-        raise ValueError("Supported dataset versions are v2.0, v2.1 and v3.0")
+    if version != "v3.0":
+        raise ValueError("Only LeRobot v3.0 with MP4 video features is supported")
     _finite_number(info.get("fps"), "fps", positive=True)
     _integer(info.get("total_episodes"), "total_episodes")
     _integer(info.get("total_frames"), "total_frames")
     if not isinstance(info.get("features"), dict):
         raise ValueError("Dataset features must be an object")
     _feature_blocks(info)
+    if any(feature.get("dtype") == "image" for feature in info["features"].values()):
+        raise ValueError("Embedded image features are unsupported; use MP4 video features")
     _integer(info.get("chunks_size", 1000), "chunks_size", minimum=1)
     if info.get("storage_format") not in (None, "lerobot"):
         raise ValueError("Only the Parquet/MP4 LeRobot storage format is supported")
 
-    if version.startswith("v2."):
-        path = _safe_path(root, "meta/episodes.jsonl")
-        try:
-            records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
-            raise ValueError("Malformed episode JSONL metadata") from exc
-    else:
-        template = info.get("episodes_path", _V3_EPISODES)
-        parts = _template_parts(template)
-        if any(
-            field is not None and field not in {"chunk_index", "file_index"}
-            for _, field, _, _ in parts
-        ):
-            raise ValueError("Episode metadata template requires chunk/file indices")
-        pattern = "".join(
-            literal + ("*" if field is not None else "") for literal, field, _, _ in parts
-        )
-        _safe_path(root, pattern, require_file=False)
-        files = sorted(root.glob(pattern))
-        if not files and info["total_episodes"]:
-            raise MissingDatasetFile("Dataset file not found: episode metadata parquet")
-        records = []
-        for path in files:
-            safe = _safe_path(root, path.relative_to(root))
-            file_records = _read_parquet(safe).to_pylist()
-            for record in file_records:
-                # Upstream records identify the metadata shard as well as data/video shards.
-                if any(
-                    key in record
-                    for key in ("meta/episodes/chunk_index", "meta/episodes/file_index")
-                ):
-                    chunk = _integer(record.get("meta/episodes/chunk_index"), "metadata chunk")
-                    file = _integer(record.get("meta/episodes/file_index"), "metadata file")
-                    expected = _format_path(
-                        root, template, chunk_index=chunk, file_index=file, require_file=False
-                    )
-                    if expected != safe:
-                        raise ValueError(
-                            "Episode metadata chunk/file indices disagree with its path"
-                        )
-            records.extend(file_records)
+    template = info.get("episodes_path", _V3_EPISODES)
+    parts = _template_parts(template)
+    if any(
+        field is not None and field not in {"chunk_index", "file_index"} for _, field, _, _ in parts
+    ):
+        raise ValueError("Episode metadata template requires chunk/file indices")
+    pattern = "".join(
+        literal + ("*" if field is not None else "") for literal, field, _, _ in parts
+    )
+    _safe_path(root, pattern, require_file=False)
+    files = sorted(root.glob(pattern))
+    if not files and info["total_episodes"]:
+        raise MissingDatasetFile("Dataset file not found: episode metadata parquet")
+    records = []
+    for path in files:
+        safe = _safe_path(root, path.relative_to(root))
+        file_records = _read_parquet(safe).to_pylist()
+        for record in file_records:
+            # Upstream records identify the metadata shard as well as data/video shards.
+            if any(
+                key in record for key in ("meta/episodes/chunk_index", "meta/episodes/file_index")
+            ):
+                chunk = _integer(record.get("meta/episodes/chunk_index"), "metadata chunk")
+                file = _integer(record.get("meta/episodes/file_index"), "metadata file")
+                expected = _format_path(
+                    root, template, chunk_index=chunk, file_index=file, require_file=False
+                )
+                if expected != safe:
+                    raise ValueError("Episode metadata chunk/file indices disagree with its path")
+        records.extend(file_records)
 
     episodes = {}
     for record in records:
@@ -225,13 +213,12 @@ def _load_metadata(root: Path) -> tuple[dict, dict[int, dict]]:
         tasks = record.get("tasks", [])
         if not isinstance(tasks, list) or not all(isinstance(task, str) for task in tasks):
             raise ValueError("Episode tasks must be a list of strings")
-        if version == "v3.0":
-            _integer(record.get("data/chunk_index"), "data chunk")
-            _integer(record.get("data/file_index"), "data file")
-            first = _integer(record.get("dataset_from_index"), "dataset_from_index")
-            last = _integer(record.get("dataset_to_index"), "dataset_to_index")
-            if last - first != record["length"]:
-                raise ValueError("Episode length disagrees with dataset index boundaries")
+        _integer(record.get("data/chunk_index"), "data chunk")
+        _integer(record.get("data/file_index"), "data file")
+        first = _integer(record.get("dataset_from_index"), "dataset_from_index")
+        last = _integer(record.get("dataset_to_index"), "dataset_to_index")
+        if last - first != record["length"]:
+            raise ValueError("Episode length disagrees with dataset index boundaries")
         episodes[index] = record
     if len(episodes) != info["total_episodes"]:
         raise ValueError("Episode count disagrees with info.json")
@@ -257,21 +244,12 @@ def _episode_summary(info: dict, episode: dict) -> dict:
 
 
 def _episode_data_path(root: Path, info: dict, episode: dict) -> Path:
-    index = episode["episode_index"]
-    if info["codebase_version"].startswith("v2."):
-        path = _format_path(
-            root,
-            info.get("data_path", _V2_DATA),
-            episode_index=index,
-            episode_chunk=index // info.get("chunks_size", 1000),
-        )
-    else:
-        path = _format_path(
-            root,
-            info.get("data_path", _V3_DATA),
-            chunk_index=episode["data/chunk_index"],
-            file_index=episode["data/file_index"],
-        )
+    path = _format_path(
+        root,
+        info.get("data_path", _V3_DATA),
+        chunk_index=episode["data/chunk_index"],
+        file_index=episode["data/file_index"],
+    )
     return path
 
 
@@ -303,7 +281,7 @@ def _episode_table(root: Path, info: dict, episode: dict, feature: str) -> pa.Ta
             raise ValueError("Malformed frame_index column") from exc
         if table["frame_index"].to_pylist() != list(range(table.num_rows)):
             raise ValueError("Episode frame_index values must be unique and contiguous")
-    if info["codebase_version"] == "v3.0" and "index" in columns:
+    if "index" in columns:
         if table["index"].to_pylist() != list(
             range(episode["dataset_from_index"], episode["dataset_to_index"])
         ):

@@ -53,6 +53,8 @@ def validate(config):
         raise ValueError("control.mode must be ee; action fields select saved joint/ee labels")
     if config.get("dataset", {}).get("action_space", "joint") not in ("joint", "ee"):
         raise ValueError("dataset.action_space must be joint or ee")
+    if "image_storage" in config.get("dataset", {}):
+        raise ValueError("dataset.image_storage was removed; camera features always use MP4")
     if "fields" in config.get("dataset", {}):
         raise ValueError("dataset.fields was replaced by observation/action mappings")
     features(
@@ -62,6 +64,12 @@ def validate(config):
         config.get("observation"),
         config.get("action"),
     )
+    if "video_encoder" in config.get("dataset", {}):
+        from lerobot.configs import RGBEncoderConfig
+
+        RGBEncoderConfig(**config["dataset"]["video_encoder"])
+    if not float(config.get("camera", {}).get("fps", 30)).is_integer():
+        raise ValueError("Video recording requires an integer camera.fps with this LeRobot version")
     if config.get("gripper", {}).get("type", "franka") not in ("franka", "dh5", "none"):
         raise ValueError("gripper.type must be franka, dh5 or none")
     for section, key, default in [
@@ -75,7 +83,11 @@ def validate(config):
     if inference is not None:
         model_horizon = inference.get("model_horizon")
         execute_steps = inference.get("execute_steps")
-        if isinstance(model_horizon, bool) or not isinstance(model_horizon, int) or model_horizon <= 0:
+        if (
+            isinstance(model_horizon, bool)
+            or not isinstance(model_horizon, int)
+            or model_horizon <= 0
+        ):
             raise ValueError("inference.model_horizon must be a positive integer")
         if (
             isinstance(execute_steps, bool)

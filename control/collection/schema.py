@@ -49,7 +49,7 @@ def features(image_hw, action_space, tactile, observation=None, action=None):
                 continue
             result[f"{group}.{key}"] = (
                 {
-                    "dtype": "image",
+                    "dtype": "video",
                     "shape": (image_hw, image_hw, 3),
                     "names": ["height", "width", "channel"],
                 }

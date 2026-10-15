@@ -109,37 +109,16 @@ LeRobot 自动生成的 `timestamp`、`frame_index`、`episode_index`、`index`�
 音频 WAV 和音频元数据继续由 `audio.enabled` 控制，当前配置为 16 kHz 单声道。
 新旧字段格式不同，需更换 `dataset.date` 或数据目录。续采校验会拒绝混用 schema。
 
-## Legacy ASR 脚本
+## 数据存储
 
-当前仓库不再提供需要 ASR 的功能，不安装 `qwen-asr`，也不覆盖 Transformers / Hugging Face Hub 的依赖约束。
-音频采集、VAD、回放和已有标注的保留仍可使用。
+采集、训练读取、回放、合并和删除统一使用 **LeRobot v3 + MP4**。相机字段固定为
+`dtype: video`，不再提供图像内嵌选项或旧格式迁移入口。视频参数在
+`config/train/panda.yaml` 的 `dataset.video_encoder` 配置，默认 H.264、CRF 18、GOP 2、fast。
 
-以下脚本仅作为 legacy 历史代码保留，当前项目环境不支持运行；使用需要自行配置独立的 legacy 环境：
+现有数据仅保留 `data/dataset/*_v3_mp4`，音频、同步记录和动作轨迹随数据集保留。
+整理范围、保留数据清单和此前性能对比统一见 [v3 MP4 说明](LEROBOT_V3_MP4.md)。
 
-- `data_analysis/convert_audio_dataset_to_asr.py`（Whisper 转写）
-- `data_analysis/convert_audio_dataset_to_asr_qwen.py`（Qwen3-ASR 转写）
-- `scripts/precompute_instruction_features.py`（依赖外部 openpi 和 ASR 模型的音频特征提取）
-
-## 旧数据
-
-旧 v2.0/v2.1 数据仍可在回放页面读取和删除。新版 LeRobot 续采要求 v3.0；可以换 `dataset.date` 创建新数据集，
-或者将旧 **v2.1** 数据转换到新目录后使用（转换保留原数据和音频/同步/轨迹 sidecar）：
-
-```bash
-uv run python -m scripts.migrate_lerobot_dataset \
-  --input data/dataset/old_dataset \
-  --output data/dataset/new_dataset
-```
-
-v2.1 与 v3.0 均支持质量检查和同格式数据合并。
-v3 删除直接用 LeRobot 官方数据工具从原目录生成待提交结果，不再预先完整复制数据集；
-保留的音频、同步文件、VAD/ASR 标注和轨迹会复制并重排编号，通过校验后原子交换目录。
-v2 删除仍在完整副本上执行。两种格式都保留删除锁和提交前的并发变更检查。
-前后读写性能的测试口径与结果见 [LeRobot 生命周期基准](benchmarks/README.md)。
-转换和合并不会上传到 Hub。真实机器人、相机和麦克风仍需在设备上验证。
-
-上游依据：[LeRobot 0.6.1](https://github.com/huggingface/lerobot/releases/tag/v0.6.1)、
-[Python 与依赖要求](https://github.com/huggingface/lerobot/blob/v0.6.1/pyproject.toml)。
+音频采集、VAD、回放和已有标注仍可使用；旧 ASR 数据转换脚本已删除。
 
 ## 推理工作区
 

@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,7 +15,6 @@ from control.robotic_arm_controller import RoboticArmControler
 from replay.backend.errors import ReplayError
 from replay.backend.main import create_app
 from replay.backend.operations import OperationManager
-from replay.scripts.read_dataset import read_dataset
 from replay.scripts.replay_robot import load_trajectory, replay_trajectory
 
 
@@ -116,11 +114,14 @@ def test_api_uses_fixed_commands_and_latest_episode(demo_root):
         assert started.json()["kind"] == "inference"
         assert manager.last_command == ["uv", "run", "python", "-m", "inference", "--record"]
         wait_finished(manager)
-        assert client.post(
-            "/api/operations", json={"kind": "inference", "dataset_id": "demo_v21"}
-        ).status_code == 422
+        assert (
+            client.post(
+                "/api/operations", json={"kind": "inference", "dataset_id": "demo_v30"}
+            ).status_code
+            == 422
+        )
         response = client.post(
-            "/api/operations", json={"kind": "replay", "dataset_id": "demo_v21", "episode_index": 2}
+            "/api/operations", json={"kind": "replay", "dataset_id": "demo_v30", "episode_index": 2}
         )
         assert response.status_code == 202
         assert response.json()["episode_index"] == 2
@@ -128,7 +129,7 @@ def test_api_uses_fixed_commands_and_latest_episode(demo_root):
         assert manager.last_command[-2:] == ["--episode-index", "2"]
         wait_finished(manager)
         stale = client.post(
-            "/api/operations", json={"kind": "replay", "dataset_id": "demo_v21", "episode_index": 0}
+            "/api/operations", json={"kind": "replay", "dataset_id": "demo_v30", "episode_index": 0}
         )
         assert stale.status_code == 409
         assert (
@@ -147,13 +148,13 @@ def test_api_uses_fixed_commands_and_latest_episode(demo_root):
         assert (
             client.post(
                 "/api/operations",
-                json={"kind": "delete", "dataset_id": "demo_v21", "episode_index": 100},
+                json={"kind": "delete", "dataset_id": "demo_v30", "episode_index": 100},
             ).status_code
             == 404
         )
         assert (
             client.post(
-                "/api/operations", json={"kind": "replay", "dataset_id": "../demo_v21"}
+                "/api/operations", json={"kind": "replay", "dataset_id": "../demo_v30"}
             ).status_code
             == 404
         )
@@ -173,63 +174,6 @@ def test_api_uses_fixed_commands_and_latest_episode(demo_root):
         )
 
 
-@pytest.mark.parametrize("custom_video_path", [False, True])
-def test_delete_middle_episode_and_new_sidecars(copy_dataset, custom_video_path):
-    root = copy_dataset()
-    if custom_video_path:
-        info_path = root / "meta/info.json"
-        info = json.loads(info_path.read_text())
-        info["video_path"] = "clips/{video_key}/clip_{episode_index:06d}.mp4"
-        info["total_videos"] = 6
-        for key, feature in info["features"].items():
-            if feature["dtype"] != "video":
-                continue
-            for index in range(3):
-                destination = root / f"clips/{key}/clip_{index:06d}.mp4"
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                (root / f"videos/chunk-000/{key}/episode_{index:06d}.mp4").rename(destination)
-        info_path.write_text(json.dumps(info))
-    (root / "audio").mkdir()
-    for index in range(3):
-        stem = f"episode_{index:06d}"
-        (root / f"{stem}.actions.jsonl").write_text(json.dumps({"marker": index}) + "\n")
-        (root / f"{stem}.sync.json").write_text(
-            json.dumps({"episode_index": index, "action_trace": f"{stem}.actions.jsonl"})
-        )
-        (root / "audio" / f"{stem}.wav").write_bytes(bytes([index]))
-        (root / "audio" / f"{stem}.audio.json").write_text(
-            json.dumps({"audio_path": str(root / "audio" / f"{stem}.wav")})
-        )
-    original = pq.read_table(root / "data/chunk-000/episode_000002.parquet")
-    assert EpisodeDeleter(root).preview_episode(1).dry_run
-    assert read_dataset(root)["total_episodes"] == 3
-    assert not EpisodeDeleter(root).delete_episode(1).dry_run
-    detail = read_dataset(root)
-    assert detail["total_episodes"] == 2 and detail["total_frames"] == 360
-    if custom_video_path:
-        info = json.loads((root / "meta/info.json").read_text())
-        assert info["total_videos"] == 4
-        assert (root / "clips/wrist_image_left/clip_000001.mp4").is_file()
-        assert not (root / "clips/wrist_image_left/clip_000002.mp4").exists()
-    shifted = pq.read_table(root / "data/chunk-000/episode_000001.parquet")
-    assert shifted["episode_index"].to_pylist() == [1] * 180
-    assert shifted["index"].to_pylist() == list(range(180, 360))
-    assert shifted["ee_pose"].equals(original["ee_pose"])
-    assert json.loads((root / "episode_000001.actions.jsonl").read_text())["marker"] == 2
-    sync = json.loads((root / "episode_000001.sync.json").read_text())
-    assert sync["episode_index"] == 1 and sync["action_trace"] == "episode_000001.actions.jsonl"
-    assert "audio_path" not in sync
-    assert not (root / "episode_000002.actions.jsonl").exists()
-    assert not (root / "episode_000002.sync.json").exists()
-    assert (root / "audio/episode_000001.wav").read_bytes() == b"\x02"
-    stats = json.loads((root / "meta/stats.json").read_text())
-    assert stats["index"]["max"] == [359]
-    assert stats["index"]["count"] == [360]
-    assert not EpisodeDeleter(root).delete_episode(1).dry_run
-    assert not EpisodeDeleter(root).delete_episode(0).dry_run
-    assert read_dataset(root)["total_episodes"] == 0
-
-
 def test_delete_without_audio_and_reject_bad_inputs_before_writes(copy_dataset):
     root = copy_dataset()
     (root / "episode_000001.actions.jsonl").write_text("{}\n")
@@ -240,7 +184,7 @@ def test_delete_without_audio_and_reject_bad_inputs_before_writes(copy_dataset):
     original_info = (root / "meta/info.json").read_bytes()
     with pytest.raises(Exception):
         EpisodeDeleter(root).delete_episode(0)
-    assert (root / "data/chunk-000/episode_000000.parquet").exists()
+    assert (root / "data/chunk-000/file-000.parquet").exists()
     assert (root / "meta/info.json").read_bytes() == original_info
 
 
@@ -259,8 +203,8 @@ def test_delete_rejects_symlink_and_path_escape(copy_dataset, tmp_path):
     assert (root / "data/chunk-000/episode_000001.parquet").exists()
 
 
-def test_replay_loads_both_versions_and_preserves_pose(demo_root):
-    for dataset in ("demo_v21", "demo_v30"):
+def test_replay_loads_v3_and_preserves_pose(demo_root):
+    for dataset in ("demo_v30",):
         index, points = load_trajectory(demo_root / dataset)
         assert index == 2 and len(points) == 180
         assert points[0]["time_s"] == 0
@@ -297,7 +241,7 @@ def test_replay_prefers_trace_and_executes_gripper_with_fake_arm(copy_dataset):
         load_trajectory(root)
 
 
-@pytest.mark.parametrize("dataset_id", ["demo_v21", "demo_v30"])
+@pytest.mark.parametrize("dataset_id", ["demo_v30"])
 def test_delete_api_runs_public_deleter_on_temporary_copy(copy_dataset, tmp_path, dataset_id):
     root = copy_dataset(dataset_id)
 

@@ -150,17 +150,17 @@ try {
     assert.equal(last.state, 'succeeded', JSON.stringify(last))
     return last
   }
-  for (const dataset of ['demo_v21', 'demo_v30']) {
+  for (const dataset of ['demo_v30']) {
     await page.getByTestId('dataset-select').selectOption(dataset)
     await expect(page.getByTestId('episode-select')).toBeEnabled()
-    await page.getByTestId('episode-select').selectOption(dataset === 'demo_v30' ? '1' : '0')
+    await page.getByTestId('episode-select').selectOption('1')
     await expect(page.getByTestId('data-block-ee_pose')).toBeVisible()
     await page.getByTestId('data-block-exterior_image_1_left').getByRole('button').click()
     await page.getByTestId('data-block-ee_pose').getByRole('button').click()
     const video = page.getByTestId('visualization-exterior_image_1_left').locator('video')
     await expect.poll(() => video.evaluate((v) => v.readyState), { timeout: 30_000 }).toBeGreaterThanOrEqual(2)
     assert.ok(await video.evaluate((v) => v.videoWidth > 0))
-    const meta = await request(`/api/datasets/${dataset}/episodes/${dataset === 'demo_v30' ? 1 : 0}/video?feature=exterior_image_1_left`)
+    const meta = await request(`/api/datasets/${dataset}/episodes/${1}/video?feature=exterior_image_1_left`)
     await page.getByTestId('timeline-slider').fill('2.5')
     await expect.poll(() => video.evaluate((v, target) => Math.abs(v.currentTime - target), meta.start_time_s + 2.5)).toBeLessThan(0.15)
     await page.getByTestId('play-toggle').click()
@@ -169,10 +169,6 @@ try {
     passed(`${dataset}: video decoding, seek, playback and EE view`)
   }
   await page.screenshot({ path: join(results, 'electron-workbench.png'), fullPage: true })
-  const renderedImage = await request('/api/datasets/demo_z_images/episodes/0/video?feature=camera_png')
-  assert.ok(renderedImage.duration_s > 0)
-  passed('image dataset converts to a playable cached video')
-
   await page.getByRole('button', { name: '开启采集', exact: true }).click()
   await page.getByRole('button', { name: '确认开启采集', exact: true }).click()
   await expect.poll(async () => (await request('/api/operations')).operation?.kind).toBe('collect')
@@ -181,10 +177,10 @@ try {
   assert.ok((await request('/api/datasets')).datasets.some((d) => d.id === 'desktop_smoke'))
   passed('UI starts compiled synthetic collection and saves a v3 dataset')
 
-  const replay = await request('/api/operations', 'POST', { kind: 'replay', dataset_id: 'demo_v21', episode_index: 2 })
+  const replay = await request('/api/operations', 'POST', { kind: 'replay', dataset_id: 'demo_v30', episode_index: 2 })
   await finished(replay.id)
   passed('compiled robot replay completes with the simulated arm')
-  for (const dataset of ['demo_v21', 'demo_v30']) {
+  for (const dataset of ['demo_v30']) {
     const deleted = await request('/api/operations', 'POST', { kind: 'delete', dataset_id: dataset, episode_index: 1 })
     await finished(deleted.id)
     const detail = await request(`/api/datasets/${dataset}`)
@@ -199,7 +195,7 @@ try {
   passed('renderer has no console or JavaScript errors')
 
   // Close while a real compiled task is active; the desktop must wait for it.
-  const active = await request('/api/operations', 'POST', { kind: 'replay', dataset_id: 'demo_v21', episode_index: 1 })
+  const active = await request('/api/operations', 'POST', { kind: 'replay', dataset_id: 'demo_v30', episode_index: 1 })
   assert.equal(active.state, 'running')
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
   await application.waitForEvent('close', { timeout: 60_000 })

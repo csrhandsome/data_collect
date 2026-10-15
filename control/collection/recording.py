@@ -251,7 +251,9 @@ class EpisodeRecorder:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(sync, indent=2, ensure_ascii=False))
-        self.dataset.save_episode()
+        # The recorder owns live camera/image-writer threads. Forking encoder
+        # processes here can inherit locked native libraries and deadlock.
+        self.dataset.save_episode(parallel_encoding=False)
         self.active = False
         self.records = []
         if publish:
@@ -278,12 +280,8 @@ class EpisodeRecorder:
             self._finalize_dataset()
 
     def _finalize_dataset(self):
-        from control.util.lerobot_metadata import normalize_episode_metadata
 
         self.dataset.finalize()
-        # Historical v2 conversions lack modern quantile columns. Normalize
-        # after sealing a session so readers can load old and new shards together.
-        normalize_episode_metadata(self.root)
 
     def close(self):
         if self._closed:

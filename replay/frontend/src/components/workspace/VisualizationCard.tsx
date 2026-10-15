@@ -115,7 +115,7 @@ export function VisualizationCard(props: VisualizationCardProps) {
       <header className="flex items-center gap-3 border-b border-foreground px-4 py-3 [&>div]:min-w-0 [&>div]:flex-1 [&_h3]:text-base [&_h3]:font-semibold [&_code]:block [&_code]:truncate [&_code]:text-[10px] [&_code]:text-muted-foreground">
         <span className="flex size-8 shrink-0 items-center justify-center border border-current">
           <Icon
-            name={feature.kind === 'video' || feature.kind === 'image' ? 'video' : 'trajectory'}
+            name={feature.kind === 'video' ? 'video' : 'trajectory'}
             size={17}
           />
         </span>
@@ -135,7 +135,7 @@ export function VisualizationCard(props: VisualizationCardProps) {
           <Icon name="close" size={16} />
         </button>
       </header>
-      {feature.kind === 'video' || feature.kind === 'image' ? (
+      {feature.kind === 'video' ? (
         <VideoContent {...props} />
       ) : feature.kind === 'ee' ? (
         <EEContent {...props} />

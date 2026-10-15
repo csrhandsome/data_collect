@@ -114,7 +114,7 @@ export function ReplayPage() {
     ) {
       const blocks = episode.data.blocks
       const cameras = blocks.filter(
-        (feature) => feature.kind === 'video' || feature.kind === 'image',
+        (feature) => feature.kind === 'video',
       )
       const ee = blocks.find((feature) => feature.kind === 'ee')
       setWorkspace({ selectionKey, features: [...cameras, ...(ee ? [ee] : [])] })
@@ -173,7 +173,7 @@ export function ReplayPage() {
 
   function addDefaults() {
     const blocks = episode.data?.blocks || []
-    const video = blocks.find((feature) => feature.kind === 'video' || feature.kind === 'image')
+    const video = blocks.find((feature) => feature.kind === 'video')
     const ee = blocks.find((feature) => feature.kind === 'ee')
     if (video) addFeature(video)
     if (ee) addFeature(ee)
@@ -413,7 +413,7 @@ export function ReplayPage() {
         <div className="flex h-10 min-w-0 items-center gap-5 px-5 md:px-6 xl:px-8 [&>span:first-child]:flex [&>span:first-child]:items-center [&>span:first-child]:gap-2 [&>span:nth-child(2)]:hidden [&>span:nth-child(2)]:xl:block [&>code]:ml-auto [&>code]:tracking-widest">
           <span>
             <span className="inline-block size-1.5 shrink-0 bg-current" />
-            LeRobot v2 / v3
+            LeRobot v3 · MP4
           </span>
           <span>
             图像 · 音频 · 状态曲线<span className="px-3">/</span>

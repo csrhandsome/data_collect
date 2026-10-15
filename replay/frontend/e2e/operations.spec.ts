@@ -64,7 +64,7 @@ async function mockOperations(page: Page, deferStop = false) {
   }
 }
 
-async function openDataset(page: Page, dataset = 'demo_v21', episode = 0) {
+async function openDataset(page: Page, dataset = 'demo_v30', episode = 0) {
   await page.goto(`/replay?dataset=${dataset}&episode=${episode}`)
   await expect(page.getByRole('button', { name: '开启采集', exact: true })).toBeEnabled()
   await expect(page.getByTestId('episode-select')).toBeEnabled()
@@ -100,7 +100,7 @@ test('real replay selects last saved episode even when viewing the first', async
   await page.getByRole('button', { name: '真机回放上一次' }).click()
   await expect(page.getByRole('dialog')).toContainText('Episode 002')
   await page.getByRole('button', { name: '确认真机回放' }).click()
-  expect(fake.requests).toEqual([{ kind: 'replay', dataset_id: 'demo_v21', episode_index: 2 }])
+  expect(fake.requests).toEqual([{ kind: 'replay', dataset_id: 'demo_v30', episode_index: 2 }])
   await expect(page.getByTestId('operation-status')).toContainText('真机回放 · 运行中')
 })
 
@@ -110,7 +110,7 @@ test('delete confirms selected episode, waits and refreshes the renumbered list'
   const fake = await mockOperations(page)
   let deleted = false
   let refreshed = false
-  await page.route('**/api/datasets/demo_v21', async (route) => {
+  await page.route('**/api/datasets/demo_v30', async (route) => {
     const response = await route.fetch()
     const data = await response.json()
     if (deleted) {
@@ -121,13 +121,13 @@ test('delete confirms selected episode, waits and refreshes the renumbered list'
     }
     await route.fulfill({ response, json: data })
   })
-  await openDataset(page, 'demo_v21', 1)
+  await openDataset(page, 'demo_v30', 1)
   await page.getByText('更多操作', { exact: true }).click()
   await page.getByRole('button', { name: '删除当前片段' }).click()
   await expect(page.getByRole('dialog')).toContainText('Episode 001')
   await expect(page.getByRole('dialog')).toContainText('无法撤销')
   await page.getByRole('button', { name: '确认删除', exact: true }).click()
-  expect(fake.requests).toEqual([{ kind: 'delete', dataset_id: 'demo_v21', episode_index: 1 }])
+  expect(fake.requests).toEqual([{ kind: 'delete', dataset_id: 'demo_v30', episode_index: 1 }])
   await expect(page.getByTestId('operation-status')).toContainText('删除片段 · 运行中')
   await expect(page.getByRole('button', { name: '停止任务' })).toHaveCount(0)
   deleted = true
@@ -189,7 +189,7 @@ test('inference stops, waits for reset, then opens and labels its own saved epis
       page.getByTestId('episode-annotation').getByRole('button', { name: '失败', exact: true }),
     ).toBeDisabled()
 
-    await cp(join(demoRoot, 'demo_v21'), root, { recursive: true })
+    await cp(join(demoRoot, 'demo_v30'), root, { recursive: true })
     const sync = join(root, 'episode_000002.sync.json')
     const savedAt = Date.now() * 1_000_000
     await writeFile(

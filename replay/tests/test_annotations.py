@@ -12,7 +12,7 @@ from replay.backend.operations import Operation, OperationManager
 from replay.scripts.read_sidecars import update_sync
 
 
-@pytest.mark.parametrize("name", ["demo_v21", "demo_v30"])
+@pytest.mark.parametrize("name", ["demo_v30"])
 @pytest.mark.parametrize("folder", ["", "audio"])
 def test_annotation_preserves_episode_and_sidecar(copy_dataset, name, folder):
     root = copy_dataset(name)
@@ -66,7 +66,7 @@ def test_annotation_preserves_episode_and_sidecar(copy_dataset, name, folder):
 def test_legacy_episode_without_sidecar_can_be_annotated(copy_dataset):
     root = copy_dataset()
     with TestClient(create_app(root)) as client:
-        prefix = "/api/datasets/demo_v21/episodes/0"
+        prefix = "/api/datasets/demo_v30/episodes/0"
         assert client.get(prefix).json()["success"] is None
         assert client.get("/api/datasets/latest-episode").json() == {"episode": None}
         assert client.post(f"{prefix}/annotation", json={"success": False}).status_code == 200
@@ -84,7 +84,7 @@ def test_legacy_episode_without_sidecar_can_be_annotated(copy_dataset):
 def test_annotation_requires_explicit_boolean_or_null(copy_dataset, payload):
     root = copy_dataset()
     with TestClient(create_app(root)) as client:
-        response = client.post("/api/datasets/demo_v21/episodes/0/annotation", json=payload)
+        response = client.post("/api/datasets/demo_v30/episodes/0/annotation", json=payload)
         assert response.status_code == 422
     assert not list(root.rglob("*.sync.json"))
 
@@ -93,7 +93,7 @@ def test_unknown_episode_origin_and_stale_episode_are_rejected(copy_dataset):
     root = copy_dataset()
     update_sync(root, 0, {"saved_at_ns": 123, "success": None})
     with TestClient(create_app(root)) as client:
-        prefix = "/api/datasets/demo_v21/episodes"
+        prefix = "/api/datasets/demo_v30/episodes"
         assert client.post(f"{prefix}/99/annotation", json={"success": True}).status_code == 404
         assert (
             client.post(
@@ -123,7 +123,7 @@ def test_sidecar_symlink_cannot_be_written(copy_dataset, tmp_path: Path):
     (root / "episode_000000.sync.json").symlink_to(outside)
     with TestClient(create_app(root)) as client:
         response = client.post(
-            "/api/datasets/demo_v21/episodes/0/annotation", json={"success": True}
+            "/api/datasets/demo_v30/episodes/0/annotation", json={"success": True}
         )
         assert response.status_code == 422
         assert str(tmp_path) not in response.text
@@ -136,7 +136,7 @@ def test_annotation_waits_for_deletion(copy_dataset):
     manager._operation = Operation(id="deleting", kind="delete", state="running", started_at="now")
     with TestClient(create_app(root, manager)) as client:
         response = client.post(
-            "/api/datasets/demo_v21/episodes/0/annotation", json={"success": False}
+            "/api/datasets/demo_v30/episodes/0/annotation", json={"success": False}
         )
         assert response.status_code == 409
     assert not list(root.rglob("*.sync.json"))

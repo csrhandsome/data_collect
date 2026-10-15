@@ -25,6 +25,3 @@ playwright-report/
 test-results/
 .ruff_cache/
 .pytest_cache/
-
-# Generated local camera playback copies
-.replay-cache/

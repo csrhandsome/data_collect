@@ -26,7 +26,7 @@ test('drag video and EE blocks into the workspace and synchronize playback', asy
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text())
   })
-  await selectEpisode(page, 'demo_v21')
+  await selectEpisode(page, 'demo_v30')
   const panel = page.getByTestId('reference-panel')
   await page.getByTestId('data-block-exterior_image_1_left').dragTo(panel)
   const videoCard = page.getByTestId('visualization-exterior_image_1_left')
@@ -105,7 +105,7 @@ test('v3 episode 1 video uses a nonzero clip offset and stops at its boundary', 
 test('numeric and unsupported fields remain visible and selection changes clear stale cards', async ({
   page,
 }) => {
-  await selectEpisode(page, 'demo_v21')
+  await selectEpisode(page, 'demo_v30')
   const joints = page.getByTestId('data-block-joint_position')
   await expect(joints).toBeVisible()
   await expect(joints.getByRole('button')).toBeEnabled()
@@ -161,35 +161,24 @@ test('API failure is shown and can recover through retry', async ({ page }) => {
   await expect(page.getByTestId('data-block-ee_pose')).toBeVisible()
 })
 
-test('rescanning discovers datasets and recovers when the selected dataset is removed', async ({
-  page,
-}) => {
-  let available = ['demo_v21']
+test('rescanning recovers when the selected v3 dataset reappears', async ({ page }) => {
+  let available = true
   await page.route('**/api/datasets', async (route) => {
     const response = await route.fetch()
     const body = await response.json()
-    await route.fulfill({
-      response,
-      json: {
-        datasets: body.datasets.filter((item: { id: string }) => available.includes(item.id)),
-      },
-    })
+    await route.fulfill({ response, json: { datasets: available ? body.datasets : [] } })
   })
   await page.goto('/')
   const select = page.getByTestId('dataset-select')
-  await expect(select).toHaveValue('demo_v21')
-  await expect(select.locator('option[value="demo_v30"]')).toHaveCount(0)
-  available = ['demo_v21', 'demo_v30']
-  await page.getByTestId('scan-datasets').click()
-  await expect(select.locator('option[value="demo_v30"]')).toHaveCount(1)
-  await select.selectOption('demo_v30')
-  await expect(page.getByTestId('data-block-ee_pose')).toBeVisible()
+  await expect(select).toHaveValue('demo_v30')
   await page.getByTestId('data-block-ee_pose').getByRole('button').click()
   await expect(page.getByTestId('visualization-ee_pose')).toBeVisible()
-  available = ['demo_v21']
+  available = false
   await page.getByTestId('scan-datasets').click()
-  await expect(select).toHaveValue('demo_v21')
-  await expect(page.getByTestId('data-block-ee_pose')).toBeVisible()
+  await expect(select.locator('option[value="demo_v30"]')).toHaveCount(0)
   await expect(page.getByTestId('visualization-ee_pose')).toHaveCount(0)
-  await expect(page).toHaveURL(/dataset=demo_v21/)
+  available = true
+  await page.getByTestId('scan-datasets').click()
+  await expect(select).toHaveValue('demo_v30')
+  await expect(page.getByTestId('data-block-ee_pose')).toBeVisible()
 })

@@ -12,7 +12,7 @@ class APIModel(BaseModel):
 class Feature(APIModel):
     key: str
     label: str
-    kind: Literal["video", "ee", "image", "audio", "series", "unsupported"]
+    kind: Literal["video", "ee", "audio", "series", "unsupported"]
     dtype: str
     shape: list[int]
     names: list[str] | None = None

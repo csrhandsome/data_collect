@@ -1,4 +1,4 @@
-"""Convert a measured ROS robot CSV trace into a replay-readable v2.1 dataset."""
+"""Convert a measured ROS robot CSV trace into a replay-readable v3 dataset."""
 
 import argparse
 import json
@@ -44,7 +44,7 @@ def import_robot_trace(source: Path, output: Path) -> dict:
             **{key: values.tolist() for key, values in vectors.items()},
         }
     )
-    pq.write_table(table, output / "data/chunk-000/episode_000000.parquet")
+    pq.write_table(table, output / "data/chunk-000/file-000.parquet")
     features = {
         name: {
             "dtype": "float64",
@@ -63,24 +63,54 @@ def import_robot_trace(source: Path, output: Path) -> dict:
         }
     task = "real Panda small joint-1 round-trip recording"
     info = {
-        "codebase_version": "v2.1",
+        "codebase_version": "v3.0",
         "robot_type": "panda",
         "fps": 100,
         "total_episodes": 1,
         "total_frames": count,
         "total_tasks": 1,
-        "total_videos": 0,
+        "data_files_size_in_mb": 100,
+        "video_files_size_in_mb": 200,
+        "video_path": None,
         "chunks_size": 1000,
         "features": features,
-        "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+        "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
         "recording_source": str(source.resolve()),
         "synthetic": False,
     }
     (output / "meta/info.json").write_text(json.dumps(info, indent=2) + "\n")
-    (output / "meta/episodes.jsonl").write_text(
-        json.dumps({"episode_index": 0, "length": count, "tasks": [task]}) + "\n"
+    statistics = {}
+    for key in table.column_names:
+        values = np.asarray(table[key].to_pylist())
+        statistics[key] = {
+            "min": np.atleast_1d(values.min(axis=0)).tolist(),
+            "max": np.atleast_1d(values.max(axis=0)).tolist(),
+            "mean": np.atleast_1d(values.mean(axis=0)).tolist(),
+            "std": np.atleast_1d(values.std(axis=0)).tolist(),
+            "count": [count],
+        }
+    episode = {
+        "episode_index": 0,
+        "length": count,
+        "tasks": [task],
+        "dataset_from_index": 0,
+        "dataset_to_index": count,
+        "data/chunk_index": 0,
+        "data/file_index": 0,
+        "meta/episodes/chunk_index": 0,
+        "meta/episodes/file_index": 0,
+    }
+    for key, stats in statistics.items():
+        episode.update({f"stats/{key}/{name}": value for name, value in stats.items()})
+    (output / "meta/episodes/chunk-000").mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pylist([episode]), output / "meta/episodes/chunk-000/file-000.parquet"
     )
-    (output / "meta/tasks.jsonl").write_text(json.dumps({"task_index": 0, "task": task}) + "\n")
+    pq.write_table(
+        pa.Table.from_pandas(pd.DataFrame({"task_index": [0]}, index=[task])),
+        output / "meta/tasks.parquet",
+    )
+    (output / "meta/stats.json").write_text(json.dumps(statistics, indent=2) + "\n")
     summary = {
         "frames": count,
         "duration_s": float(timestamp[-1]),

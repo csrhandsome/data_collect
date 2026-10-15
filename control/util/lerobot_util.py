@@ -30,10 +30,9 @@ def _ensure_local_recording_metadata(path: Path) -> None:
 
     info = json.loads((path / "meta/info.json").read_text())
     if info.get("codebase_version") != "v3.0":
-        raise ValueError(
-            "Recording requires a v3.0 dataset. Select a new dataset.date, or convert a copy "
-            "with: uv run python -m scripts.migrate_lerobot_dataset --input PATH --output NEW_PATH"
-        )
+        raise ValueError("Recording requires a LeRobot v3.0 MP4 dataset")
+    if any(feature.get("dtype") == "image" for feature in info["features"].values()):
+        raise ValueError("Embedded image datasets are unsupported; camera features must use MP4")
     required = []
     if info.get("total_tasks", 0):
         required.append(path / "meta/tasks.parquet")
@@ -56,14 +55,19 @@ def _ensure_local_recording_metadata(path: Path) -> None:
             )
 
 
-def _resume_existing_dataset_for_recording(repo_id: str, path: Path) -> LeRobotDataset:
-    from control.util.lerobot_metadata import normalize_episode_metadata
+def _resume_existing_dataset_for_recording(
+    repo_id: str, path: Path, *, rgb_encoder=None
+) -> LeRobotDataset:
 
     # Check locally first: incomplete metadata must never trigger Hub downloads.
     _ensure_local_recording_metadata(path)
-    normalize_episode_metadata(path)
     dataset = LeRobotDataset.resume(
-        repo_id=repo_id, root=path, image_writer_processes=0, image_writer_threads=4
+        repo_id=repo_id,
+        root=path,
+        image_writer_processes=0,
+        image_writer_threads=4,
+        rgb_encoder=rgb_encoder,
+        encoder_threads=2,
     )
     try:
         _cleanup_orphan_next_episode_images(dataset.meta)

@@ -10,7 +10,7 @@ from replay.scripts.generate_demo import generate_demo
 
 @pytest.fixture(scope="session")
 def demo_source(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Encode the matching v2.1/v3.0 datasets once per test run."""
+    """Encode the matching v3.0 MP4 datasets once per test run."""
     root = tmp_path_factory.mktemp("replay-demo-source")
     generate_demo(root)
     return root
@@ -26,14 +26,14 @@ def demo_root(demo_source: Path, tmp_path_factory: pytest.TempPathFactory) -> Pa
 
 @pytest.fixture(scope="module")
 def demo_roots(demo_root: Path) -> list[Path]:
-    return [demo_root / "demo_v21", demo_root / "demo_v30"]
+    return [demo_root / "demo_v30"]
 
 
 @pytest.fixture
 def copy_dataset(demo_root: Path, tmp_path: Path):
     """Copy a demo before a test deletes or changes its contents."""
 
-    def copy(name: str = "demo_v21", destination: Path | None = None) -> Path:
+    def copy(name: str = "demo_v30", destination: Path | None = None) -> Path:
         target = (tmp_path if destination is None else destination) / name
         shutil.copytree(demo_root / name, target)
         return target

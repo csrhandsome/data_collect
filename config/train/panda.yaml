@@ -11,6 +11,11 @@ dataset:
   max_duration_s: 3600.0
   root: data/dataset
   action_space: ee
+  video_encoder:
+    vcodec: h264
+    crf: 18
+    g: 2  # 短关键帧间隔，减少训练随机取帧的解码量。
+    preset: fast
 robot:
   start_joint_position:
   - 0.00388

@@ -1,4 +1,4 @@
-"""Exercise HTTP behavior against actual generated v2.1/v3.0 files."""
+"""Exercise HTTP behavior against actual generated v3.0 MP4 files."""
 
 import json
 import shutil
@@ -27,8 +27,8 @@ def test_dataset_list_and_all_feature_metadata(client: TestClient, demo_root: Pa
     response = client.get("/api/datasets")
     assert response.status_code == 200
     datasets = response.json()["datasets"]
-    assert {dataset["id"] for dataset in datasets} == {"demo_v21", "demo_v30"}
-    assert {dataset["version"] for dataset in datasets} == {"v2.1", "v3.0"}
+    assert {dataset["id"] for dataset in datasets} == {"demo_v30"}
+    assert {dataset["version"] for dataset in datasets} == {"v3.0"}
     for dataset in datasets:
         assert dataset["total_episodes"] == 3
         assert dataset["total_frames"] == 540
@@ -45,7 +45,7 @@ def test_dataset_list_and_all_feature_metadata(client: TestClient, demo_root: Pa
             assert {"key", "label", "kind", "dtype", "shape", "names"} <= feature.keys()
 
 
-@pytest.mark.parametrize("dataset_id", ["demo_v21", "demo_v30"])
+@pytest.mark.parametrize("dataset_id", ["demo_v30"])
 def test_episode_and_ee_downsampling(client: TestClient, dataset_id: str):
     prefix = f"/api/datasets/{dataset_id}/episodes"
     episodes = client.get(prefix)
@@ -76,7 +76,7 @@ def test_episode_and_ee_downsampling(client: TestClient, dataset_id: str):
     assert episode_zero["values"] != complete["values"]
 
 
-@pytest.mark.parametrize("dataset_id", ["demo_v21", "demo_v30"])
+@pytest.mark.parametrize("dataset_id", ["demo_v30"])
 @pytest.mark.parametrize("feature", ["exterior_image_1_left", "wrist_image_left"])
 def test_video_offsets_and_byte_ranges(client: TestClient, dataset_id: str, feature: str):
     endpoint = f"/api/datasets/{dataset_id}/episodes/1/video"
@@ -126,7 +126,7 @@ def test_video_offsets_and_byte_ranges(client: TestClient, dataset_id: str, feat
     ["bytes=999999999999-", "bytes=90-12", "bytes=-0", "bytes=-", "bytes=0-1,4-5", "oops"],
 )
 def test_invalid_ranges_are_416(client: TestClient, range_header: str):
-    url = "/api/datasets/demo_v21/episodes/0/video/content"
+    url = "/api/datasets/demo_v30/episodes/0/video/content"
     response = client.get(url, headers={"Range": range_header})
     assert response.status_code == 416
     assert response.headers["content-range"].startswith("bytes */")
@@ -137,14 +137,14 @@ def test_invalid_ranges_are_416(client: TestClient, range_header: str):
     ("url", "status"),
     [
         ("/api/datasets/unknown", 404),
-        ("/api/datasets/demo_v21/episodes/99", 404),
-        ("/api/datasets/demo_v21/episodes/-1", 422),
-        ("/api/datasets/demo_v21/episodes/0/ee?feature=unknown", 404),
-        ("/api/datasets/demo_v21/episodes/0/ee?max_points=1", 422),
-        ("/api/datasets/demo_v21/episodes/0/ee?max_points=20001", 422),
-        ("/api/datasets/demo_v21/episodes/0/ee?feature=", 422),
-        ("/api/datasets/demo_v21/episodes/0/video?feature=ee_pose", 422),
-        ("/api/datasets/demo_v21/episodes/0/video?feature=unknown", 404),
+        ("/api/datasets/demo_v30/episodes/99", 404),
+        ("/api/datasets/demo_v30/episodes/-1", 422),
+        ("/api/datasets/demo_v30/episodes/0/ee?feature=unknown", 404),
+        ("/api/datasets/demo_v30/episodes/0/ee?max_points=1", 422),
+        ("/api/datasets/demo_v30/episodes/0/ee?max_points=20001", 422),
+        ("/api/datasets/demo_v30/episodes/0/ee?feature=", 422),
+        ("/api/datasets/demo_v30/episodes/0/video?feature=ee_pose", 422),
+        ("/api/datasets/demo_v30/episodes/0/video?feature=unknown", 404),
     ],
 )
 def test_errors_are_actionable_and_have_no_paths(
@@ -167,23 +167,29 @@ def test_dataset_scan_detects_added_and_moved_datasets(copy_dataset, tmp_path: P
     with TestClient(create_app(tmp_path)) as connection:
         assert connection.get("/api/datasets").json() == {"datasets": []}
         first = copy_dataset()
-        copy_dataset("demo_v30")
+        copy_dataset("demo_v30", tmp_path / "second_dataset")
         response = connection.get("/api/datasets")
         assert response.status_code == 200
-        assert [item["id"] for item in response.json()["datasets"]] == ["demo_v21", "demo_v30"]
+        assert [item["id"] for item in response.json()["datasets"]] == [
+            "demo_v30",
+            "second_dataset",
+        ]
         (tmp_path / "not-a-dataset").mkdir()
         first.rename(tmp_path / "renamed_dataset")
         response = connection.get("/api/datasets")
-        assert [item["id"] for item in response.json()["datasets"]] == ["demo_v30", "renamed_dataset"]
+        assert [item["id"] for item in response.json()["datasets"]] == [
+            "renamed_dataset",
+            "second_dataset",
+        ]
         assert connection.get("/api/datasets/renamed_dataset/episodes/1").status_code == 200
-        assert connection.get("/api/datasets/demo_v21").status_code == 404
+        assert connection.get("/api/datasets/demo_v30").status_code == 404
 
 
 def test_malformed_metadata_is_422_without_local_path(copy_dataset):
     root = copy_dataset()
     (root / "meta/info.json").write_text("{bad json")
     with TestClient(create_app(root)) as connection:
-        response = connection.get("/api/datasets/demo_v21")
+        response = connection.get("/api/datasets/demo_v30")
         assert response.status_code == 422
         assert str(root) not in response.text
 
@@ -202,7 +208,7 @@ def test_episode_parquet_errors(copy_dataset, tmp_path: Path, operation: str):
         path.unlink()
         path.symlink_to(outside)
     with TestClient(create_app(root)) as connection:
-        response = connection.get("/api/datasets/demo_v21/episodes/0/ee")
+        response = connection.get("/api/datasets/demo_v30/episodes/0/ee")
         assert response.status_code == (404 if operation == "missing" else 422)
         assert str(tmp_path) not in response.text
 
@@ -221,7 +227,7 @@ def test_video_file_is_confined(copy_dataset, tmp_path: Path, operation: str):
         path.symlink_to(outside)
     with TestClient(create_app(root)) as connection:
         for suffix in ("video", "video/content"):
-            response = connection.get(f"/api/datasets/demo_v21/episodes/0/{suffix}")
+            response = connection.get(f"/api/datasets/demo_v30/episodes/0/{suffix}")
             assert response.status_code == (404 if operation == "missing" else 422)
             assert str(tmp_path) not in response.text
 
@@ -230,11 +236,11 @@ def test_external_dataset_symlink_is_not_registered(copy_dataset, tmp_path: Path
     registry = tmp_path / "registered"
     registry.mkdir()
     copy_dataset(destination=registry)
-    outside = copy_dataset("demo_v30")
+    outside = copy_dataset("demo_v30", tmp_path / "second_dataset")
     (registry / "external").symlink_to(outside, target_is_directory=True)
     with TestClient(create_app(registry)) as connection:
         datasets = connection.get("/api/datasets").json()["datasets"]
-        assert [dataset["id"] for dataset in datasets] == ["demo_v21"]
+        assert [dataset["id"] for dataset in datasets] == ["demo_v30"]
         assert connection.get("/api/datasets/external").status_code == 404
 
 
@@ -246,6 +252,6 @@ def test_metadata_symlink_is_rejected(copy_dataset, tmp_path: Path):
     metadata.unlink()
     metadata.symlink_to(outside)
     with TestClient(create_app(root)) as connection:
-        response = connection.get("/api/datasets/demo_v21")
+        response = connection.get("/api/datasets/demo_v30")
         assert response.status_code == 422
         assert str(tmp_path) not in response.text

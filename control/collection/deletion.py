@@ -22,12 +22,12 @@ class EpisodeDeletionResult:
 
 
 class EpisodeDeleter:
-    """Delete saved v2/v3 episodes and renumber subsequent episodes atomically.
+    """Delete saved v3 MP4 episodes and renumber subsequent episodes atomically.
 
     Returns a result on success; invalid inputs and transaction failures raise
     exceptions. Finalize recording resources before deletion and resume afterwards.
-    v3 generates the edited dataset directly; v2 edits a full copy. Both stage on
-    the same filesystem before atomically exchanging directories.
+    Generates the edited dataset on the same filesystem before atomically
+    exchanging directories.
     """
 
     def __init__(self, dataset_dir: str | Path) -> None:
@@ -57,7 +57,7 @@ class EpisodeDeleter:
 
 def cli(argv: list[str] | None = None) -> int:
     """The single deletion command; exit codes belong only to this adapter."""
-    parser = argparse.ArgumentParser(description="删除 LeRobot v2/v3 episode 并重排后续编号")
+    parser = argparse.ArgumentParser(description="删除 LeRobot v3 MP4 episode 并重排后续编号")
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--episode-index", type=int, required=True)
     parser.add_argument("--yes", action="store_true", help="执行删除；默认只预览")

@@ -124,13 +124,6 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def _write_jsonl(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8"
-    )
-
-
 def _write_table(path: Path, table: pa.Table) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, path)
@@ -369,31 +362,21 @@ def _aggregate_video_stats(episodes: list[dict], key: str) -> dict:
     }
 
 
-def _info(version: str) -> dict:
+def _info() -> dict:
     return {
-        "name": "Franka workbench · " + version,
-        "codebase_version": version,
+        "name": "Franka workbench · v3 MP4",
+        "codebase_version": "v3.0",
         "robot_type": "franka",
         "fps": _FPS,
         "total_episodes": _EPISODES,
         "total_frames": _FRAMES * _EPISODES,
         "total_tasks": _EPISODES,
-        "total_videos": len(_CAMERAS) * (_EPISODES if version == "v2.1" else 1),
-        "total_chunks": 1,
         "chunks_size": 1000,
         "splits": {"train": "0:3"},
         "data_files_size_in_mb": 100,
         "video_files_size_in_mb": 200,
-        "data_path": (
-            "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
-            if version == "v2.1"
-            else "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
-        ),
-        "video_path": (
-            "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
-            if version == "v2.1"
-            else "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
-        ),
+        "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+        "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
         "features": _features(),
         "synthetic": True,
     }

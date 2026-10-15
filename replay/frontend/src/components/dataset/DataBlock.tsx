@@ -16,7 +16,6 @@ export function DataBlock({ feature, datasetId, episodeIndex, added, onAdd }: Da
   const icon = feature.kind === 'video' ? 'video' : feature.kind === 'ee' ? 'trajectory' : 'box'
   const kindLabel = {
     video: '视频',
-    image: '图像',
     audio: '音频',
     ee: '末端 EE',
     series: '数值曲线',

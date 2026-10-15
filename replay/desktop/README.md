@@ -64,7 +64,7 @@ pnpm --dir replay/desktop test:packaged
 4,943,333,561 字节缩小 **80.1%**，解压目录约 3.0 GiB。214 项 Python 回归、
 4 项 Electron 进程测试、17 项最终 AppImage 检查通过；产物检查先解压 AppImage，
 再运行其中的实际程序，包含 CPU Silero 推理、视频 seek、模拟采集/回放、
-v2/v3 删除和任务运行中的退出清理。测试使用 `--no-sandbox`，真实设备未验证。
+v3 MP4 删除和任务运行中的退出清理。测试使用 `--no-sandbox`，真实设备未验证。
 本轮还补齐了 VAD 和 v3 删除依赖的自有模块编译清单。
 根目录 `.venv` 的 50,988 个文件/目录条目（权限、大小、mtime、ctime、符号链接）
 与实验前一致；根目录 `pyproject.toml` / `uv.lock` 哈希和首版 AppImage 文件信息也未变化。
@@ -154,8 +154,8 @@ DATA_COLLECT_BROWSER_CHECK=1 pnpm --dir replay/desktop test:packaged
 ```
 
 测试在 `/tmp` 创建合成数据，使用打包运行时生成 demo，并打开打包后的 Electron。
-覆盖原生库/模型资源/多进程、v2/v3 视频播放与 seek、EE 曲线、图像视频缓存、
-模拟采集保存、模拟机器人回放、两种格式的数据删除与重编号、页面路由、渲染错误，
+覆盖原生库/模型资源/多进程、v3 MP4 视频播放与 seek、EE 曲线、共享视频偏移、
+模拟采集保存、模拟机器人回放、v3 MP4 数据删除与重编号、页面路由、渲染错误，
 以及任务运行中关闭窗口后的后端清理。启动目录位于仓库之外，还会注入无效的
 `PYTHONHOME` / `PYTHONPATH` 验证运行时隔离。
 
