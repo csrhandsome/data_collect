@@ -2,6 +2,16 @@
 
 ROS 2 Jazzy 版本：参见 [ROS 2 Docker 与遥操作](docs/ros2.md)。
 环境文件位于 `src/env/`，使用官方 `franka_ros2` Jazzy 控制器。
+采集统一使用 `config/train/panda.yaml`，只需将 `robot.backend` 设为 `panda` 或 `ros2`；
+推理配置继承此选择。FCI 激活和自动回位默认在 Panda 后端开启、ROS 后端关闭，
+ROS 遥测默认随 ROS 后端开启。ROS 后端需要已加载 ROS 环境及单独启动的官方控制器。
+相机和麦克风默认跟随后端切换：Panda 使用本地设备，ROS 使用 topic 订阅；
+可分别通过 `camera.backend`、`audio.backend` 显式选 `direct` 或 `ros2`。
+ROS 输入的 topic 和音频格式见 [ROS 设备配置](docs/ros2.md#ros-输入设备)。
+
+公共接口为 `control.base_runner.BaseRunner`，由 `control.runners.create_runner()`
+按配置创建 `FrankaRunnerStable`（`control/direct/`）或 `FrankaRunner`（`control/ros2/`）。
+两种后端共用 `control/common/` 的命令调度和 `control/types.py` 的数据类型。
 
 项目使用 **Python 3.12、LeRobot 0.6.1（最新正式版）和 v3.0 数据格式**。
 依赖版本记录在 `uv.lock` 中。LeRobot 0.6 起的数据操作需要 `dataset` extra，项目已启用。
@@ -24,6 +34,33 @@ uv run pytest
 
 `uv sync` 会按 `.python-version` 将项目 `.venv` 切换到 Python 3.12。
 
+## VR 手柄操作提示
+
+进入 VR / Passthrough 后，左右手柄下方各显示一张中文操作速查卡，抬手即可查看。
+说明由采集配置发送到头显，不改变现有按键行为。
+
+| 手柄 | 操作 | 功能 |
+| --- | --- | --- |
+| 左手 | Y | 保存当前片段并回位 |
+| 左手 | X | 丢弃当前片段并回位 |
+| 双手 | 食指扳机同时按住超过 `vr.long_press_s`（默认 0.5 秒） | 启用右手柄对机械臂末端的跟随 |
+| 双手 | 松开任一食指扳机 | 暂停跟随 |
+| 右手 | A / B | 闭合 / 张开夹爪 |
+| 右手 | 摇杆上推 / 下推 | 逐步闭合 / 张开，仅 DH5 夹爪支持并显示 |
+
+录制在首次有效机械臂或夹爪操作时自动开始，Y 用于保存当前片段。
+推理人工接管模式会改为显示接管说明，不显示无效的 X/Y 保存操作；松开扳机会交回策略控制。
+`vr.show_controller_hints: false` 可关闭提示。禁用录制或夹爪时，对应说明也会隐藏。
+关闭自动回位时（包括 ROS 后端默认设置），X/Y 操作后保持当前位置，手柄提示同步显示。
+
+根项目和桌面 Python 环境都通过 `[tool.uv.sources]` 固定依赖
+[csr fork 的修改提交](https://github.com/csrhandsome/teleop_xr/commit/3c572efddf98719c4a28de292d248e41b23a43a7)，
+版本为 `1.3.5+csr.2`。换机器后运行 `uv sync --locked` 即可安装同一份前端。
+从 Git 安装会自动构建 WebXR 页面，安装机器需具备 Node.js ≥ 20.19 和 npm，并能下载 npm 依赖。
+修改源码时，在相邻的 `../teleop_xr/webxr/src/xr/controller_hints_system.ts` 调整提示外观；
+按键文字来自本项目 `src/control/collection/controller_hints.py`。
+后续修改 fork 后，需要先提交并推送，再更新两个 `pyproject.toml` 的 commit 和各自的 `uv.lock`。
+
 ## 夹爪接口
 
 机械臂持有公共的 `GripperController`（`arm.gripper`），连接、关闭和异步命令调度由机械臂统一管理。
@@ -33,9 +70,9 @@ uv run pytest
 
 ```python
 from control.config import load_config
-from control.robotic_arm_controller import RoboticArmControler
+from control.runners import create_runner
 
-with RoboticArmControler(config=load_config("config/train/panda.yaml")) as arm:
+with create_runner(config=load_config("config/train/panda.yaml")) as arm:
     arm.gripper.open()
     arm.gripper.set_open_ratio(0.75, wait=False)
     arm.gripper.wait(timeout=5.0)

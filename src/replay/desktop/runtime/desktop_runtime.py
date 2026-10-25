@@ -68,7 +68,7 @@ def doctor():
         "teleop_xr",
         "mink",
         "data_analysis.preprocess_vad",
-        "control.microphone_connector",
+        "control.direct.microphone_connector",
         "control.vr_input",
     ]
     for name in modules:

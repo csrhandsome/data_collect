@@ -119,53 +119,28 @@ src/replay/
 没有图片转视频缓存，也不提供 PNG/JPEG 内嵌数据的播放分支。
 此前对比和整理说明见 [v3 MP4 说明](../../LEROBOT_V3_MP4.md)。
 
-## 真实 Panda 小范围轨迹记录
+## 机械臂后端与状态记录
 
-根目录 `uv sync --locked` 配置宿主机分析环境，
-`pnpm --dir src/replay/frontend install --frozen-lockfile` 配置前端。
-真实机械臂的运动和记录均在 Humble 容器内运行。系统发起的运动统一通过
-`control/robotic_arm_controller_ros.py` 的 `RoboticArmControlerRos`，
-不使用 C++ 直接调用 libfranka 运动。
+采集、推理和真机回放通过 `control.runners.create_runner()` 选择后端，
+统一读取 `config/train/panda.yaml` 的 `robot.backend`：`panda` 使用
+`control/direct/franka_runner_stable.py`，`ros2` 使用
+`control/ros2/franka_runner.py`，两者继承 `BaseRunner`。
+ROS Jazzy 的环境、控制器检查和设备 topic 配置见 [ROS 2 说明](../../docs/ros2.md)。
 
-以下流程适用于镜像内的 Panda 旧版驱动，先在 Desk 启用 FCI、解锁机械臂，
-确认周围可安全运动。在仓库根目录启动仅机器人状态的 bringup（不启用相机）：
+只读状态记录使用相同的配置，不会发送运动目标：
 
 ```bash
-# 终端 1
-bash ros2_ws/docker/franka_humble/scripts/compose_safe.sh run --rm --no-deps franka_humble \
-  bash -c 'exec ros2 launch franka_bringup franka.launch.py robot_ip:="$FRANKA_ROBOT_IP" load_gripper:=false use_rviz:=false'
-
-# 终端 2：配置轨迹控制器，保持未激活
-bash ros2_ws/docker/franka_humble/scripts/compose_safe.sh run --rm --no-deps franka_humble \
-  ros2 run controller_manager spawner joint_trajectory_controller --inactive \
-  --controller-type joint_trajectory_controller/JointTrajectoryController \
-  --param-file /workspace/data_collect/ros2_ws/src/data_collect_franka/config/panda_trajectory_controller.yaml
-
-# 只读记录 2 秒；输出文件必须是新文件
-bash ros2_ws/docker/franka_humble/scripts/compose_safe.sh run --rm --no-deps franka_humble \
-  python -m replay.scripts.record_robot_trace data/replay_real/read_only.csv
-
-# 实际运动：当前姿态下第 1 关节 +0.02 rad 后返回，8 秒运动、10 秒记录
-bash ros2_ws/docker/franka_humble/scripts/compose_safe.sh run --rm --no-deps franka_humble \
-  python -m replay.scripts.record_robot_trace data/replay_real/roundtrip.csv --move
-
-# 宿主机转换与可视化；数据集输出目录必须是新目录
-env -u PYTHONPATH uv run python -m replay.scripts.import_robot_trace \
-  data/replay_real/roundtrip.csv data/replay_real/roundtrip
-REPLAY_DATA_ROOT="$PWD/data/replay_real" bash dev.sh
+# Panda 后端在宿主机运行；ROS 后端在已加载 ROS 环境的容器中运行。
+python -m replay.scripts.record_robot_trace data/replay_real/read_only.csv \
+  --config config/train/panda.yaml --samples 200
 ```
 
-记录脚本使用 `config/planer/panda.yaml`，通过同步轨迹执行期间的采样回调，
-约 100 Hz 采样 ROS 类缓存的实测关节和末端状态；这不意味着每次采样
-都有新的 ROS 消息。CSV 保留完整末端变换矩阵，转换后提供 `ee_position`、
-`joint_position` 和 `actions`。`actions` 是按计划轨迹计算的名义关节目标，
-不是控制器实际输出反馈。数据不包含夹爪测量和视频，不声称完成训练用采集。
-页面中点击“添加 末端位置”可查看空间轨迹、XYZ 时间曲线和统一时间轴。
-运动完成后脚本停用轨迹控制器；验证结束后在 bringup 终端按 Ctrl+C。
+ROS 真机回放使用 EE 目标流，需要事先对齐 episode 的起始位姿；
+当前 ROS 后端不支持关节回位或 FK。网页查看历史数据和标签不依赖控制后端。
 
-2026-10-01 真机验证数据位于 `data/replay_real/panda_small_roundtrip_20261001/`：
-约 10 秒、1000 帧，末端 Y 方向范围约 7.8 mm。数据和截图在忽略的 `data/`
-目录中，不纳入 Git。
+历史的 2026-10-01 Humble 真机验证数据位于
+`data/replay_real/panda_small_roundtrip_20261001/`，约 10 秒、1000 帧。
+它不代表当前 Jazzy 控制器已完成真机验证，数据和截图保留在忽略的 `data/` 目录中。
 
 ## 验证
 
@@ -174,7 +149,7 @@ REPLAY_DATA_ROOT="$PWD/data/replay_real" bash dev.sh
 ```bash
 env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest src/replay/tests/test_readers.py -q
 env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest src/replay/tests/test_api.py src/replay/tests/test_images.py -q
-env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest src/replay/tests/test_operations.py scripts/tests/test_lerobot_upgrade.py -q
+env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest src/replay/tests/test_operations.py src/tests/test_lerobot_upgrade.py -q
 pnpm --dir src/replay/frontend build
 env -u PYTHONPATH uv run ruff check src/replay
 ```

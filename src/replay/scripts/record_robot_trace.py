@@ -5,12 +5,12 @@ import csv
 from pathlib import Path
 
 from control.config import DEFAULT_CONFIG, load_config
-from control.robotic_arm_controller import RoboticArmControler
+from control.runners import create_runner
 from control.util.timing import FixedRate
 
 
 def record_robot_trace(output, *, config_path=DEFAULT_CONFIG, dry_run=False, samples=200):
-    from control._panda.fake import FakeBackend
+    from control.direct.fake import FakeBackend
 
     if samples <= 0:
         raise ValueError("samples must be positive")
@@ -24,7 +24,7 @@ def record_robot_trace(output, *, config_path=DEFAULT_CONFIG, dry_run=False, sam
             + [f"transform{i}" for i in range(16)]
             + [f"command{i}" for i in range(7)]
         )
-        with RoboticArmControler(
+        with create_runner(
             config=load_config(config_path), backend=FakeBackend() if dry_run else None
         ) as arm:
             initial = arm.wait_ready()

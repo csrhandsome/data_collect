@@ -38,6 +38,17 @@ def load_config(path=DEFAULT_CONFIG, _seen=None):
     # Validate the merged child: inherited field choices may depend on its
     # tactile/action-space settings rather than the defaults of a partial parent.
     if _seen is None:
+        # Resolve backend defaults only after inheritance, so changing backend in
+        # a child config also changes FCI ownership, reset and telemetry defaults.
+        robot = result.setdefault("robot", {})
+        backend = robot.setdefault("backend", "panda")
+        robot.setdefault("activate_fci", backend == "panda")
+        robot.setdefault("move_to_start", backend == "panda")
+        result.setdefault("ros2", {}).setdefault("enabled", backend == "ros2")
+        for section in ("camera", "audio"):
+            result.setdefault(section, {}).setdefault(
+                "backend", "ros2" if backend == "ros2" else "direct"
+            )
         validate(result)
     return result
 
@@ -55,6 +66,29 @@ def validate(config):
     backend = robot.get("backend", "panda")
     if backend not in ("panda", "ros2"):
         raise ValueError("robot.backend must be panda or ros2")
+    for section in ("camera", "audio"):
+        cfg = config.get(section, {})
+        default = "ros2" if backend == "ros2" else "direct"
+        if cfg.get("backend", default) not in ("direct", "ros2"):
+            raise ValueError(f"{section}.backend must be direct or ros2")
+    if config.get("camera", {}).get("backend") == "ros2":
+        cfg = config["camera"]
+        for key, default in (("max_age_s", 0.2), ("startup_timeout_s", 10)):
+            positive_rate(cfg.get(key, default), f"camera.{key}")
+        ros = cfg.get("ros2", {})
+        positive_rate(ros.get("max_pair_skew_s", 0.1), "camera.ros2.max_pair_skew_s")
+        for key in ("external_image_topic", "wrist_image_topic"):
+            if key in ros and (not isinstance(ros[key], str) or not ros[key].strip()):
+                raise ValueError(f"camera.ros2.{key} must be a nonempty string")
+    if config.get("audio", {}).get("backend") == "ros2":
+        ros = config["audio"].get("ros2", {})
+        for key, default in (("max_age_s", 0.5), ("startup_timeout_s", 10)):
+            positive_rate(ros.get(key, default), f"audio.ros2.{key}")
+        if "topic" in ros and (not isinstance(ros["topic"], str) or not ros["topic"].strip()):
+            raise ValueError("audio.ros2.topic must be a nonempty string")
+        channels = config["audio"].get("channels", 1)
+        if isinstance(channels, bool) or not isinstance(channels, int) or channels <= 0:
+            raise ValueError("audio.channels must be a positive integer")
     if backend == "ros2":
         if robot.get("move_to_start", True):
             raise ValueError("ROS equilibrium control requires robot.move_to_start=false")

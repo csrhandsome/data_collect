@@ -21,6 +21,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libtinyxml2-dev && rm -rf /var/lib/apt/lists/*
 COPY src/env/build_franka.sh /usr/local/bin/build_franka
 RUN bash /usr/local/bin/build_franka
+# The locked Teleop XR Git fork builds its WebXR assets during installation.
+COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 # rclpy is an apt-built CPython 3.12 extension: use the system interpreter.
 COPY --from=ghcr.io/astral-sh/uv:0.7.20 /uv /uvx /usr/local/bin/
 RUN python3 -m venv --system-site-packages /opt/data_collect_venv

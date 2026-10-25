@@ -17,8 +17,8 @@ services:
     environment:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-      DATA_COLLECT_CONFIG: /workspace/config/train/panda_ros2.yaml
-      DATA_COLLECT_INFERENCE_CONFIG: /workspace/config/inference/panda_ros2.yaml
+      DATA_COLLECT_CONFIG: /workspace/config/train/panda.yaml
+      DATA_COLLECT_INFERENCE_CONFIG: /workspace/config/inference/panda.yaml
       SDL_VIDEODRIVER: dummy
       SDL_AUDIODRIVER: dummy
     volumes:

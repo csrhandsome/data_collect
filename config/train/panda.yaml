@@ -17,6 +17,7 @@ dataset:
     g: 2  # 短关键帧间隔，减少训练随机取帧的解码量。
     preset: fast
 robot:
+  backend: panda  # panda / ros2；采集和推理共用此选择。
   start_joint_position:
   - 0.00388
   - -0.45916
@@ -28,8 +29,24 @@ robot:
   hostname: 192.168.1.100
   username: 'BionicDL-Franka'
   password: 'Design@2018'
-  activate_fci: true
-  move_to_start: true
+  # activate_fci / move_to_start 默认：panda=true，ros2=false。
+  # 可显式覆盖；ROS 后端不支持设为 true。
+ros2:
+  namespace: ""
+  # 与 src/env/franka.config.yaml 中的 robot_type / base frame 一致。
+  arm_id: fr3
+  base_frame: fr3_link0
+  equilibrium_pose_topic: cartesian_impedance_example_controller/equilibrium_pose
+  robot_state_topic: franka_robot_state_broadcaster/robot_state
+  gripper_node: franka_gripper
+  state_timeout_s: 0.25
+  connect_timeout_s: 10.0
+  gripper_timeout_s: 10.0
+  # enabled 默认随 backend：ros2=true，panda=false；仅控制额外遥测。
+  node_name: data_collect_telemetry
+  telemetry_namespace: /data_collect
+  publish_hz: 30.0
+  publish_images: true
 control:
   mode: ee
   frequency_hz: 100.0
@@ -43,6 +60,7 @@ diagnostics:
   sample_hz: 0.0  # 0 records every control tick; use e.g. 10 to reduce log volume.
   max_pending: 1024  # Full queues drop diagnostic records rather than delay control.
 camera:
+  # backend 默认随 robot.backend；可显式设为 direct，继续使用本地 USB 相机。
   external_camera_serial: '825412070292'
   wrist_camera_serial: '825412070487'
   width: 640
@@ -53,6 +71,10 @@ camera:
   crop_scale: 0.9
   startup_timeout_s: 10
   max_age_s: 0.2
+  ros2:
+    external_image_topic: /camera/external/color/image_raw
+    wrist_image_topic: /camera/wrist/color/image_raw
+    max_pair_skew_s: 0.1
 gripper:
   type: franka  # franka / dh5 / none; exposed through arm.gripper.
   open_width_m: 0.05  # Franka full-open target width in metres.
@@ -66,12 +88,18 @@ gripper:
 tactile:
   enabled: false
 audio:
+  # backend 默认随 robot.backend；可显式设为 direct，继续使用本地声卡。
   enabled: false
   sample_rate: 16000
   channels: 1
   input_device: null
   vad_enabled: true
+  ros2:
+    topic: /microphone/audio  # std_msgs/Int16MultiArray，按 channels 交错的 PCM16。
+    startup_timeout_s: 10.0
+    max_age_s: 0.5
 vr:
+  show_controller_hints: true  # 在左右手柄旁显示当前采集模式的操作说明
   host: 0.0.0.0
   port: 4443
   long_press_s: 0.5

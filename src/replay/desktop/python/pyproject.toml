@@ -19,7 +19,6 @@ dependencies = [
     "crcmod==1.7",
     "pyserial==3.5",
     "panda-python==1.1.1",
-    "pygame==2.6.1",
     "pyrealsense2==2.56.5.9235",
     "pyyaml==6.0.3",
     "spatialmath-python==1.1.15",
@@ -47,6 +46,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
+teleop-xr = { git = "https://github.com/csrhandsome/teleop_xr.git", rev = "3c572efddf98719c4a28de292d248e41b23a43a7" }
 torch = { index = "pytorch-cpu" }
 torchvision = { index = "pytorch-cpu" }
 torchaudio = { index = "pytorch-cpu" }

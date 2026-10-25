@@ -29,7 +29,6 @@ def main():
         "torch",
         "lerobot.datasets.lerobot_dataset",
         "teleop_xr",
-        "pygame",
         "pyrealsense2",
         "sounddevice",
         "fastapi",
@@ -37,6 +36,12 @@ def main():
         "control.vr_input",
         "control.collection.pipeline",
         "control.inference.loop",
+        "control.base_runner",
+        "control.runners",
+        "control.direct.franka_runner_stable",
+        "control.ros2.franka_runner",
+        "control.ros2.camera_connector",
+        "control.ros2.microphone_connector",
         "replay.backend.main",
     ):
         importlib.import_module(name)

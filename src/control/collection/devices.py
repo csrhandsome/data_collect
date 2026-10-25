@@ -3,20 +3,11 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 from types import SimpleNamespace
 
 import numpy as np
 
-
-@dataclass(frozen=True)
-class CameraPair:
-    front: np.ndarray
-    wrist: np.ndarray
-    front_ns: int
-    wrist_ns: int
-    front_sensor_timestamp: float
-    wrist_sensor_timestamp: float
+from control.types import CameraPair
 
 
 class FakeCameras:
@@ -38,7 +29,7 @@ class FakeCameras:
 
 class RealCameras:
     def __init__(self, config):
-        from control.dual_camera_manager import DualRealsenseManager
+        from control.direct.dual_camera_manager import DualRealsenseManager
 
         cfg = config.get("camera", {})
         self.manager = DualRealsenseManager(
@@ -77,7 +68,21 @@ class RealCameras:
 
 
 def make_cameras(config, dry_run=False):
-    return FakeCameras(config) if dry_run else RealCameras(config)
+    if dry_run:
+        return FakeCameras(config)
+    if device_backend(config, "camera") == "ros2":
+        from control.ros2.camera_connector import Ros2Cameras
+
+        return Ros2Cameras(config)
+    return RealCameras(config)
+
+
+def device_backend(config, section):
+    default = "ros2" if config.get("robot", {}).get("backend", "panda") == "ros2" else "direct"
+    name = config.get(section, {}).get("backend", default)
+    if name not in ("direct", "ros2"):
+        raise ValueError(f"{section}.backend must be direct or ros2")
+    return name
 
 
 class FakeVR:
@@ -113,10 +118,7 @@ class FakeVR:
 def make_vr(config, dry_run=False):
     if dry_run:
         return FakeVR()
-    if config.get("vr", {}).get("source", "xr") == "xbox":
-        from control.collection.gamepad import GamepadInput
-
-        return GamepadInput(config.get("vr", {}).get("gamepad", {}))
+    from control.collection.controller_hints import build_controller_hints
     from control.vr_input import VRInputProcess
 
     cfg = config.get("vr", {})
@@ -126,6 +128,7 @@ def make_vr(config, dry_run=False):
         long_press_s=float(cfg.get("long_press_s", 0.5)),
         position_alpha=float(cfg.get("position_alpha", 0.6)),
         rotation_alpha=float(cfg.get("rotation_alpha", 0.35)),
+        controller_hints=build_controller_hints(config),
     )
     reader.start()
     return reader
@@ -138,7 +141,13 @@ def make_microphone(config, dry_run=False):
         from control.collection.audio import SyntheticMicrophone
 
         return SyntheticMicrophone(config.get("audio", {}))
-    from control.microphone_connector import MicrophoneRecorder
+    if device_backend(config, "audio") == "ros2":
+        from control.ros2.microphone_connector import Ros2Microphone
+
+        microphone = Ros2Microphone(config)
+        microphone.start()
+        return microphone
+    from control.direct.microphone_connector import MicrophoneRecorder
 
     cfg = config["audio"]
     microphone = MicrophoneRecorder(

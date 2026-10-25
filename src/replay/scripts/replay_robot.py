@@ -218,11 +218,11 @@ def main(argv=None):
         f"Episode {index:06d} · {len(points)} 个采样 · {'模拟' if args.dry_run else '真机'}",
         flush=True,
     )
-    from control._panda.fake import FakeBackend
-    from control.robotic_arm_controller import RoboticArmControler
+    from control.direct.fake import FakeBackend
+    from control.runners import create_runner
 
     try:
-        with RoboticArmControler(
+        with create_runner(
             config=config, backend=FakeBackend() if args.dry_run else None
         ) as arm:
             replay_trajectory(arm, points, speed=args.speed)

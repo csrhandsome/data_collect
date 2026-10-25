@@ -16,9 +16,9 @@ from control.collection.vr import EEMapper, ResampledVR, VRResampler
 from control.inference.fingers import FingerImages
 from control.inference.policy import PolicyWorker, build_observation, validate_metadata
 from control.recording_writer import FreshCameraPair
-from control.robot_state import EEPose
-from control.robotic_arm_controller import RoboticArmControler
-from control.ros2_bridge import Ros2Publisher
+from control.ros2.bridge import Ros2Publisher
+from control.runners import create_runner
+from control.types import EEPose
 from control.util.pose import quat_angle_xyzw
 from control.util.robot import finish_stream, handle_gripper
 from control.util.timing import FixedRate
@@ -37,7 +37,7 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=Fal
     Workflow failures stop the stream without commanding another finite move.
     A failed return-to-start propagates so the workspace cannot report success.
     """
-    from control._panda.fake import FakeBackend
+    from control.direct.fake import FakeBackend
     from control.inference.client import PolicyClient
 
     cfg = config["inference"]
@@ -62,7 +62,7 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=Fal
             if force and not dry_run:
                 raise ValueError("Force RLT real execution needs a calibrated TCP safety projector")
             arm = stack.enter_context(
-                RoboticArmControler(config=config, backend=FakeBackend() if dry_run else None)
+                create_runner(config=config, backend=FakeBackend() if dry_run else None)
             )
             try:
                 try:

@@ -1593,7 +1593,6 @@ dependencies = [
     { name = "pillow" },
     { name = "pyarrow" },
     { name = "pydantic" },
-    { name = "pygame" },
     { name = "pyrealsense2" },
     { name = "pyserial" },
     { name = "pyyaml" },
@@ -1638,7 +1637,6 @@ requires-dist = [
     { name = "pillow", specifier = "==12.1.0" },
     { name = "pyarrow", specifier = "==23.0.0" },
     { name = "pydantic", specifier = "==2.12.5" },
-    { name = "pygame", specifier = "==2.6.1" },
     { name = "pyrealsense2", specifier = "==2.56.5.9235" },
     { name = "pyserial", specifier = "==3.5" },
     { name = "pyyaml", specifier = "==6.0.3" },
@@ -1646,7 +1644,7 @@ requires-dist = [
     { name = "silero-vad", specifier = "==6.2.1" },
     { name = "sounddevice", specifier = "==0.5.5" },
     { name = "spatialmath-python", specifier = "==1.1.15" },
-    { name = "teleop-xr", specifier = "==1.3.5" },
+    { name = "teleop-xr", git = "https://github.com/csrhandsome/teleop_xr.git?rev=3c572efddf98719c4a28de292d248e41b23a43a7" },
     { name = "torch", specifier = "==2.10.0+cpu", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchaudio", specifier = "==2.10.0+cpu", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchvision", specifier = "==0.25.0+cpu", index = "https://download.pytorch.org/whl/cpu" },
@@ -1892,21 +1890,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8b/04/e7c1fe4dc78a6fdbfd6c337b1c3732ff543b8a397683ab38378447baa331/pyee-13.0.1.tar.gz", hash = "sha256:0b931f7c14535667ed4c7e0d531716368715e860b988770fc7eb8578d1f67fc8", size = 31655, upload-time = "2026-02-14T21:12:28.044Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/c4/b4d4827c93ef43c01f599ef31453ccc1c132b353284fc6c87d535c233129/pyee-13.0.1-py3-none-any.whl", hash = "sha256:af2f8fede4171ef667dfded53f96e2ed0d6e6bd7ee3bb46437f77e3b57689228", size = 15659, upload-time = "2026-02-14T21:12:26.263Z" },
-]
-
-[[package]]
-name = "pygame"
-version = "2.6.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/49/cc/08bba60f00541f62aaa252ce0cfbd60aebd04616c0b9574f755b583e45ae/pygame-2.6.1.tar.gz", hash = "sha256:56fb02ead529cee00d415c3e007f75e0780c655909aaa8e8bf616ee09c9feb1f", size = 14808125, upload-time = "2024-09-29T13:41:34.698Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/92/16/2c602c332f45ff9526d61f6bd764db5096ff9035433e2172e2d2cadae8db/pygame-2.6.1-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:4ee7f2771f588c966fa2fa8b829be26698c9b4836f82ede5e4edc1a68594942e", size = 13118279, upload-time = "2024-09-29T14:26:30.427Z" },
-    { url = "https://files.pythonhosted.org/packages/cd/53/77ccbc384b251c6e34bfd2e734c638233922449a7844e3c7a11ef91cee39/pygame-2.6.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:c8040ea2ab18c6b255af706ec01355c8a6b08dc48d77fd4ee783f8fc46a843bf", size = 12384524, upload-time = "2024-09-29T14:26:49.996Z" },
-    { url = "https://files.pythonhosted.org/packages/06/be/3ed337583f010696c3b3435e89a74fb29d0c74d0931e8f33c0a4246307a9/pygame-2.6.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c47a6938de93fa610accd4969e638c2aebcb29b2fca518a84c3a39d91ab47116", size = 13587123, upload-time = "2024-09-29T11:10:50.072Z" },
-    { url = "https://files.pythonhosted.org/packages/fd/ca/b015586a450db59313535662991b34d24c1f0c0dc149cc5f496573900f4e/pygame-2.6.1-cp312-cp312-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:33006f784e1c7d7e466fcb61d5489da59cc5f7eb098712f792a225df1d4e229d", size = 14275532, upload-time = "2024-09-29T11:39:59.356Z" },
-    { url = "https://files.pythonhosted.org/packages/b9/f2/d31e6ad42d657af07be2ffd779190353f759a07b51232b9e1d724f2cda46/pygame-2.6.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1206125f14cae22c44565c9d333607f1d9f59487b1f1432945dfc809aeaa3e88", size = 13952653, upload-time = "2024-09-29T11:40:01.781Z" },
-    { url = "https://files.pythonhosted.org/packages/f3/42/8ea2a6979e6fa971702fece1747e862e2256d4a8558fe0da6364dd946c53/pygame-2.6.1-cp312-cp312-win32.whl", hash = "sha256:84fc4054e25262140d09d39e094f6880d730199710829902f0d8ceae0213379e", size = 10252421, upload-time = "2024-09-29T11:14:26.877Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/90/7d766d54bb95939725e9a9361f9c06b0cfbe3fe100aa35400f0a461a278a/pygame-2.6.1-cp312-cp312-win_amd64.whl", hash = "sha256:3a9e7396be0d9633831c3f8d5d82dd63ba373ad65599628294b7a4f8a5a01a65", size = 10624591, upload-time = "2024-09-29T11:52:54.489Z" },
 ]
 
 [[package]]
@@ -2318,8 +2301,8 @@ wheels = [
 
 [[package]]
 name = "teleop-xr"
-version = "1.3.5"
-source = { registry = "https://pypi.org/simple" }
+version = "1.3.5+csr.2"
+source = { git = "https://github.com/csrhandsome/teleop_xr.git?rev=3c572efddf98719c4a28de292d248e41b23a43a7#3c572efddf98719c4a28de292d248e41b23a43a7" }
 dependencies = [
     { name = "aiortc" },
     { name = "av" },
@@ -2335,10 +2318,6 @@ dependencies = [
     { name = "tyro" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websocket-client" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/08/5ea8a7956b4277b8ee6aafefcbf9414c6a5c80aada71cb14297ec959ba8f/teleop_xr-1.3.5.tar.gz", hash = "sha256:3cc4bd7b460c5758a59855f29d158fb9aa3217514209d4b220bf3bc6375f89d4", size = 31387735, upload-time = "2026-04-04T07:29:26.679Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/3c/4c0d95cdcc028e6eb72f1756273485f0f40ebb3483b16a25c4e5e91a4aef/teleop_xr-1.3.5-py3-none-any.whl", hash = "sha256:d799fa611b6d16e2cc6324ef164ee6e3eb00a1f7bbed1634e634b7de1b52e6be", size = 2065314, upload-time = "2026-04-04T07:29:24.201Z" },
 ]
 
 [[package]]

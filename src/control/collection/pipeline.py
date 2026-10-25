@@ -14,8 +14,8 @@ from control.collection.recording import EpisodeRecorder
 from control.collection.vr import EEMapper, VRResampler
 from control.control_diagnostics import ControlDiagnostics
 from control.reactive_desk_client import ScenePublisher
-from control.robotic_arm_controller import RoboticArmControler
-from control.ros2_bridge import Ros2Publisher
+from control.ros2.bridge import Ros2Publisher
+from control.runners import create_runner
 from control.util.pose import quat_angle_xyzw
 from control.util.robot import finish_stream, handle_gripper, reset_robot
 from control.util.timing import FixedRate
@@ -24,14 +24,14 @@ logger = logging.getLogger(__name__)
 
 
 def run_collection(config, *, dry_run=False, max_steps=0):
-    from control._panda.fake import FakeBackend
+    from control.direct.fake import FakeBackend
 
     recorder = None
     with ExitStack() as stack:
         ros2 = stack.enter_context(Ros2Publisher(config))
         diagnostics = stack.enter_context(ControlDiagnostics(config))
         arm = stack.enter_context(
-            RoboticArmControler(config=config, backend=FakeBackend() if dry_run else None)
+            create_runner(config=config, backend=FakeBackend() if dry_run else None)
         )
         cameras = make_cameras(config, dry_run)
         stack.callback(cameras.close)

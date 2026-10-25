@@ -10,10 +10,10 @@ while the deadman switch is engaged. This smooths single-frame WebXR jitter
 before downstream IK / joint control consumes the pose stream.
 
 Deadman switch: both triggers (button 0) held for >long_press_s.
-X (left controller button 4): switch to the second prompt.
-Y (left controller button 5): start/stop recording.
+X (left controller button 4): discard the current episode and reset.
+Y (left controller button 5): save the current episode and reset.
 A/B (right controller buttons 4/5): close/open gripper.
-Right thumbstick Y: gripper velocity axis (up=close, down=open).
+Right thumbstick Y: DH5 gripper step axis (up=close, down=open).
 """
 
 import multiprocessing as mp
@@ -110,6 +110,7 @@ class VRInputReader:
         long_press_s: float = 0.5,
         position_alpha: float = 1.0,
         rotation_alpha: float = 1.0,
+        controller_hints: dict | None = None,
     ) -> None:
         if not 0.0 < position_alpha <= 1.0:
             raise ValueError("position_alpha must be in (0, 1]")
@@ -128,7 +129,7 @@ class VRInputReader:
         self._filtered_pos: tuple[float, float, float] | None = None
         self._filtered_quat: tuple[float, float, float, float] | None = None
 
-        settings = TeleopSettings(host=host, port=port)
+        settings = TeleopSettings(host=host, port=port, controller_hints=controller_hints or {})
         self._teleop = Teleop(settings=settings)
         self._teleop.subscribe(self._on_xr_update)
 
@@ -268,7 +269,7 @@ class VRInputReader:
         right_stick_x = 0.0
         right_stick_y = 0.0
 
-        # Left controller: X (btn 4) -> second prompt, Y (btn 5) -> start/stop
+        # Left controller: X (btn 4) -> discard/reset, Y (btn 5) -> save/reset
         if left_dev and left_dev.gamepad:
             btns = left_dev.gamepad.buttons
             if len(btns) > 4 and btns[4].pressed:
@@ -348,6 +349,7 @@ class VRInputProcess:
         long_press_s: float = 0.5,
         position_alpha: float = 1.0,
         rotation_alpha: float = 1.0,
+        controller_hints: dict | None = None,
     ) -> None:
         self._shm: mp.Array = mp.Array("d", _SHM_SIZE, lock=True)
         self._shm[7] = 1.0  # quat_w default
@@ -361,6 +363,7 @@ class VRInputProcess:
                 long_press_s,
                 position_alpha,
                 rotation_alpha,
+                controller_hints,
             ),
             daemon=True,
         )
@@ -381,6 +384,7 @@ class VRInputProcess:
         long_press_s: float,
         position_alpha: float,
         rotation_alpha: float,
+        controller_hints: dict | None,
     ) -> None:
         """Child-process entry point.  Has its own GIL — teleop_xr runs free."""
         reader = VRInputReader(
@@ -389,6 +393,7 @@ class VRInputProcess:
             long_press_s=long_press_s,
             position_alpha=position_alpha,
             rotation_alpha=rotation_alpha,
+            controller_hints=controller_hints,
         )
         t = threading.Thread(target=reader.run, daemon=True)
         t.start()

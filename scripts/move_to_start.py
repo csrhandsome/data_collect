@@ -6,7 +6,7 @@ import logging
 import numpy as np
 
 from control.config import DEFAULT_CONFIG, load_config
-from control.robotic_arm_controller import RoboticArmControler
+from control.runners import create_runner
 from control.util.robot import start_joint_position
 
 
@@ -17,7 +17,7 @@ def main():
     logging.basicConfig(level=logging.INFO)
     config = load_config(args.config)
     target = start_joint_position(config)
-    with RoboticArmControler(config=config) as arm:
+    with create_runner(config=config) as arm:
         result = arm.move_to_start()
         error = np.max(np.abs(result.final_state.joint_positions - target))
         print(f"Motion: {result.status}; max joint error: {error:.6f} rad", flush=True)

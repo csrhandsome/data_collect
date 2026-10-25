@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from control._panda.fake import FakeBackend
 from control.collection import EpisodeDeleter
-from control.robotic_arm_controller import RoboticArmControler
+from control.direct.fake import FakeBackend
+from control.runners import create_runner
 from replay.backend.errors import ReplayError
 from replay.backend.main import create_app
 from replay.backend.operations import OperationManager
@@ -230,7 +230,7 @@ def test_replay_prefers_trace_and_executes_gripper_with_fake_arm(copy_dataset):
     _, points = load_trajectory(root)
     assert len(points) == 3 and points[-1]["time_s"] == 0.02
     backend = FakeBackend()
-    with RoboticArmControler(config={"gripper": {"type": "franka"}}, backend=backend) as arm:
+    with create_runner(config={"gripper": {"type": "franka"}}, backend=backend) as arm:
         replay_trajectory(arm, points)
         np.testing.assert_allclose(arm.get_state().ee_position, rows[-1]["ee_position"])
     assert backend.calls.count("gripper") == 2
