@@ -1,0 +1,40 @@
+name: data-collect-ros2
+services:
+  ros2:
+    image: data-collect/franka-ros2-jazzy:dev
+    build:
+      context: ../..
+      dockerfile: src/env/Dockerfile
+      network: host
+      args:
+        FRANKA_ROS2_REF: ${FRANKA_ROS2_REF:-4acc05c01ebfcdf916ee6b3df966df0ad7b2f9ec}
+    network_mode: host
+    ipc: host
+    init: true
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      DATA_COLLECT_CONFIG: /workspace/config/train/panda_ros2.yaml
+      DATA_COLLECT_INFERENCE_CONFIG: /workspace/config/inference/panda_ros2.yaml
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+    volumes:
+      - ../..:/workspace
+      - /dev:/dev
+      - ${ROS2_DATA_DIR:-../../data}:/workspace/data
+    # USB cameras, VR input, serial DH5. No blanket privileged mode.
+    device_cgroup_rules:
+      - 'c 13:* rwm'
+      - 'c 81:* rwm'
+      - 'c 189:* rwm'
+      - 'c 188:* rwm'
+      - 'c 166:* rwm'
+      - 'c 116:* rwm'
+    cap_add: [SYS_NICE]
+    ulimits:
+      rtprio: 99
+      memlock: -1
+    command: [bash]

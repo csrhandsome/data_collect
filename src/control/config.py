@@ -17,7 +17,10 @@ DEFAULT_CONFIG = Path(
         "DATA_COLLECT_CONFIG", Path(__file__).resolve().parents[2] / "config/train/panda.yaml"
     )
 )
-INFERENCE_CONFIG = Path(__file__).resolve().parents[2] / "config/inference/panda.yaml"
+INFERENCE_CONFIG = Path(os.environ.get(
+    "DATA_COLLECT_INFERENCE_CONFIG",
+    Path(__file__).resolve().parents[2] / "config/inference/panda.yaml",
+))
 
 
 def load_config(path=DEFAULT_CONFIG, _seen=None):
@@ -48,6 +51,26 @@ def merge(target, source):
 
 
 def validate(config):
+    robot = config.get("robot", {})
+    backend = robot.get("backend", "panda")
+    if backend not in ("panda", "ros2"):
+        raise ValueError("robot.backend must be panda or ros2")
+    if backend == "ros2":
+        if robot.get("move_to_start", True):
+            raise ValueError("ROS equilibrium control requires robot.move_to_start=false")
+        if robot.get("activate_fci", False):
+            raise ValueError("ROS backend leaves FCI ownership to franka_ros2; disable activate_fci")
+        if config.get("inference", {}).get("move_to_start", False):
+            raise ValueError("ROS backend requires inference.move_to_start=false")
+        if config.get("inference", {}).get("action_space", "ee") != "ee":
+            raise ValueError("ROS equilibrium control requires inference.action_space=ee")
+        cfg = config.get("ros2", {})
+        for key, default in (("state_timeout_s", 0.25), ("connect_timeout_s", 10),
+                             ("gripper_timeout_s", 10)):
+            positive_rate(cfg.get(key, default), f"ros2.{key}")
+        for key in ("base_frame", "arm_id"):
+            if not isinstance(cfg.get(key), str) or not cfg[key].strip():
+                raise ValueError(f"ros2.{key} must be a nonempty string")
     control = config.get("control", {})
     if control.get("mode", "ee") != "ee":
         raise ValueError("control.mode must be ee; action fields select saved joint/ee labels")

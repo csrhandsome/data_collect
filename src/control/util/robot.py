@@ -21,7 +21,8 @@ def reset_robot(arm):
     arm.stop_stream()
     if arm.get_capabilities().gripper:
         arm.gripper_open()
-    arm.move_to_start()
+    if arm._config.get("robot", {}).get("move_to_start", True):
+        arm.move_to_start()
     arm.start_stream()
 
 

@@ -1,5 +1,8 @@
 # Panda 数据采集与回放
 
+ROS 2 Jazzy 版本：参见 [ROS 2 Docker 与遥操作](docs/ros2.md)。
+环境文件位于 `src/env/`，使用官方 `franka_ros2` Jazzy 控制器。
+
 项目使用 **Python 3.12、LeRobot 0.6.1（最新正式版）和 v3.0 数据格式**。
 依赖版本记录在 `uv.lock` 中。LeRobot 0.6 起的数据操作需要 `dataset` extra，项目已启用。
 

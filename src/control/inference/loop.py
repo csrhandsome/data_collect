@@ -18,6 +18,7 @@ from control.inference.policy import PolicyWorker, build_observation, validate_m
 from control.recording_writer import FreshCameraPair
 from control.robot_state import EEPose
 from control.robotic_arm_controller import RoboticArmControler
+from control.ros2_bridge import Ros2Publisher
 from control.util.pose import quat_angle_xyzw
 from control.util.robot import finish_stream, handle_gripper
 from control.util.timing import FixedRate
@@ -47,6 +48,7 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=Fal
     try:
         with ExitStack() as stack:
             _check_stop(stop_event)
+            ros2 = stack.enter_context(Ros2Publisher(config))
             client = policy or PolicyClient(
                 host=cfg["host"],
                 port=int(cfg["port"]),
@@ -66,14 +68,14 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=Fal
                 try:
                     _execute_inference(
                         config, arm=arm, client=client, force=force, dry_run=dry_run,
-                        max_steps=max_steps, record=record, stop_event=stop_event, stats=stats,
+                        max_steps=max_steps, record=record, stop_event=stop_event, stats=stats, ros2=ros2,
                     )
                 except KeyboardInterrupt:
                     logger.info("Stopping inference")
             finally:
                 failed = sys.exc_info()[0] is not None
                 finish_stream(arm)
-                if not failed:
+                if not failed and config.get("robot", {}).get("move_to_start", True):
                     logger.info("Returning robot to start pose")
                     result = arm.move_to_start()
                     if result.status != "succeeded":
@@ -85,7 +87,7 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=Fal
 
 
 def _execute_inference(
-    config, *, arm, client, force, dry_run, max_steps, record, stop_event, stats,
+    config, *, arm, client, force, dry_run, max_steps, record, stop_event, stats, ros2,
 ):
     cfg = config["inference"]
     recorder = None
@@ -272,8 +274,11 @@ def _execute_inference(
                         if worker.submit(observation, state):
                             requests += 1
                             last_request_ns = now
+                target = arm.get_ee_target()
+                ros2.submit(state, vr=raw_sample,
+                            target=(target.ee_position, target.ee_quaternion_xyzw) if target else None,
+                            cameras=pair)
                 if recorder is not None:
-                    target = arm.get_ee_target()
                     recorder.trace(
                         state, sample, target.ee_position, target.ee_quaternion_xyzw,
                         control_source=control_source,

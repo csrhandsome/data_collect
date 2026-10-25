@@ -74,7 +74,8 @@ class RoboticArmControler:
 
     def get_capabilities(self) -> RobotCapabilities:
         return RobotCapabilities(
-            gripper=self.gripper.enabled, tactile_images=self.gripper.supports_tactile_images
+            gripper=self.gripper.enabled, tactile_images=self.gripper.supports_tactile_images,
+            finite_motion=getattr(self._backend, "finite_motion", True),
         )
 
     def start_stream(self, space: str = "ee") -> None:

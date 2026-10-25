@@ -15,6 +15,7 @@ from control.collection.vr import EEMapper, VRResampler
 from control.control_diagnostics import ControlDiagnostics
 from control.reactive_desk_client import ScenePublisher
 from control.robotic_arm_controller import RoboticArmControler
+from control.ros2_bridge import Ros2Publisher
 from control.util.pose import quat_angle_xyzw
 from control.util.robot import finish_stream, handle_gripper, reset_robot
 from control.util.timing import FixedRate
@@ -27,6 +28,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
 
     recorder = None
     with ExitStack() as stack:
+        ros2 = stack.enter_context(Ros2Publisher(config))
         diagnostics = stack.enter_context(ControlDiagnostics(config))
         arm = stack.enter_context(
             RoboticArmControler(config=config, backend=FakeBackend() if dry_run else None)
@@ -93,11 +95,13 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                     )
                     changed = changed or gripper_changed
                 diagnostics.mark("command_and_gripper")
+                pair = cameras.get_frames() if recorder is not None or ros2.enabled else None
+                ros2.submit(state, vr=raw_sample,
+                            target=(position, quaternion) if command_sent else None, cameras=pair)
                 if recorder is not None:
                     if changed and not recorder.active:
                         recorder.start()
                     recorder.trace(state, sample, position, quaternion)
-                    pair = cameras.get_frames()
                     if pair is not None:
                         if now - min(pair.front_ns, pair.wrist_ns) > int(
                             config["camera"].get("max_age_s", 0.2) * 1e9

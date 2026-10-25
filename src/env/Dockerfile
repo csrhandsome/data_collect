@@ -1,0 +1,42 @@
+FROM ros:jazzy-ros-base-noble
+SHELL ["/bin/bash", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
+ARG FRANKA_ROS2_REF=4acc05c01ebfcdf916ee6b3df966df0ad7b2f9ec
+ENV FRANKA_ROS2_REF=${FRANKA_ROS2_REF}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git ca-certificates curl pkg-config \
+    python3-venv python3-dev python3-pip python3-colcon-common-extensions python3-rosdep \
+    libeigen3-dev libpoco-dev libfmt-dev libspdlog-dev \
+    libgl1 libglib2.0-0 libportaudio2 libsndfile1 ffmpeg libusb-1.0-0 \
+    ros-jazzy-rmw-cyclonedds-cpp ros-jazzy-control-msgs ros-jazzy-xacro \
+    ros-jazzy-joint-state-publisher ros-jazzy-joint-state-broadcaster \
+    ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-rviz2 \
+    && rm -rf /var/lib/apt/lists/*
+# Explicit dependencies of the pinned official single-arm packages. Keep this
+# layer separate from source builds; no mutable rosdep index is required.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-jazzy-moveit-core ros-jazzy-moveit-msgs ros-jazzy-pinocchio \
+    ros-jazzy-realtime-tools ros-jazzy-backward-ros \
+    ros-jazzy-generate-parameter-library ros-jazzy-joint-state-publisher-gui \
+    libtinyxml2-dev && rm -rf /var/lib/apt/lists/*
+COPY src/env/build_franka.sh /usr/local/bin/build_franka
+RUN bash /usr/local/bin/build_franka
+# rclpy is an apt-built CPython 3.12 extension: use the system interpreter.
+COPY --from=ghcr.io/astral-sh/uv:0.7.20 /uv /uvx /usr/local/bin/
+RUN python3 -m venv --system-site-packages /opt/data_collect_venv
+COPY pyproject.toml uv.lock README.md /opt/data_collect_project/
+COPY src /opt/data_collect_project/src
+COPY config /opt/data_collect_project/config
+COPY vr_collect.py inference.py /opt/data_collect_project/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    source /opt/ros/jazzy/setup.bash \
+    && source /opt/franka_ws/install/setup.bash \
+    && cd /opt/data_collect_project \
+    && UV_HTTP_TIMEOUT=300 UV_PROJECT_ENVIRONMENT=/opt/data_collect_venv uv sync \
+       --locked --python /usr/bin/python3 --no-managed-python \
+    && /opt/data_collect_venv/bin/python -c 'import rclpy; from franka_msgs.msg import FrankaRobotState'
+COPY src/env/entrypoint.sh /usr/local/bin/data_collect_entrypoint
+RUN chmod +x /usr/local/bin/data_collect_entrypoint
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/data_collect_entrypoint"]
+CMD ["bash"]

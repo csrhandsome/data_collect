@@ -25,3 +25,7 @@ playwright-report/
 test-results/
 .ruff_cache/
 .pytest_cache/
+
+# ROS / Docker local build artifacts
+/ros2_ws/
+/src/env/.env

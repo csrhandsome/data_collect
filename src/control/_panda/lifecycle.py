@@ -102,7 +102,13 @@ def initialize(arm, config, backend):
     from control.gripper_controller import GripperController
 
     arm._config = config or {}
-    arm._backend = backend if backend is not None else PandaBackend(arm._config)
+    if backend is not None:
+        arm._backend = backend
+    elif arm._config.get("robot", {}).get("backend", "panda") == "ros2":
+        from control._ros2.backend import Ros2Backend
+        arm._backend = Ros2Backend(arm._config)
+    else:
+        arm._backend = PandaBackend(arm._config)
     arm._connected = arm._streaming = arm._motion_running = False
     arm._lock = threading.RLock()
     arm._cancel_event = threading.Event()
