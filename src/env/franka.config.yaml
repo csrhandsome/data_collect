@@ -1,8 +1,7 @@
-# Official example.launch.py configuration. No namespace means /controller/...
-# Verify robot_type, FCI/system version and libfranka compatibility for YOUR robot.
-# This is an FR3 example; do not use it unchanged for the original Panda/FER.
+# Panda / FER bringup. robot_ip is the FCI address.
+# The image libfranka is the 0.9.2-protocol fork, not official 0.20.x.
 ROBOT1:
-  robot_type: "fr3"
+  robot_type: "panda"
   arm_prefix: ""
   namespace: ""
   robot_ip: "192.168.1.100"

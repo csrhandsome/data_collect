@@ -7,7 +7,8 @@ services:
       dockerfile: src/env/Dockerfile
       network: host
       args:
-        FRANKA_ROS2_REF: ${FRANKA_ROS2_REF:-4acc05c01ebfcdf916ee6b3df966df0ad7b2f9ec}
+        FRANKA_ROS2_REF: ${FRANKA_ROS2_REF:-c0e1f8206211}
+        LIBFRANKA_REF: ${LIBFRANKA_REF:-55e4ab7654}
     network_mode: host
     ipc: host
     init: true

@@ -37,7 +37,7 @@ class Ros2GripperController:
         from sensor_msgs.msg import JointState
         from std_srvs.srv import Trigger
 
-        prefix = self.cfg.get("gripper_node", "franka_gripper")
+        prefix = self.cfg.get("gripper_node", "panda_gripper")
         self._action_types = {"move": Move, "grasp": Grasp}
         self._actions = {
             name: ActionClient(self._node, cls, self._node.resolve_topic_name(f"{prefix}/{name}"))

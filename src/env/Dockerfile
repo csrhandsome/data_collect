@@ -1,8 +1,11 @@
+# Single Franka image for this Panda: ROS 2 Jazzy, the FER libfranka fork,
+# and panda_cartesian_controller. Do not layer a second image on top.
 FROM ros:jazzy-ros-base-noble
 SHELL ["/bin/bash", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
-ARG FRANKA_ROS2_REF=4acc05c01ebfcdf916ee6b3df966df0ad7b2f9ec
-ENV FRANKA_ROS2_REF=${FRANKA_ROS2_REF}
+ARG FRANKA_ROS2_REF=c0e1f8206211
+ARG LIBFRANKA_REF=55e4ab7654
+ENV FRANKA_ROS2_REF=${FRANKA_ROS2_REF} LIBFRANKA_REF=${LIBFRANKA_REF}
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates curl pkg-config \
     python3-venv python3-dev python3-pip python3-colcon-common-extensions python3-rosdep \
@@ -19,8 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-realtime-tools ros-jazzy-backward-ros \
     ros-jazzy-generate-parameter-library ros-jazzy-joint-state-publisher-gui \
     libtinyxml2-dev && rm -rf /var/lib/apt/lists/*
+COPY src/env/panda_cartesian_controller /tmp/panda_cartesian_controller
 COPY src/env/build_franka.sh /usr/local/bin/build_franka
-RUN bash /usr/local/bin/build_franka
+RUN bash /usr/local/bin/build_franka \
+    && bash -lc 'source /opt/ros/jazzy/setup.bash && source /opt/franka_ws/install/setup.bash && python3 -c "from franka_msgs.msg import FrankaRobotState; assert len(FrankaRobotState().o_t_ee)==16"'
 # The locked Teleop XR Git fork builds its WebXR assets during installation.
 COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm

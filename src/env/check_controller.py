@@ -1,4 +1,4 @@
-"""Read-only check for a known upstream demo loop that overwrites external targets."""
+"""Read-only check that the Panda controller accepts external targets only."""
 
 import re
 from pathlib import Path
@@ -6,18 +6,27 @@ from pathlib import Path
 
 def check(source):
     text = Path(source).read_text()
-    update = re.search(
-        r"CartesianImpedanceExampleController::update\([\s\S]*?(?=\n(?:void|Eigen::))", text
-    )
-    if update and re.search(r"^\s*updateMotionTarget\(", update.group(), re.MULTILINE):
+    update = re.search(r"::update\([\s\S]*?(?=\n\S)", text)
+    if update and re.search(r"updateMotionTarget\s*\(", update.group()):
         raise RuntimeError(
-            "Official controller calls updateMotionTarget() unconditionally inside update(); "
-            "its autonomous demo overwrites equilibrium_pose. Use an upstream revision that "
-            "supports exclusively external targets before launching real hardware. "
-            "No controller source has been modified."
+            "Controller calls updateMotionTarget() inside update(); "
+            "its autonomous demo overwrites equilibrium_pose."
+        )
+    if update and re.search(r"\b(?:std::)?(?:sin|cos)\s*\(", update.group()):
+        raise RuntimeError(
+            "Controller update() contains a periodic demo trajectory. "
+            "External equilibrium_pose targets must be the only motion source."
         )
     if '"~/equilibrium_pose"' not in text:
         raise RuntimeError("Controller source does not expose ~/equilibrium_pose")
+
+
+def check_installed(library):
+    path = Path(library)
+    if not path.is_file():
+        raise RuntimeError(
+            f"Panda Cartesian controller library is not installed: {path}. Rebuild the image."
+        )
 
 
 if __name__ == "__main__":
@@ -28,13 +37,23 @@ if __name__ == "__main__":
         "source",
         nargs="?",
         default=(
-            "/opt/franka_ws/src/franka_ros2/franka_example_controllers/src/fr3/"
-            "cartesian_impedance_example_controller.cpp"
+            "/workspace/src/env/panda_cartesian_controller/src/"
+            "cartesian_pose_impedance_controller.cpp"
         ),
     )
+    parser.add_argument(
+        "--library",
+        default=(
+            "/opt/franka_ws/install/panda_cartesian_controller/lib/"
+            "libpanda_cartesian_controller.so"
+        ),
+    )
+    parser.add_argument("--skip-library", action="store_true")
     args = parser.parse_args()
     try:
         check(args.source)
+        if not args.skip_library:
+            check_installed(args.library)
     except (OSError, RuntimeError) as exc:
         parser.exit(1, f"Controller preflight failed: {exc}\n")
-    print("Controller preflight passed; verify target tracking on your robot before collection.")
+    print("Controller preflight passed; verify target tracking on the Panda before collection.")

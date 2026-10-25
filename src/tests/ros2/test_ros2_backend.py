@@ -177,7 +177,7 @@ def ros_peer():
     peer.namespace, peer.node = namespace, node
     peer.commands, peer.grasps, peer.moves = [], [], []
     peer.publish_state = True
-    peer.frame = "fr3_link0"
+    peer.frame = "panda_link0"
     peer.age_s = 0
     peer.position = [0.4, 0.0, 0.4]
     publisher = node.create_publisher(
@@ -188,24 +188,21 @@ def ros_peer():
         if not peer.publish_state:
             return
         msg = FrankaRobotState()
-        msg.o_t_ee.header.frame_id = peer.frame
+        msg.header.frame_id = peer.frame
         stamp = node.get_clock().now().nanoseconds - round(peer.age_s * 1e9)
-        msg.o_t_ee.header.stamp.sec, msg.o_t_ee.header.stamp.nanosec = divmod(stamp, 1_000_000_000)
-        (msg.o_t_ee.pose.position.x, msg.o_t_ee.pose.position.y, msg.o_t_ee.pose.position.z) = (
-            peer.position
-        )
-        msg.o_t_ee.pose.orientation.w = 1.0
-        # Deliberately reverse names to exercise joint-name based ordering.
-        msg.measured_joint_state.name = [f"fr3_joint{i}" for i in range(7, 0, -1)]
-        msg.measured_joint_state.position = [i * 0.01 for i in range(7, 0, -1)]
-        msg.measured_joint_state.velocity = [0.0] * 7
+        msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp, 1_000_000_000)
+        transform = np.eye(4)
+        transform[:3, 3] = peer.position
+        msg.o_t_ee = transform.flatten(order="F").tolist()
+        msg.q = [i * 0.01 for i in range(1, 8)]
+        msg.dq = [0.0] * 7
         publisher.publish(msg)
 
     def command(msg):
         peer.commands.append(msg)
 
     node.create_subscription(
-        PoseStamped, "cartesian_impedance_example_controller/equilibrium_pose", command, 1
+        PoseStamped, "cartesian_pose_impedance_controller/equilibrium_pose", command, 1
     )
     node.create_timer(0.01, state)
 
@@ -220,11 +217,11 @@ def ros_peer():
         return Grasp.Result(success=True)
 
     actions = [
-        ActionServer(node, Move, "franka_gripper/move", execute_move),
-        ActionServer(node, Grasp, "franka_gripper/grasp", execute_grasp),
+        ActionServer(node, Move, "panda_gripper/move", execute_move),
+        ActionServer(node, Grasp, "panda_gripper/grasp", execute_grasp),
     ]
     node.create_service(
-        Trigger, "franka_gripper/stop", lambda request, response: Trigger.Response(success=True)
+        Trigger, "panda_gripper/stop", lambda request, response: Trigger.Response(success=True)
     )
     executor = SingleThreadedExecutor(context=context)
     executor.add_node(node)
@@ -263,13 +260,13 @@ def until(predicate, timeout=2):
 def test_real_pose_command_state_order_and_stale_guard(ros_peer, ros_config):
     with create_runner(config=peer_config(ros_peer, ros_config)) as arm:
         np.testing.assert_allclose(arm.get_state().joint_positions, np.arange(1, 8) * 0.01)
-        assert arm.get_state().base_frame == "fr3_link0"
+        assert arm.get_state().base_frame == "panda_link0"
         until(lambda: arm._backend._publisher.get_subscription_count() > 0)
         arm.start_stream()
         arm.send_ee_target([0.41, 0.0, 0.4], [0, 0, 0, 2])
         until(lambda: any(abs(p.pose.position.x - 0.41) < 1e-8 for p in ros_peer.commands))
         command = next(p for p in ros_peer.commands if abs(p.pose.position.x - 0.41) < 1e-8)
-        assert command.header.frame_id == "fr3_link0"
+        assert command.header.frame_id == "panda_link0"
         assert command.header.stamp.sec > 0
         assert command.pose.orientation.w == 1.0
         with pytest.raises(ValueError, match="translation guard"):

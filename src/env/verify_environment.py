@@ -48,10 +48,10 @@ def main():
         print(f"Import OK: {name}", flush=True)
 
     plugin = Path(
-        "/opt/franka_ws/install/franka_example_controllers/lib/libfranka_example_controllers.so"
+        "/opt/franka_ws/install/panda_cartesian_controller/lib/libpanda_cartesian_controller.so"
     )
     ctypes.CDLL(str(plugin))
-    print(f"Official C++ controller linking OK: {plugin}", flush=True)
+    print(f"Panda Cartesian controller linking OK: {plugin}", flush=True)
 
     import rclpy
     from franka_msgs.msg import FrankaRobotState

@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>panda_cartesian_controller</name>
+  <version>0.1.0</version>
+  <description>External-target Cartesian impedance controller for a Franka Panda on the FER libfranka 0.9 interface.</description>
+  <maintainer email="data_collect@example.com">data_collect</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>controller_interface</depend>
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>realtime_tools</depend>
+  <depend>geometry_msgs</depend>
+  <depend>franka_semantic_components</depend>
+  <depend>franka_hardware</depend>
+  <build_depend>eigen</build_depend>
+  <exec_depend>franka_description</exec_depend>
+  <exec_depend>franka_gripper</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

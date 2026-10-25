@@ -10,7 +10,27 @@ import numpy as np
 from control.base_runner import BaseRunner
 from control.ros2.gripper_controller import Ros2GripperController
 from control.types import RobotState
-from control.util.pose import normalize_quat_xyzw, position_quat_to_matrix
+from control.util.pose import matrix_to_quat_xyzw, normalize_quat_xyzw, position_quat_to_matrix
+
+
+_ROBOT_MODES = (
+    "Other",
+    "Idle",
+    "Move",
+    "Guiding",
+    "Reflex",
+    "UserStopped",
+    "AutomaticErrorRecovery",
+)
+
+
+def _robot_mode_name(mode):
+    if isinstance(mode, str):
+        return mode
+    try:
+        return _ROBOT_MODES[int(mode)]
+    except (TypeError, ValueError, IndexError):
+        return str(mode)
 
 
 class Ros2Backend:
@@ -20,7 +40,7 @@ class Ros2Backend:
         self.config = config
         self.cfg = config.get("ros2", {})
         self.namespace = self.cfg.get("namespace", "").strip("/")
-        self.frame = self.cfg.get("base_frame", "fr3_link0")
+        self.frame = self.cfg.get("base_frame", "panda_link0")
         self.timeout = float(self.cfg.get("state_timeout_s", 0.25))
         self._condition = threading.Condition()
         self._context = self._node = self._executor = self._thread = None
@@ -59,7 +79,7 @@ class Ros2Backend:
                 self.topic(
                     self.cfg.get(
                         "equilibrium_pose_topic",
-                        "cartesian_impedance_example_controller/equilibrium_pose",
+                        "cartesian_pose_impedance_controller/equilibrium_pose",
                     )
                 ),
                 QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
@@ -102,23 +122,32 @@ class Ros2Backend:
 
     def _on_state(self, msg):
         try:
-            pose = msg.o_t_ee
-            if pose.header.frame_id != self.frame:
-                raise ValueError(f"Expected EE frame {self.frame}, got {pose.header.frame_id!r}")
-            stamp = pose.header.stamp
+            # FER libfranka 0.9 publishes O_T_EE as a column-major 4x4 in the base frame.
+            frame = msg.header.frame_id
+            if frame and frame != self.frame:
+                raise ValueError(f"Expected EE frame {self.frame}, got {frame!r}")
+            stamp = msg.header.stamp
             source_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
             age = (self._node.get_clock().now().nanoseconds - source_ns) / 1e9
             if source_ns <= 0 or not -0.1 <= age <= self.timeout:
                 raise ValueError("Franka source timestamp is stale or clocks are unsynchronized")
-            p, q = pose.pose.position, pose.pose.orientation
-            position = np.array([p.x, p.y, p.z])
-            quaternion = normalize_quat_xyzw([q.x, q.y, q.z, q.w])
-            joints = msg.measured_joint_state
-            names = [f"{self.cfg.get('arm_id', 'fr3')}_joint{i}" for i in range(1, 8)]
-            indices = [list(joints.name).index(name) for name in names]
+            matrix = np.asarray(msg.o_t_ee, dtype=np.float64).reshape((4, 4), order="F")
+            if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
+                raise ValueError("Franka O_T_EE must be a finite column-major 4x4")
+            position = matrix[:3, 3].copy()
+            quaternion = matrix_to_quat_xyzw(matrix[:3, :3])
+            joints = np.asarray(msg.q, dtype=np.float64)
+            velocities = np.asarray(msg.dq, dtype=np.float64)
+            if (
+                joints.shape != (7,)
+                or velocities.shape != (7,)
+                or not np.isfinite(joints).all()
+                or not np.isfinite(velocities).all()
+            ):
+                raise ValueError("Franka joint state must contain 7 finite positions and velocities")
             state = RobotState(
-                np.array(joints.position)[indices],
-                np.array(joints.velocity)[indices],
+                joints,
+                velocities,
                 position,
                 quaternion,
                 position_quat_to_matrix(position, quaternion),
@@ -126,7 +155,7 @@ class Ros2Backend:
                 time.monotonic_ns(),
                 base_frame=self.frame,
                 robot_time_s=float(msg.time),
-                robot_mode=str(msg.robot_mode),
+                robot_mode=_robot_mode_name(msg.robot_mode),
                 control_command_success_rate=float(msg.control_command_success_rate),
                 current_errors=str(msg.current_errors),
             )
