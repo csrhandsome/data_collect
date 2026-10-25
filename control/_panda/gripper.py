@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 from control._panda.lifecycle import require_connected
+from control._panda.motion import remember_ee_target
 from control.robotic_arm_types import CommandReceipt
 
 
@@ -38,6 +39,7 @@ def execute(arm, ratio, speed, force):
         if resume:
             state = arm.get_state()
             arm._backend.target(state.ee_position, state.ee_quaternion_xyzw, state.joint_positions)
+            remember_ee_target(arm, state.ee_position, state.ee_quaternion_xyzw, "gripper_pause")
             arm._backend.stop()
     try:
         return arm._backend.gripper_command(ratio, speed=speed, force=force)
@@ -46,6 +48,7 @@ def execute(arm, ratio, speed, force):
             if resume:
                 state = arm._backend.snapshot(busy=True)
                 arm._backend.start(state)
+                remember_ee_target(arm, state.ee_position, state.ee_quaternion_xyzw, "gripper_resume")
                 arm._nullspace = state.joint_positions.copy()
 
 

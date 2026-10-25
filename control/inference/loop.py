@@ -40,6 +40,8 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=Fal
     from control.inference.client import PolicyClient
 
     cfg = config["inference"]
+    # A takeover must survive process exit so it can be labeled and imported for RL.
+    record = record or bool(cfg.get("enable_vr_takeover", False))
     stop_event = stop_event if stop_event is not None else threading.Event()
     stats = {"ticks": 0, "requests": 0, "overruns": 0}
     try:
@@ -98,7 +100,9 @@ def _execute_inference(
             arm.move_to_start()
         fingers = (
             FingerImages(config, client.server_metadata)
-            if force and client.server_metadata.get("group") == "C"
+            if force and client.server_metadata.get(
+                "force_enabled", client.server_metadata.get("group") == "C"
+            )
             else None
         )
         if fingers is not None:
@@ -162,6 +166,13 @@ def _execute_inference(
         requests = 0
         last_axis_ns = 0
         failed = False
+        target_gripper = arm.get_state().gripper.commanded_open_ratio
+        control_source = "BASE"
+        policy_step_id = actor_version = None
+
+        def remember_gripper(ratio):
+            nonlocal target_gripper
+            target_gripper = float(ratio)
         horizon_ns = round(1e9 * int(cfg["execute_steps"]) / cfg["action_fps"])
         limit = max_steps or int(cfg.get("max_steps", 0))
         logger.info("Inference execution started")
@@ -196,8 +207,11 @@ def _execute_inference(
                     position, quat = mapper.map(sample, state, now)
                     if not arm.gripper_busy:
                         arm.send_ee_target(position, quat)
+                        control_source = "HUMAN"
+                        policy_step_id = actor_version = None
                         _, last_axis_ns = handle_gripper(
-                            arm, sample, state, now, last_axis_ns, config
+                            arm, sample, state, now, last_axis_ns, config,
+                            on_command=remember_gripper,
                         )
                 else:
                     result = worker.take()
@@ -209,6 +223,8 @@ def _execute_inference(
                     if not arm.gripper_busy:
                         if action is None:
                             arm.hold()
+                            control_source = "BASE"
+                            policy_step_id = actor_version = None
                         else:
                             desired = (
                                 EEPose.from_vector(action[:6])
@@ -225,12 +241,15 @@ def _execute_inference(
                                 )
                             arm.send_ee_target(desired.xyz_m, desired.quaternion_xyzw())
                             position, quat = desired.xyz_m, desired.quaternion_xyzw()
+                            control_source = plan.source
+                            policy_step_id, actor_version = plan.step_id, plan.actor_version
                             if not force:
                                 ratio = float(action[-1])
                                 if not np.isfinite(ratio) or not 0 <= ratio <= 1:
                                     raise ValueError("Policy gripper ratio outside 0..1")
                                 if abs(ratio - state.gripper.commanded_open_ratio) > 0.05:
                                     arm.set_gripper(ratio, wait=False)
+                                    remember_gripper(ratio)
                     if now - last_request_ns >= horizon_ns and gate.accept(
                         pair.front_ns, pair.wrist_ns
                     ):
@@ -254,7 +273,16 @@ def _execute_inference(
                             requests += 1
                             last_request_ns = now
                 if recorder is not None:
-                    recorder.trace(state, sample, position, quat)
+                    target = arm.get_ee_target()
+                    recorder.trace(
+                        state, sample, target.ee_position, target.ee_quaternion_xyzw,
+                        control_source=control_source,
+                        target_gripper_position=target_gripper,
+                        policy_step_id=policy_step_id, actor_version=actor_version,
+                        command_submitted_ns=target.submitted_monotonic_ns,
+                        trace_sample_ns=target.sampled_monotonic_ns,
+                        ee_target_phase=target.phase,
+                    )
                     recorder.frame(
                         state, pair,
                         arm.get_tactile_images()

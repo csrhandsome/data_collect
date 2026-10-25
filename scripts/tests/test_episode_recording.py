@@ -116,3 +116,33 @@ def test_finalize_requires_finishing_active_episode_and_close_discards_it(tmp_pa
         recorder.close()
     assert dataset.meta.total_episodes == 0
     assert not list((root / "images").rglob("*.png"))
+
+
+def test_trace_uses_accepted_gripper_target_and_actual_controller(tmp_path):
+    config = {
+        "dataset": {"repo_id": "local/recording", "date": "trace", "root": str(tmp_path),
+                    "instruction": "Move", "action_space": "ee"},
+        "camera": {"image_hw": 32, "fps": 30},
+        "control": {"frequency_hz": 100},
+    }
+    dataset, root = open_dataset(config)
+    recorder = EpisodeRecorder(dataset, root, config)
+    state = FakeBackend().snapshot()
+    sample = VRResampler().sample(FakeVR().latest, state.sampled_monotonic_ns)
+    try:
+        recorder.start()
+        for source in ("RL", "HUMAN", "RL"):
+            recorder.trace(
+                state, sample, state.ee_position, state.ee_quaternion_xyzw,
+                control_source=source, target_gripper_position=0.2,
+                actor_version="v2" if source == "RL" else None,
+            )
+        recorder.trace_writer.drain()
+        recorder.trace_sink.file.flush()
+        rows = [json.loads(line) for line in recorder.trace_path.read_text().splitlines()]
+        assert [row["control_source"] for row in rows] == ["RL", "HUMAN", "RL"]
+        assert all(row["target_gripper_position"] == 0.2 for row in rows)
+        assert all(row["gripper_position"] == 1 for row in rows)
+        assert [row["intervention_flag"] for row in rows] == [False, True, False]
+    finally:
+        recorder.close()

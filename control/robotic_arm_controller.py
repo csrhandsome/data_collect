@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import time
 import warnings
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 
 from control._panda import lifecycle, motion
 from control.gripper_controller import GripperController
 from control.robot_state import EEPose
 from control.robotic_arm_types import (
     CommandReceipt,
+    EEStreamTarget,
     MotionResult,
     RobotCapabilities,
     RobotState,
@@ -53,6 +56,18 @@ class RoboticArmControler:
         from control.util.timing import wait_ready
 
         return wait_ready(self.get_state, timeout_s)
+
+    def get_ee_target(self) -> EEStreamTarget | None:
+        """Atomically sample the accepted stream target, not the measured pose.
+
+        The sample timestamp belongs to the same locked read as the target, so
+        recorders can align commands even if the gripper worker changes it next.
+        """
+        with self._lock:
+            lifecycle.require_connected(self)
+            if self._ee_target is None:
+                return None
+            return replace(self._ee_target, sampled_monotonic_ns=time.monotonic_ns())
 
     def get_status(self) -> RobotStatus:
         return lifecycle.status(self)

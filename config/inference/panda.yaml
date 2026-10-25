@@ -12,4 +12,4 @@ inference:
   max_plan_age_s: 0.6
   max_translation_step_m: 0.03
   max_rotation_step_rad: 0.15
-  enable_vr_takeover: false
+  enable_vr_takeover: false  # true：允许 VR 人工纠正，并自动保存 episode（无需额外 --record）

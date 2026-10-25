@@ -5,8 +5,14 @@ import time
 import numpy as np
 
 from control._panda.lifecycle import require_connected
-from control.robotic_arm_types import CommandReceipt, MotionResult
+from control.robotic_arm_types import CommandReceipt, EEStreamTarget, MotionResult
 from control.util.pose import as_vector, normalize_quat_xyzw, quat_angle_xyzw
+
+
+def remember_ee_target(arm, position, quaternion, phase):
+    """Publish only after backend acceptance, while the arm lock is held."""
+    stamp = time.monotonic_ns()
+    arm._ee_target = EEStreamTarget(position, quaternion, stamp, stamp, phase)
 
 
 def send_ee(arm, position, quaternion):
@@ -29,7 +35,8 @@ def send_ee(arm, position, quaternion):
         ):
             raise ValueError("EE target exceeds measured rotation guard")
         arm._backend.target(position, quaternion, arm._nullspace)
-    return CommandReceipt("ee", time.monotonic_ns())
+        remember_ee_target(arm, position, quaternion, "command")
+        return CommandReceipt("ee", arm._ee_target.submitted_monotonic_ns)
 
 
 def hold(arm):
@@ -42,6 +49,7 @@ def hold(arm):
         state = arm.get_state()
         arm._nullspace = state.joint_positions.copy()
         arm._backend.target(state.ee_position, state.ee_quaternion_xyzw, arm._nullspace)
+        remember_ee_target(arm, state.ee_position, state.ee_quaternion_xyzw, "hold")
         return state
 
 

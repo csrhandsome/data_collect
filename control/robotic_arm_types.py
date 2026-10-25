@@ -70,6 +70,25 @@ class RobotStatus:
 
 
 @dataclass(frozen=True)
+class EEStreamTarget:
+    """Last locally accepted EE target, including gripper pause/resume holds."""
+
+    ee_position: np.ndarray
+    ee_quaternion_xyzw: np.ndarray
+    submitted_monotonic_ns: int
+    sampled_monotonic_ns: int
+    phase: Literal["start", "command", "hold", "gripper_pause", "gripper_resume"]
+
+    def __post_init__(self):
+        for name, shape in (("ee_position", (3,)), ("ee_quaternion_xyzw", (4,))):
+            value = np.array(getattr(self, name), dtype=np.float64, copy=True)
+            if value.shape != shape or not np.isfinite(value).all():
+                raise ValueError(f"{name} must be finite with shape {shape}")
+            value.setflags(write=False)
+            object.__setattr__(self, name, value)
+
+
+@dataclass(frozen=True)
 class CommandReceipt:
     """Local acceptance, not confirmation that a target was reached."""
 

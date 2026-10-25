@@ -90,6 +90,9 @@ class PolicyClient:
             self._ws.send(data)
             response = self._ws.recv(timeout=self._request_timeout)
         except websockets.exceptions.ConnectionClosed:
+            if self.server_metadata.get("rlt_online_protocol") or "rlt_event" in obs:
+                # Resending an episode mutation can duplicate execution or commit.
+                raise
             self._ws, metadata = self._wait_for_server(timeout=self._connect_timeout)
             if metadata != self.server_metadata:
                 self.close()

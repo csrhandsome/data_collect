@@ -43,6 +43,8 @@ def wait_stopped(arm, timeout_s=2.0, velocity_tol=5e-3):
 
 
 def start_stream(arm):
+    from control._panda.motion import remember_ee_target
+
     require_connected(arm)
     with arm._lock:
         if arm._motion_running or arm.gripper_busy:
@@ -50,6 +52,7 @@ def start_stream(arm):
         if not arm._streaming:
             state = arm.get_state()
             arm._backend.start(state)
+            remember_ee_target(arm, state.ee_position, state.ee_quaternion_xyzw, "start")
             arm._streaming = True
             arm._nullspace = state.joint_positions.copy()
 
@@ -64,6 +67,7 @@ def stop_stream(arm, timeout_s):
             arm._backend.stop()
             wait_stopped(arm, timeout_s)
             arm._streaming = False
+            arm._ee_target = None
 
 
 def close(arm):
@@ -85,6 +89,7 @@ def close(arm):
         arm._backend.close()
     finally:
         arm._connected = arm._streaming = False
+        arm._ee_target = None
         if arm._gripper_executor is not None:
             arm._gripper_executor.shutdown(wait=True)
             arm._gripper_executor = None
@@ -104,5 +109,6 @@ def initialize(arm, config, backend):
     arm._motion_done = threading.Event()
     arm._motion_done.set()
     arm._nullspace = None
+    arm._ee_target = None
     arm._gripper_executor = arm._gripper_future = None
     arm._gripper = GripperController(arm)

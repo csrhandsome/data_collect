@@ -128,6 +128,21 @@ LeRobot 自动生成的 `timestamp`、`frame_index`、`episode_index`、`index`�
 推理异常和回位失败会显示任务失败；运行异常时只停止控制流，不继续自动回位。
 
 命令行也可运行 `uv run python -m inference --record`，默认读取 `config/inference/panda.yaml`。
+
+在 `config/inference/panda.yaml` 设置 `inference.enable_vr_takeover: true` 后，可在推理中进行
+VR 人工纠正；此时自动保存 episode，无需额外传 `--record`。松开接管后恢复策略推理。
+动作 trace 逐步保存实际 `control_source`（`BASE/RL/HUMAN`）、`intervention_flag`、
+接受下发的 EE/夹爪目标，以及策略 step/actor 版本；人工接管期间不会把网络提案当成执行动作。
+EE 目标从控制器原子快照读取，包含夹爪暂停时的保持目标和恢复时的启动目标；
+`ee_target_phase` 区分 `start/command/hold/gripper_pause/gripper_resume`。
+夹爪暂停、恢复期间仍保留触发该夹爪动作的来源和策略版本；trace 时间戳对应目标快照的采样时刻。
+支持普通 VLA/readout 和 Force actor 的来源记录，Force 新 YAML 的 `force_enabled` 元数据也可识别。
+
+离线 RL 使用流程：录制 → 在桌面界面标注成功/失败 → 在 `openpi-force` 使用
+`python -m openpi.rlt.build_replay` 导入数据 → 运行 `rlt.stage: actor_critic`。
+来源标记会保留到 replay，混合回合中的人工步用于 BC。未标注回合不参与训练。
+这是离线数据链路；本地保存和标注不会自动调用在线 RL 的 `begin_episode/observe/end_episode`。
+独立 Force 训练仍需要匹配其 JSONL 格式的实际关节执行记录；当前 EE 控制器不会把实测关节状态冒充关节命令，真机 Force 执行仍需要已校准的 TCP 安全投影。
 不加 `--record` 时只执行推理；正常结束或 Ctrl+C 请求停止后仍会回到起始姿态。
 
 ## Force RLT 推理

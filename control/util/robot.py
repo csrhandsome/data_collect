@@ -25,7 +25,7 @@ def reset_robot(arm):
     arm.start_stream()
 
 
-def handle_gripper(arm, sample, state, now_ns, last_axis_ns, config):
+def handle_gripper(arm, sample, state, now_ns, last_axis_ns, config, *, on_command=None):
     if arm.gripper_busy or not arm.get_capabilities().gripper:
         return False, last_axis_ns
     cfg = config.get("gripper", {})
@@ -50,6 +50,8 @@ def handle_gripper(arm, sample, state, now_ns, last_axis_ns, config):
     arm.set_gripper(
         ratio, speed=float(cfg.get("speed_m_s", 0.2)), force=float(cfg.get("force", 50)), wait=False
     )
+    if on_command is not None:
+        on_command(ratio)
     return True, last_axis_ns
 
 

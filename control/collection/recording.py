@@ -77,15 +77,30 @@ class EpisodeRecorder:
                 raise RuntimeError("Microphone refused episode start")
         self.active = True
 
-    def trace(self, state, vr, position, quaternion):
+    def trace(
+        self, state, vr, position, quaternion, *, control_source=None,
+        target_gripper_position=None, policy_step_id=None, actor_version=None,
+        command_submitted_ns=None,
+        trace_sample_ns=None, ee_target_phase=None,
+    ):
         if not self.active:
             return
+        source = control_source or ("HUMAN" if vr.enabled else "BASE")
+        if source not in {"BASE", "RL", "HUMAN"}:
+            raise ValueError("Trace control_source must be BASE, RL or HUMAN")
+        gripper_target = (
+            state.gripper.commanded_open_ratio
+            if target_gripper_position is None else float(target_gripper_position)
+        )
+        if not np.isfinite(gripper_target) or not 0 <= gripper_target <= 1:
+            raise ValueError("Trace gripper target must be finite in 0..1")
         if vr.source_seq != self.last_vr_seq:
             self.unique_vr += 1
             self.last_vr_seq = vr.source_seq
         record = {
             "sample_index": self.trace_count,
-            "host_sample_monotonic_ns": state.sampled_monotonic_ns,
+            "host_sample_monotonic_ns": time.monotonic_ns() if trace_sample_ns is None else trace_sample_ns,
+            "state_sample_monotonic_ns": state.sampled_monotonic_ns,
             "joint_position": state.joint_positions.tolist(),
             "ee_position": state.ee_position.tolist(),
             "ee_orientation_xyzw": state.ee_quaternion_xyzw.tolist(),
@@ -93,6 +108,13 @@ class EpisodeRecorder:
             "gripper_position": state.gripper.commanded_open_ratio,
             "target_ee_position": np.asarray(position).tolist(),
             "target_ee_orientation_xyzw": np.asarray(quaternion).tolist(),
+            "target_gripper_position": gripper_target,
+            "control_source": source,
+            "intervention_flag": source == "HUMAN",
+            "policy_step_id": policy_step_id,
+            "actor_version": actor_version,
+            "command_submitted_monotonic_ns": command_submitted_ns,
+            "ee_target_phase": ee_target_phase,
             "vr_pose_monotonic_ns": vr.source_ns,
             "vr_pose_seq": vr.source_seq,
             "vr_position": vr.position.tolist(),

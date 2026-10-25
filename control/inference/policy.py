@@ -11,6 +11,9 @@ class ActionPlan:
     observation_ns: int
     actions: np.ndarray
     initial_ee: np.ndarray
+    source: str = "BASE"
+    step_id: int | None = None
+    actor_version: int | str | None = None
 
     def at(self, now_ns, fps):
         index = (now_ns - self.observation_ns) * fps / 1e9 - 1
@@ -24,12 +27,11 @@ def validate_metadata(metadata, config):
     cfg = config["inference"]
     space = metadata.get("action_space")
     expected = 8 if space == "joint" else 7
-    force = metadata.get("rlt_protocol") == "pytorch-rl-token-v1"
+    force = metadata.get("rlt_actor_protocol") == "pytorch-force-rlt-actor-v1"
     if force:
         expected = 7
         if (
-            metadata.get("rlt_actor_protocol") != "pytorch-force-rlt-actor-v1"
-            or metadata.get("group") not in ("B", "C")
+            ("force_enabled" not in metadata and metadata.get("group") not in ("B", "C"))
             or space != "joint"
         ):
             raise ValueError("Force RLT actor metadata is invalid")
@@ -48,7 +50,7 @@ def validate_metadata(metadata, config):
         "gripper_position",
         "joint_position" if space == "joint" else "ee_pose",
     }
-    if force and metadata.get("group") == "C":
+    if force and metadata.get("force_enabled", metadata.get("group") == "C"):
         required.update(("gripper_image_left", "gripper_image_right"))
         if not config.get("tactile", {}).get("enabled", False):
             raise ValueError("C requires tactile.enabled=true")
@@ -101,7 +103,7 @@ def build_observation(state, pair, prompt, space, *, tactile=None, step=0, field
 
 
 def parse_response(response, observation_ns, state, metadata, execute_steps):
-    force = metadata.get("rlt_protocol") == "pytorch-rl-token-v1"
+    force = metadata.get("rlt_actor_protocol") == "pytorch-force-rlt-actor-v1"
     actions = np.asarray(response.get("proposed_q" if force else "actions", []), dtype=np.float64)
     shape = (int(metadata["action_horizon"]), int(metadata["action_dim"]))
     steps = int(execute_steps)
@@ -111,11 +113,17 @@ def parse_response(response, observation_ns, state, metadata, execute_steps):
     reference = float(response.get("ref_obs_ts", float("nan")))
     if force and (
         not np.isfinite(reference)
-        or response.get("group") != metadata.get("group")
+        or ("group" in metadata and response.get("group") != metadata["group"])
         or abs(reference - observation_ns / 1e9) > 1e-6
     ):
         raise ValueError("Force RLT response reference mismatch")
-    return ActionPlan(observation_ns, actions, state.ee_pose.vector)
+    source = response.get("source", "RL" if force else "BASE")
+    if source not in {"BASE", "RL"}:
+        raise ValueError("Policy response source must identify BASE or RL")
+    return ActionPlan(
+        observation_ns, actions, state.ee_pose.vector, source,
+        response.get("step_id"), response.get("actor_version"),
+    )
 
 
 class PolicyWorker:
