@@ -10,7 +10,7 @@ bash dev.sh
 ```
 
 Electron + Nuitka Linux 桌面版的构建、运行和产物测试见
-[replay/desktop/README.md](replay/desktop/README.md)。
+[replay/desktop/README.md](src/replay/desktop/README.md)。
 
 无需硬件的采集验证（请使用单独的 `dataset.root` / `dataset.date` 配置）：
 

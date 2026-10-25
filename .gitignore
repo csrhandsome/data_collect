@@ -12,7 +12,7 @@ data/*
 !data/franka_mjcf/
 # Local documentation
 /data/doc/
-data_analysis/quality_reports
+src/data_analysis/quality_reports
 .codex
 scripts/data2modelscope.py
 scripts/modelscope2data.py
