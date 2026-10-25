@@ -141,6 +141,36 @@ def test_force_metadata_and_response_need_no_checksum(group):
             )
 
 
+def test_readout_metadata_is_not_a_force_actor():
+    metadata = {**SlowPolicy.server_metadata, "rlt_protocol": "pytorch-rl-token-v1"}
+    assert not validate_metadata(metadata, load_config(INFERENCE_CONFIG))
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_force_yaml_metadata_without_legacy_group(enabled):
+    from control._panda.fake import FakeBackend
+    from control.inference.policy import parse_response
+
+    cfg = load_config(INFERENCE_CONFIG)
+    cfg["inference"]["action_space"] = "joint"
+    cfg["tactile"]["enabled"] = enabled
+    metadata = {
+        **SlowPolicy.server_metadata,
+        "action_space": "joint", "action_dim": 7,
+        "rlt_protocol": "pytorch-rl-token-v1",
+        "rlt_actor_protocol": "pytorch-force-rlt-actor-v1",
+        "force_enabled": enabled,
+        "finger_input_protocol": "panda-finger-rgb-history-v1",
+    }
+    assert validate_metadata(metadata, cfg)
+    state = FakeBackend().snapshot()
+    result = parse_response(
+        {"proposed_q": np.zeros((50, 7)), "ref_obs_ts": state.sampled_monotonic_ns / 1e9},
+        state.sampled_monotonic_ns, state, metadata, cfg["inference"]["execute_steps"],
+    )
+    assert result.source == "RL"
+
+
 def test_request_observation_keys_match_recording_schema():
     from control._panda.fake import FakeBackend
     from control.collection.devices import FakeCameras

@@ -12,7 +12,7 @@ for replay_tool in uv pnpm setsid; do
 done
 
 uv sync
-pnpm --dir replay/frontend install --frozen-lockfile
+pnpm --dir src/replay/frontend install --frozen-lockfile
 replay_api_pid=''
 replay_web_pid=''
 replay_stop() {
@@ -30,7 +30,7 @@ trap 'exit 143' TERM
 
 setsid env -u PYTHONPATH uv run replay-server &
 replay_api_pid=$!
-setsid env REPLAY_API_TARGET="${REPLAY_API_TARGET:-http://127.0.0.1:8003}" pnpm --dir replay/frontend dev --host 127.0.0.1 --port 5173 --strictPort &
+setsid env REPLAY_API_TARGET="${REPLAY_API_TARGET:-http://127.0.0.1:8003}" pnpm --dir src/replay/frontend dev --host 127.0.0.1 --port 5173 --strictPort &
 replay_web_pid=$!
 printf '\n回放页面：http://127.0.0.1:5173\nAPI 文档：http://127.0.0.1:8003/docs\nCtrl+C 关闭前后端。\n\n'
 wait -n "$replay_api_pid" "$replay_web_pid"

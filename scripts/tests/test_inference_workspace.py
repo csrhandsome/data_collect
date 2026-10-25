@@ -3,6 +3,7 @@
 import json
 import threading
 import time
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -48,6 +49,162 @@ def config_for(root, *, audio=False):
             "action_fps": 30, "model_horizon": 50, "execute_steps": 10,
         },
     }
+
+
+def test_vr_takeover_auto_records_actual_sources_and_resumes_policy(tmp_path, monkeypatch):
+    from control.collection.vr import VRResampler
+
+    original_sample = VRResampler.sample
+    ticks = [0]
+
+    def sample(resampler, raw, now):
+        result = original_sample(resampler, raw, now)
+        ticks[0] += 1
+        return replace(result, enabled=20 <= ticks[0] < 40)
+
+    monkeypatch.setattr(VRResampler, "sample", sample)
+
+    class RLPolicy(FastPolicy):
+        def infer(self, observation):
+            return {
+                **super().infer(observation), "source": "RL",
+                "step_id": self.calls, "actor_version": "actor-1",
+            }
+
+    cfg = config_for(tmp_path)
+    cfg["inference"]["enable_vr_takeover"] = True
+    # Small chunks make the pre/post takeover behavior observable in a short dry run.
+    cfg["inference"]["execute_steps"] = 2
+    result = run_inference(cfg, dry_run=True, max_steps=70, policy=RLPolicy())
+    root = tmp_path / result["episode"]["dataset_id"]
+    rows = [json.loads(line) for line in (root / "episode_000000.actions.jsonl").read_text().splitlines()]
+    assert len(rows) == 70
+    sources = [row["control_source"] for row in rows]
+    assert "RL" in sources[:19]
+    assert "HUMAN" in sources[19:39]
+    assert "RL" in sources[39:]
+    assert all(row["intervention_flag"] == (row["control_source"] == "HUMAN") for row in rows)
+    assert all("target_gripper_position" in row for row in rows)
+    assert all(row["actor_version"] == "actor-1" for row in rows if row["control_source"] == "RL")
+    assert all(row["policy_step_id"] is None for row in rows if row["control_source"] == "HUMAN")
+    sync = json.loads((root / "episode_000000.sync.json").read_text())
+    assert sync["success"] is None
+    assert sync["source"] == "inference"
+
+
+@pytest.mark.parametrize("human", [False, True])
+@pytest.mark.parametrize("fast_gripper", [False, True])
+def test_trace_matches_gripper_pause_and_resume_targets(tmp_path, monkeypatch, human, fast_gripper):
+    from control.collection.vr import EEMapper, VRResampler
+
+    entered, release = threading.Event(), threading.Event()
+
+    class LagBackend(FakeBackend):
+        def __init__(self):
+            super().__init__()
+            self.targets = []
+
+        def target(self, position, quaternion, nullspace):
+            # Model impedance lag: an accepted target is not a measured pose.
+            self.targets.append((time.monotonic_ns(), np.array(position), np.array(quaternion)))
+            self.calls.append("target")
+
+        def start(self, state):
+            self.target(state.ee_position, state.ee_quaternion_xyzw, state.joint_positions)
+            super().start(state)
+
+        def gripper_command(self, *args, **kwargs):
+            entered.set()
+            if not fast_gripper and not release.wait(2):
+                raise TimeoutError("Gripper command was not released")
+            # Resuming at a changed measured pose must publish a new target.
+            self.position = np.array([0.402, 0, 0.4])
+            self.quaternion = np.array([0, 0, np.sin(0.01), np.cos(0.01)])
+            return super().gripper_command(*args, **kwargs)
+
+    class GripPolicy(FastPolicy):
+        def infer(self, observation):
+            super().infer(observation)
+            pose = observation["observation.ee_pose"].copy()
+            pose[0] += 0.01
+            return {
+                "actions": np.tile(np.r_[pose, 0.2], (50, 1)),
+                "source": "RL", "step_id": self.calls, "actor_version": "actor-1",
+            }
+
+    backend = LagBackend()
+    monkeypatch.setattr("control._panda.fake.FakeBackend", lambda: backend)
+    submit = RoboticArmControler.set_gripper
+    snapshot = RoboticArmControler.get_ee_target
+    requested = False
+    pause_samples = 0
+
+    def set_gripper(arm, *args, **kwargs):
+        nonlocal requested
+        requested = True
+        receipt = submit(arm, *args, **kwargs)
+        assert entered.wait(1)
+        if fast_gripper:
+            # Force completion before the same tick reaches recorder.trace().
+            arm.wait_gripper(timeout=1)
+        return receipt
+
+    def get_target(arm):
+        nonlocal pause_samples
+        target = snapshot(arm)
+        if target.phase == "gripper_pause":
+            pause_samples += 1
+            if pause_samples == 3:
+                # Complete after the loop skipped sending an EE command, so
+                # the trace must read the worker's new resume target this tick.
+                release.set()
+                arm.wait_gripper(timeout=1)
+                target = snapshot(arm)
+        return target
+
+    monkeypatch.setattr(RoboticArmControler, "set_gripper", set_gripper)
+    monkeypatch.setattr(RoboticArmControler, "get_ee_target", get_target)
+    if human:
+        sample = VRResampler.sample
+
+        def human_sample(resampler, raw, now):
+            return replace(sample(resampler, raw, now), enabled=True, close=not requested)
+
+        def human_target(mapper, sample, state, now):
+            return state.ee_position + [0.01, 0, 0], state.ee_quaternion_xyzw.copy()
+
+        monkeypatch.setattr(VRResampler, "sample", human_sample)
+        monkeypatch.setattr(EEMapper, "map", human_target)
+    cfg = config_for(tmp_path)
+    cfg["gripper"]["type"] = "franka"
+    cfg["inference"]["enable_vr_takeover"] = human
+    try:
+        result = run_inference(cfg, dry_run=True, max_steps=25, policy=GripPolicy(), record=True)
+    finally:
+        release.set()
+    root = tmp_path / result["episode"]["dataset_id"]
+    rows = [json.loads(line) for line in (root / "episode_000000.actions.jsonl").read_text().splitlines()]
+    assert requested
+    phases = [row["ee_target_phase"] for row in rows]
+    assert "gripper_resume" in phases
+    if not fast_gripper:
+        assert phases.count("gripper_pause") == 2
+    # Compare every recorded target to the actual backend command at that time,
+    # including the command submission tick and all ticks while it is busy.
+    for row in rows:
+        issued, position, quaternion = next(
+            entry for entry in reversed(backend.targets) if entry[0] <= row["host_sample_monotonic_ns"]
+        )
+        np.testing.assert_allclose(row["target_ee_position"], position)
+        np.testing.assert_allclose(row["target_ee_orientation_xyzw"], quaternion)
+        assert issued <= row["command_submitted_monotonic_ns"] <= row["host_sample_monotonic_ns"]
+        if row["ee_target_phase"] in {"gripper_pause", "gripper_resume"}:
+            assert row["control_source"] == ("HUMAN" if human else "RL")
+            assert row["intervention_flag"] is human
+            assert row["target_gripper_position"] == pytest.approx(0.0 if human else 0.2)
+            assert row["actor_version"] == (None if human else "actor-1")
+    resume_index = phases.index("gripper_resume")
+    assert "command" in phases[resume_index + 1:]
 
 
 def test_stop_while_connecting_does_not_open_robot(tmp_path, monkeypatch):

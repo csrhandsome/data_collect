@@ -12,7 +12,7 @@ data/*
 !data/franka_mjcf/
 # Local documentation
 /data/doc/
-data_analysis/quality_reports
+src/data_analysis/quality_reports
 .codex
 scripts/data2modelscope.py
 scripts/modelscope2data.py
@@ -25,6 +25,3 @@ playwright-report/
 test-results/
 .ruff_cache/
 .pytest_cache/
-
-# Generated local camera playback copies
-.replay-cache/

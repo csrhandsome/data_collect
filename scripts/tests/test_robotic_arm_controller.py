@@ -53,6 +53,7 @@ def test_snapshot_is_immutable_and_ready(arm):
 
 
 def test_ee_stream_and_hold(arm):
+    assert arm.get_ee_target() is None
     with pytest.raises(ValueError, match="EE-only"):
         arm.start_stream("joint")
     with pytest.raises(RuntimeError):
@@ -61,19 +62,74 @@ def test_ee_stream_and_hold(arm):
     arm.start_stream()
     receipt = arm.send_ee_target([0.41, 0, 0.4], [0, 0, 0, 2])
     assert receipt.accepted and receipt.space == "ee"
+    target = arm.get_ee_target()
+    assert target.phase == "command"
+    assert target.submitted_monotonic_ns == receipt.submitted_monotonic_ns
+    assert target.sampled_monotonic_ns >= target.submitted_monotonic_ns
+    np.testing.assert_allclose(target.ee_position, [0.41, 0, 0.4])
+    np.testing.assert_allclose(target.ee_quaternion_xyzw, [0, 0, 0, 1])
+    with pytest.raises(ValueError):
+        target.ee_position[:] = 0
     assert np.isclose(arm.get_state().ee_quaternion_xyzw[-1], 1)
     assert arm.hold().ee_position[0] == 0.41
+    held_target = arm.get_ee_target()
+    assert held_target.phase == "hold"
     with pytest.raises(ValueError):
         arm.send_ee_target([np.nan, 0, 0], [0, 0, 0, 1])
     with pytest.raises(ValueError):
         arm.send_ee_target([0.4, 0, 0.4], [0, 0, 0, 0])
     with pytest.raises(ValueError):
         arm.send_ee_target([2, 0, 0.4], [0, 0, 0, 1])
+    assert arm.get_ee_target().submitted_monotonic_ns == held_target.submitted_monotonic_ns
     with pytest.raises(RuntimeError):
         arm.move_joints(np.zeros(7))
     arm.stop_stream(timeout_s=0.1)
     arm.stop_stream()
     assert arm.get_status().stream_space is None
+    assert arm.get_ee_target() is None
+
+
+def test_gripper_target_feedback_tracks_pause_and_changed_resume_pose(arm, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    original_command = arm._backend.gripper_command
+
+    def lagging_target(position, quaternion, nullspace):
+        # Accept commands without making the measured pose jump to the target.
+        pass
+
+    def blocked_command(*args, **kwargs):
+        entered.set()
+        if not release.wait(2):
+            raise TimeoutError("Gripper command was not released")
+        arm._backend.position = np.array([0.402, 0, 0.4])
+        arm._backend.quaternion = np.array([0, 0, np.sin(0.01), np.cos(0.01)])
+        return original_command(*args, **kwargs)
+
+    monkeypatch.setattr(arm._backend, "target", lagging_target)
+    monkeypatch.setattr(arm._backend, "gripper_command", blocked_command)
+    arm.start_stream()
+    arm.send_ee_target([0.41, 0, 0.4], [0, 0, 0, 1])
+    try:
+        arm.set_gripper(0.2, wait=False)
+        assert entered.wait(1)
+        paused = arm.get_ee_target()
+        assert paused.phase == "gripper_pause"
+        np.testing.assert_allclose(paused.ee_position, [0.4, 0, 0.4])
+        # Subsequent measured drift must not be mistaken for a new target.
+        arm._backend.position = np.array([0.401, 0, 0.4])
+        np.testing.assert_allclose(arm.get_ee_target().ee_position, paused.ee_position)
+    finally:
+        release.set()
+    arm.wait_gripper(timeout=1)
+    resumed = arm.get_ee_target()
+    assert resumed.phase == "gripper_resume"
+    assert paused.sampled_monotonic_ns < resumed.submitted_monotonic_ns <= resumed.sampled_monotonic_ns
+    np.testing.assert_allclose(resumed.ee_position, [0.402, 0, 0.4])
+    np.testing.assert_allclose(resumed.ee_quaternion_xyzw, arm.get_state().ee_quaternion_xyzw)
+    # A retained sample is immutable even if the worker has already resumed.
+    np.testing.assert_allclose(paused.ee_position, [0.4, 0, 0.4])
+    arm.send_ee_target([0.412, 0, 0.4], [0, 0, 0, 1])
+    assert arm.get_ee_target().phase == "command"
 
 
 def test_finite_moves_and_pose_conversion(arm):

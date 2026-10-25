@@ -10,7 +10,7 @@ bash dev.sh
 ```
 
 Electron + Nuitka Linux 桌面版的构建、运行和产物测试见
-[replay/desktop/README.md](replay/desktop/README.md)。
+[replay/desktop/README.md](src/replay/desktop/README.md)。
 
 无需硬件的采集验证（请使用单独的 `dataset.root` / `dataset.date` 配置）：
 
@@ -109,37 +109,16 @@ LeRobot 自动生成的 `timestamp`、`frame_index`、`episode_index`、`index`�
 音频 WAV 和音频元数据继续由 `audio.enabled` 控制，当前配置为 16 kHz 单声道。
 新旧字段格式不同，需更换 `dataset.date` 或数据目录。续采校验会拒绝混用 schema。
 
-## Legacy ASR 脚本
+## 数据存储
 
-当前仓库不再提供需要 ASR 的功能，不安装 `qwen-asr`，也不覆盖 Transformers / Hugging Face Hub 的依赖约束。
-音频采集、VAD、回放和已有标注的保留仍可使用。
+采集、训练读取、回放、合并和删除统一使用 **LeRobot v3 + MP4**。相机字段固定为
+`dtype: video`，不再提供图像内嵌选项或旧格式迁移入口。视频参数在
+`config/train/panda.yaml` 的 `dataset.video_encoder` 配置，默认 H.264、CRF 18、GOP 2、fast。
 
-以下脚本仅作为 legacy 历史代码保留，当前项目环境不支持运行；使用需要自行配置独立的 legacy 环境：
+现有数据仅保留 `data/dataset/*_v3_mp4`，音频、同步记录和动作轨迹随数据集保留。
+整理范围、保留数据清单和此前性能对比统一见 [v3 MP4 说明](LEROBOT_V3_MP4.md)。
 
-- `data_analysis/convert_audio_dataset_to_asr.py`（Whisper 转写）
-- `data_analysis/convert_audio_dataset_to_asr_qwen.py`（Qwen3-ASR 转写）
-- `scripts/precompute_instruction_features.py`（依赖外部 openpi 和 ASR 模型的音频特征提取）
-
-## 旧数据
-
-旧 v2.0/v2.1 数据仍可在回放页面读取和删除。新版 LeRobot 续采要求 v3.0；可以换 `dataset.date` 创建新数据集，
-或者将旧 **v2.1** 数据转换到新目录后使用（转换保留原数据和音频/同步/轨迹 sidecar）：
-
-```bash
-uv run python -m scripts.migrate_lerobot_dataset \
-  --input data/dataset/old_dataset \
-  --output data/dataset/new_dataset
-```
-
-v2.1 与 v3.0 均支持质量检查和同格式数据合并。
-v3 删除直接用 LeRobot 官方数据工具从原目录生成待提交结果，不再预先完整复制数据集；
-保留的音频、同步文件、VAD/ASR 标注和轨迹会复制并重排编号，通过校验后原子交换目录。
-v2 删除仍在完整副本上执行。两种格式都保留删除锁和提交前的并发变更检查。
-前后读写性能的测试口径与结果见 [LeRobot 生命周期基准](benchmarks/README.md)。
-转换和合并不会上传到 Hub。真实机器人、相机和麦克风仍需在设备上验证。
-
-上游依据：[LeRobot 0.6.1](https://github.com/huggingface/lerobot/releases/tag/v0.6.1)、
-[Python 与依赖要求](https://github.com/huggingface/lerobot/blob/v0.6.1/pyproject.toml)。
+音频采集、VAD、回放和已有标注仍可使用；旧 ASR 数据转换脚本已删除。
 
 ## 推理工作区
 
@@ -149,6 +128,21 @@ v2 删除仍在完整副本上执行。两种格式都保留删除锁和提交�
 推理异常和回位失败会显示任务失败；运行异常时只停止控制流，不继续自动回位。
 
 命令行也可运行 `uv run python -m inference --record`，默认读取 `config/inference/panda.yaml`。
+
+在 `config/inference/panda.yaml` 设置 `inference.enable_vr_takeover: true` 后，可在推理中进行
+VR 人工纠正；此时自动保存 episode，无需额外传 `--record`。松开接管后恢复策略推理。
+动作 trace 逐步保存实际 `control_source`（`BASE/RL/HUMAN`）、`intervention_flag`、
+接受下发的 EE/夹爪目标，以及策略 step/actor 版本；人工接管期间不会把网络提案当成执行动作。
+EE 目标从控制器原子快照读取，包含夹爪暂停时的保持目标和恢复时的启动目标；
+`ee_target_phase` 区分 `start/command/hold/gripper_pause/gripper_resume`。
+夹爪暂停、恢复期间仍保留触发该夹爪动作的来源和策略版本；trace 时间戳对应目标快照的采样时刻。
+支持普通 VLA/readout 和 Force actor 的来源记录，Force 新 YAML 的 `force_enabled` 元数据也可识别。
+
+离线 RL 使用流程：录制 → 在桌面界面标注成功/失败 → 在 `openpi-force` 使用
+`python -m openpi.rlt.build_replay` 导入数据 → 运行 `rlt.stage: actor_critic`。
+来源标记会保留到 replay，混合回合中的人工步用于 BC。未标注回合不参与训练。
+这是离线数据链路；本地保存和标注不会自动调用在线 RL 的 `begin_episode/observe/end_episode`。
+独立 Force 训练仍需要匹配其 JSONL 格式的实际关节执行记录；当前 EE 控制器不会把实测关节状态冒充关节命令，真机 Force 执行仍需要已校准的 TCP 安全投影。
 不加 `--record` 时只执行推理；正常结束或 Ctrl+C 请求停止后仍会回到起始姿态。
 
 ## Force RLT 推理
