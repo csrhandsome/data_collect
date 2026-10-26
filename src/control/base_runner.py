@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
+from control.base_node import BaseNode
 from control.common import lifecycle, motion
 from control.common.gripper_controller import GripperController
 from control.types import (
@@ -21,7 +22,7 @@ from control.types import (
 )
 
 
-class BaseRunner(ABC):
+class BaseRunner(BaseNode[RobotState], ABC):
     """Explicit connection, immutable state and one owner for all robot commands."""
 
     def __init__(self, *, config: dict | None = None, backend=None) -> None:
@@ -33,6 +34,13 @@ class BaseRunner(ABC):
 
     def connect(self) -> RobotStatus:
         return lifecycle.connect(self)
+
+    def start(self) -> None:
+        """Prepare feedback only; start_stream() explicitly enables commands."""
+        self.connect()
+
+    def read(self) -> RobotState:
+        return self.get_state()
 
     def close(self) -> None:
         lifecycle.close(self)

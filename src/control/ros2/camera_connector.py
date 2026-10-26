@@ -4,7 +4,7 @@ import time
 
 import numpy as np
 
-from control.ros2.subscription import Subscription
+from control.ros2.base_node import Ros2Node
 from control.types import CameraPair
 from control.util.img_util import center_crop_and_resize_rgb_uint8
 
@@ -31,26 +31,39 @@ def image_rgb(message):
     return np.ascontiguousarray(rgb)
 
 
-class Ros2Cameras:
+class Ros2Cameras(Ros2Node[CameraPair]):
     def __init__(self, config):
         cfg = config.get("camera", {})
         ros = cfg.get("ros2", {})
         self._max_age = float(cfg.get("max_age_s", 0.2))
-        self._max_skew = float(ros.get("max_pair_skew_s", 0.1))
         self._crop = float(cfg.get("crop_scale", 0.9))
         self._hw = int(cfg.get("image_hw", 224))
-        self._frames = {}
-        self._source = Subscription("camera", config.get("ros2", {}).get("namespace", ""))
+        self._raw = {}
+        self._cache = {}
+        self._counts = {"front": 0, "wrist": 0}
+        super().__init__("camera", config.get("ros2", {}).get("namespace", ""), background=False)
+        self._timeout = float(cfg.get("startup_timeout_s", 10))
         self._topics = {
             "front": ros.get("external_image_topic", "/camera/external/color/image_raw"),
             "wrist": ros.get("wrist_image_topic", "/camera/wrist/color/image_raw"),
         }
+        self.start()
+
+    def start(self):
+        if self._source.node is not None:
+            self._source.check()
+            return
         try:
-            self._source.start(self._setup)
-            self._source.wait(self._ready, float(cfg.get("startup_timeout_s", 10)))
+            # Pump on the caller thread. A second rclpy spin thread stalls this
+            # subscription after the control loop and the other ROS nodes are up.
+            super().start()
+            self._wait_ready(self._timeout)
         except BaseException:
             self.close()
             raise
+
+    def _wait_ready(self, timeout):
+        self._source.wait(self._ready, timeout)
 
     def _setup(self, node):
         from rclpy.qos import qos_profile_sensor_data
@@ -63,41 +76,71 @@ class Ros2Cameras:
         ]
 
     def _receive(self, key, message):
-        try:
-            stamp = message.header.stamp
-            source_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
-            age_ns = self._source.node.get_clock().now().nanoseconds - source_ns
-            if source_ns <= 0 or not -0.1e9 <= age_ns <= self._max_age * 1e9:
-                raise ValueError("ROS camera source stamp is stale or clocks are unsynchronized")
-            rgb = center_crop_and_resize_rgb_uint8(
-                image_rgb(message), crop_scale=self._crop, out_hw=self._hw,
+        stamp = message.header.stamp
+        source_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+        if source_ns <= 0 or message.height <= 0 or message.width <= 0:
+            self._source.node.get_logger().warning(
+                "ROS camera message has no header stamp or image size", throttle_duration_sec=2.0,
             )
-            capture_ns = time.monotonic_ns() - max(0, age_ns)
-        except (ValueError, TypeError) as exc:
-            self._source.node.get_logger().warning(str(exc), throttle_duration_sec=2.0)
             return
-        with self._source.condition:
-            previous = self._frames.get(key)
-            if previous is not None and source_ns <= previous[2]:
-                return
-            self._frames[key] = (rgb, capture_ns, source_ns)
-            self._source.condition.notify_all()
+        # Keep the latest packet only. Cropping here makes the control thread
+        # miss the other camera while it resizes a backlog.
+        packet = (
+            bytes(message.data), int(message.height), int(message.width), int(message.step),
+            str(message.encoding), time.monotonic_ns(), source_ns,
+        )
+        self._counts[key] = self._counts.get(key, 0) + 1
+        self._raw[key] = packet
 
     def _ready(self):
-        if len(self._frames) != 2:
+        if len(self._raw) != 2:
             return False
-        front, wrist = self._frames["front"], self._frames["wrist"]
         now = time.monotonic_ns()
-        return (max(now - front[1], now - wrist[1]) <= self._max_age * 1e9
-                and abs(front[2] - wrist[2]) <= self._max_skew * 1e9)
+        return max(now - self._raw["front"][5], now - self._raw["wrist"][5]) <= self._max_age * 1e9
+
+    def _resized(self, key):
+        data, height, width, step, encoding, capture_ns, source_ns = self._raw[key]
+        cached = self._cache.get(key)
+        if cached is not None and cached[0] == source_ns:
+            return cached[1], capture_ns, source_ns
+        message = type("Image", (), {})()
+        message.data = data
+        message.height = height
+        message.width = width
+        message.step = step
+        message.encoding = encoding
+        rgb = center_crop_and_resize_rgb_uint8(
+            image_rgb(message), crop_scale=self._crop, out_hw=self._hw, use_tensorflow=False,
+        )
+        self._cache[key] = (source_ns, rgb)
+        return rgb, capture_ns, source_ns
+
+    def read(self):
+        # Drain ready callbacks even when the cached pair is still fresh.
+        self._source.poll(0.0)
+        # A USB camera can pause longer than max_age. Wait for the next pair
+        # instead of ending collection on one gap.
+        deadline = time.monotonic() + max(self._max_age, 1.0)
+        while not self._ready():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                now = time.monotonic_ns()
+                ages = {
+                    key: round((now - value[5]) / 1e9, 3) for key, value in self._raw.items()
+                }
+                raise TimeoutError(
+                    "ROS camera pair is stale or exceeds maximum timestamp skew "
+                    f"ages={ages} counts={dict(self._counts)}"
+                )
+            self._source.poll(min(0.05, remaining))
+        front = self._resized("front")
+        wrist = self._resized("wrist")
+        return CameraPair(front[0], wrist[0], front[1], wrist[1], front[2] / 1e9, wrist[2] / 1e9)
 
     def get_frames(self):
-        with self._source.condition:
-            self._source.check()
-            if not self._ready():
-                raise TimeoutError("ROS camera pair is stale or exceeds maximum timestamp skew")
-            front, wrist = self._frames["front"], self._frames["wrist"]
-            return CameraPair(front[0], wrist[0], front[1], wrist[1], front[2] / 1e9, wrist[2] / 1e9)
+        return self.read()
 
     def close(self):
-        self._source.close()
+        super().close()
+        self._raw.clear()
+        self._cache.clear()

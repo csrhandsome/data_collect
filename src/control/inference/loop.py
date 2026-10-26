@@ -97,7 +97,7 @@ def _execute_inference(
         stack.callback(cameras.close)
         vr = make_vr(config, dry_run) if cfg.get("enable_vr_takeover", False) else None
         if vr is not None:
-            stack.callback(vr.stop)
+            stack.callback(vr.close)
         if cfg.get("move_to_start", False):
             arm.move_to_start()
         fingers = (
@@ -121,8 +121,8 @@ def _execute_inference(
         # Warmup: wait for five inference responses and discard them before execution.
         for i in range(5):
             _check_stop(stop_event)
-            state = arm.get_state()
-            pair = cameras.get_frames()
+            state = arm.read()
+            pair = cameras.read()
             if (
                 pair is None
                 or time.monotonic_ns() - min(pair.front_ns, pair.wrist_ns)
@@ -168,7 +168,7 @@ def _execute_inference(
         requests = 0
         last_axis_ns = 0
         failed = False
-        target_gripper = arm.get_state().gripper.commanded_open_ratio
+        target_gripper = arm.read().gripper.commanded_open_ratio
         control_source = "BASE"
         policy_step_id = actor_version = None
 
@@ -181,9 +181,9 @@ def _execute_inference(
         try:
             while not stop_event.is_set() and (limit <= 0 or steps < limit):
                 rate.tick()
-                state = arm.get_state()
-                pair = cameras.get_frames()
-                raw_sample = vr.latest if vr else None
+                state = arm.read()
+                pair = cameras.read()
+                raw_sample = vr.read() if vr else None
                 now = time.monotonic_ns()
                 if (
                     pair is None
@@ -305,7 +305,7 @@ def _execute_inference(
             finish_stream(arm)
             if recorder is not None:
                 index = recorder.index
-                recorder.finish(arm.get_state(), save=not failed, publish=True, source="inference")
+                recorder.finish(arm.read(), save=not failed, publish=True, source="inference")
                 if not failed and recorder.dataset.meta.total_episodes > index:
                     sidecar = (
                         recorder.root / "audio" if recorder.audio_path else recorder.root

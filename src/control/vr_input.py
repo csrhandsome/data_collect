@@ -25,6 +25,7 @@ from teleop_xr import Teleop
 from teleop_xr.config import TeleopSettings
 from teleop_xr.messages import XRState
 
+from control.base_node import BaseNode
 from control.util.pose import nlerp_quat_xyzw, normalize_quat_xyzw
 
 # Shared-memory layout (25 doubles, copied under one short lock):
@@ -330,7 +331,7 @@ class VRInputReader:
         )
 
 
-class VRInputProcess:
+class VRInputProcess(BaseNode[VRInput]):
     """Out-of-process VR reader.  Immune to main-process GIL contention.
 
     Usage::
@@ -369,7 +370,16 @@ class VRInputProcess:
         )
 
     def start(self) -> None:
-        self._proc.start()
+        if self._proc.pid is None:
+            self._proc.start()
+        elif not self._proc.is_alive():
+            raise RuntimeError("VR worker has stopped; create a new VRInputProcess to restart")
+
+    def read(self) -> VRInput:
+        return self.latest
+
+    def close(self) -> None:
+        self.stop()
 
     def stop(self) -> None:
         if self._proc.is_alive():

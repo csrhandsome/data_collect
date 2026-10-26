@@ -4,7 +4,7 @@
 extends: ../dataset/panda.yaml
 dataset:
   repo_id: openpi/franka_lerobot
-  date: test_100hz
+  date: "20261025"
   instruction: Place the object into the basket
   label: stop
   enable_logging: true
@@ -17,7 +17,7 @@ dataset:
     g: 2  # 短关键帧间隔，减少训练随机取帧的解码量。
     preset: fast
 robot:
-  backend: panda  # panda / ros2；采集和推理共用此选择。
+  backend: ros2  # panda / ros2；采集和推理共用此选择。
   start_joint_position:
   - 0.00388
   - -0.45916
@@ -102,6 +102,10 @@ vr:
   show_controller_hints: true  # 在左右手柄旁显示当前采集模式的操作说明
   host: 0.0.0.0
   port: 4443
+  # backend 默认随 robot.backend。ros2 时采集只订阅，Teleop 由 src/env/start.sh 里的节点发布。
+  ros2:
+    topic: /vr/input
+    startup_timeout_s: 10
   long_press_s: 0.5
   position_alpha: 0.6
   rotation_alpha: 0.35

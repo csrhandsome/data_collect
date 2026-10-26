@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import threading
 import time
 
 import numpy as np
 
 from control.base_runner import BaseRunner
 from control.ros2.gripper_controller import Ros2GripperController
+from control.ros2.subscription import Subscription
 from control.types import RobotState
 from control.util.pose import matrix_to_quat_xyzw, normalize_quat_xyzw, position_quat_to_matrix
-
 
 _ROBOT_MODES = (
     "Other",
@@ -42,9 +41,9 @@ class Ros2Backend:
         self.namespace = self.cfg.get("namespace", "").strip("/")
         self.frame = self.cfg.get("base_frame", "panda_link0")
         self.timeout = float(self.cfg.get("state_timeout_s", 0.25))
-        self._condition = threading.Condition()
-        self._context = self._node = self._executor = self._thread = None
-        self._state = self._failure = None
+        self._source = Subscription("data_collect_control", self.topic(""))
+        self._condition = self._source.condition
+        self._state = None
         self._streaming = False
         self.gripper = None
 
@@ -52,73 +51,51 @@ class Ros2Backend:
         return "/" + "/".join(p for p in (self.namespace, name.strip("/")) if p)
 
     def connect(self):
-        import rclpy
-        from franka_msgs.msg import FrankaRobotState
-        from geometry_msgs.msg import PoseStamped
-        from rclpy.context import Context
-        from rclpy.executors import SingleThreadedExecutor
-        from rclpy.qos import QoSProfile, ReliabilityPolicy
-        from rclpy.signals import SignalHandlerOptions
-
-        if self._node is not None:
+        if self._source.node is not None:
+            self._source.check()
             return
         try:
-            self._context = Context()
-            rclpy.init(
-                args=[], context=self._context, signal_handler_options=SignalHandlerOptions.NO
+            self._source.start(self._setup)
+            self._source.wait(
+                lambda: self._state is not None, float(self.cfg.get("connect_timeout_s", 10))
             )
-            self._node = rclpy.create_node(
-                "data_collect_control",
-                namespace=self.topic(""),
-                context=self._context,
-                use_global_arguments=False,
-            )
-            self._pose_type = PoseStamped
-            self._publisher = self._node.create_publisher(
-                PoseStamped,
-                self.topic(
-                    self.cfg.get(
-                        "equilibrium_pose_topic",
-                        "cartesian_pose_impedance_controller/equilibrium_pose",
-                    )
-                ),
-                QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
-            )
-            self._subscription = self._node.create_subscription(
-                FrankaRobotState,
-                self.topic(
-                    self.cfg.get("robot_state_topic", "franka_robot_state_broadcaster/robot_state")
-                ),
-                self._on_state,
-                QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
-            )
-            self.gripper = Ros2GripperController(self.config, self._node)
-            self.gripper.connect()
-            self._executor = SingleThreadedExecutor(context=self._context)
-            self._executor.add_node(self._node)
-            self._thread = threading.Thread(target=self._spin, name="ros2-feedback", daemon=True)
-            self._thread.start()
-            deadline = time.monotonic() + float(self.cfg.get("connect_timeout_s", 10))
-            with self._condition:
-                while self._state is None and self._failure is None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError(
-                            "No valid Franka ROS state; check namespace and broadcaster"
-                        )
-                    self._condition.wait(remaining)
             self.snapshot()
         except BaseException:
             self.close()
             raise
 
-    def _spin(self):
+    @property
+    def _node(self):
+        return self._source.node
+
+    def _setup(self, node):
+        from franka_msgs.msg import FrankaRobotState
+        from geometry_msgs.msg import PoseStamped
+        from rclpy.qos import QoSProfile, ReliabilityPolicy
+
+        self._pose_type = PoseStamped
+        self._publisher = node.create_publisher(
+            PoseStamped,
+            self.topic(self.cfg.get(
+                "equilibrium_pose_topic", "cartesian_pose_impedance_controller/equilibrium_pose"
+            )),
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
+        )
+        self._subscription = node.create_subscription(
+            FrankaRobotState,
+            self.topic(self.cfg.get("robot_state_topic", "franka_robot_state_broadcaster/robot_state")),
+            self._on_state,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+        )
+        self.gripper = Ros2GripperController(self.config, node)
         try:
-            self._executor.spin()
-        except Exception as exc:
-            with self._condition:
-                self._failure = exc
-                self._condition.notify_all()
+            self.gripper.connect()
+        except BaseException:
+            # Subscription.start destroys its node on setup failure. Release
+            # partially connected clients while their node still exists.
+            self.gripper.close()
+            self.gripper = None
+            raise
 
     def _on_state(self, msg):
         try:
@@ -171,8 +148,7 @@ class Ros2Backend:
         from dataclasses import replace
 
         with self._condition:
-            if self._failure is not None:
-                raise RuntimeError("ROS feedback executor failed") from self._failure
+            self._source.check()
             if self._state is None:
                 raise RuntimeError("No Franka state received")
             if time.monotonic_ns() - self._state.sampled_monotonic_ns > self.timeout * 1e9:
@@ -241,21 +217,9 @@ class Ros2Backend:
 
     def close(self):
         self._streaming = False
-        if self._executor is not None:
-            self._executor.shutdown(timeout_sec=2)
-        if self._thread is not None:
-            self._thread.join(timeout=2)
-            if self._thread.is_alive():
-                raise RuntimeError("ROS executor did not stop; resources retained")
-        if self.gripper is not None:
-            self.gripper.close()
-        if self._node is not None:
-            self._node.destroy_node()
-        if self._context is not None:
-            self._context.try_shutdown()
-            self._context.destroy()
-        self._context = self._node = self._executor = self._thread = None
-        self._state = self._failure = None
+        self._source.close(before_destroy=self.gripper.close if self.gripper is not None else None)
+        self.gripper = None
+        self._state = None
 
 
 class FrankaRunner(BaseRunner):

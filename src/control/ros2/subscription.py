@@ -11,8 +11,12 @@ class Subscription:
         self.condition = threading.Condition()
         self.node = self.context = self.executor = self.thread = None
         self.failure = None
+        self._background = True
 
-    def start(self, setup):
+    def start(self, setup, *, background=True):
+        if self.node is not None:
+            self.check()
+            return
         from rclpy import init
         from rclpy.context import Context
         from rclpy.executors import SingleThreadedExecutor
@@ -21,6 +25,7 @@ class Subscription:
 
         try:
             self.failure = None
+            self._background = background
             self.context = Context()
             init(args=[], context=self.context, signal_handler_options=SignalHandlerOptions.NO)
             self.node = Node(
@@ -30,11 +35,26 @@ class Subscription:
             setup(self.node)
             self.executor = SingleThreadedExecutor(context=self.context)
             self.executor.add_node(self.node)
-            self.thread = threading.Thread(target=self._spin, name=self.name, daemon=True)
-            self.thread.start()
+            if background:
+                self.thread = threading.Thread(target=self._spin, name=self.name, daemon=True)
+                self.thread.start()
         except BaseException:
             self.close()
             raise
+
+    def poll(self, timeout_sec, *, limit=8):
+        """Handle pending callbacks on the caller thread. No background spin required."""
+        self.check()
+        if self.executor is None:
+            return
+        if self._background:
+            raise RuntimeError("Cannot poll a ROS executor that is spinning in the background")
+        # One spin_once serves a single subscription. Take a few so both cameras
+        # move forward, without resizing a long backlog on this thread.
+        self.executor.spin_once(timeout_sec=max(0.0, float(timeout_sec)))
+        for _ in range(max(0, int(limit) - 1)):
+            self.executor.spin_once(timeout_sec=0.0)
+        self.check()
 
     def _spin(self):
         try:
@@ -50,6 +70,15 @@ class Subscription:
 
     def wait(self, predicate, timeout):
         deadline = time.monotonic() + timeout
+        if not self._background:
+            while not predicate():
+                self.check()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"No valid {self.name} data; check ROS publishers and topics")
+                self.poll(min(0.05, remaining))
+            self.check()
+            return
         with self.condition:
             while not predicate():
                 self.check()
@@ -59,13 +88,15 @@ class Subscription:
                 self.condition.wait(remaining)
             self.check()
 
-    def close(self):
+    def close(self, *, before_destroy=None):
         if self.executor is not None:
             self.executor.shutdown(timeout_sec=2)
         if self.thread is not None:
             self.thread.join(timeout=2)
             if self.thread.is_alive():
                 raise RuntimeError(f"{self.name} worker did not stop; resources retained")
+        if before_destroy is not None:
+            before_destroy()
         if self.node is not None:
             self.node.destroy_node()
         if self.context is not None:

@@ -36,7 +36,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
         cameras = make_cameras(config, dry_run)
         stack.callback(cameras.close)
         vr = make_vr(config, dry_run)
-        stack.callback(vr.stop)
+        stack.callback(vr.close)
         microphone = (
             make_microphone(config, dry_run)
             if config["dataset"].get("enable_logging", True)
@@ -55,7 +55,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
         arm.start_stream()
         resampler = VRResampler(float(config.get("vr", {}).get("stale_after_s", 0.5)))
         mapper = EEMapper(config.get("vr", {}))
-        state = arm.get_state()
+        state = arm.read()
         mapper.reset(state)
         if diagnostics.enabled:
             diagnostics.event("stream_start", hold_position=state.ee_position.tolist())
@@ -69,9 +69,9 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 diagnostics.begin_tick(steps, tick_ns, rate.overruns)
                 reset_requested = False
                 command_sent = False
-                state = arm.get_state()
+                state = arm.read()
                 diagnostics.mark("state_read")
-                raw_sample = vr.latest
+                raw_sample = vr.read()
                 diagnostics.mark("vr_read")
                 now = time.monotonic_ns()
                 sample = resampler.sample(raw_sample, now)
@@ -95,7 +95,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                     )
                     changed = changed or gripper_changed
                 diagnostics.mark("command_and_gripper")
-                pair = cameras.get_frames() if recorder is not None or ros2.enabled else None
+                pair = cameras.read() if recorder is not None or ros2.enabled else None
                 ros2.submit(state, vr=raw_sample,
                             target=(position, quaternion) if command_sent else None, cameras=pair)
                 if recorder is not None:
@@ -121,7 +121,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                     )
                     if sample.save or sample.discard or expired:
                         recorder.finish(
-                            arm.get_state(),
+                            arm.read(),
                             save=not sample.discard,
                             publish=True,
                         )
@@ -138,7 +138,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 )
                 if reset_requested:
                     reset_robot(arm)
-                    state = arm.get_state()
+                    state = arm.read()
                     mapper.reset(state)
                     if diagnostics.enabled:
                         diagnostics.event("stream_reset", hold_position=state.ee_position.tolist())
@@ -160,7 +160,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
             diagnostics.event("loop_end", ticks=steps, overruns=rate.overruns, failed=failed)
             finish_stream(arm)
             if recorder is not None:
-                recorder.finish(arm.get_state(), save=not failed, publish=True)
+                recorder.finish(arm.read(), save=not failed, publish=True)
         logger.info("Acquisition finished: %s ticks, %s overruns", steps, rate.overruns)
     if recorder is not None and config.get("audio", {}).get("vad_enabled", False) and not dry_run:
         audio_files = (recorder.root / "audio").glob("episode_*.wav")

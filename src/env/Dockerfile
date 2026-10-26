@@ -47,6 +47,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && /opt/data_collect_venv/bin/python -c 'import rclpy; from franka_msgs.msg import FrankaRobotState'
 COPY src/env/entrypoint.sh /usr/local/bin/data_collect_entrypoint
 RUN chmod +x /usr/local/bin/data_collect_entrypoint
+# Color streams for the two D435s. Kept after the Franka build so that layer stays cached.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-jazzy-realsense2-camera \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/data_collect_entrypoint"]
 CMD ["bash"]

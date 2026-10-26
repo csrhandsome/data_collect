@@ -7,13 +7,20 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from control.base_node import BaseNode
 from control.types import CameraPair
 
 
-class FakeCameras:
+class FakeCameras(BaseNode[CameraPair]):
     def __init__(self, config):
         self.config = config
         self.start_ns = time.monotonic_ns()
+
+    def start(self):
+        pass
+
+    def read(self):
+        return self.get_frames()
 
     def get_frames(self):
         cfg = self.config.get("camera", {})
@@ -27,7 +34,7 @@ class FakeCameras:
         pass
 
 
-class RealCameras:
+class RealCameras(BaseNode[CameraPair | None]):
     def __init__(self, config):
         from control.direct.dual_camera_manager import DualRealsenseManager
 
@@ -43,12 +50,23 @@ class RealCameras:
             crop_scale=float(cfg.get("crop_scale", 0.9)),
             out_hw=int(cfg.get("image_hw", 224)),
         )
+        self._timeout = float(cfg.get("startup_timeout_s", 10))
+        self._started = False
+        self.start()
+
+    def start(self):
+        if self._started:
+            return
         try:
             self.manager.connect()
-            self.manager.wait_for_frames(timeout_s=float(cfg.get("startup_timeout_s", 10)))
+            self.manager.wait_for_frames(timeout_s=self._timeout)
+            self._started = True
         except BaseException:
             self.manager.close()
             raise
+
+    def read(self):
+        return self.get_frames()
 
     def get_frames(self):
         front, wrist, ft, wt = self.manager.get_frames()
@@ -65,6 +83,7 @@ class RealCameras:
 
     def close(self):
         self.manager.close()
+        self._started = False
 
 
 def make_cameras(config, dry_run=False):
@@ -85,9 +104,15 @@ def device_backend(config, section):
     return name
 
 
-class FakeVR:
+class FakeVR(BaseNode):
     def __init__(self):
         self.start_ns = time.monotonic_ns()
+
+    def start(self):
+        pass
+
+    def read(self):
+        return self.latest
 
     @property
     def latest(self):
@@ -114,10 +139,17 @@ class FakeVR:
     def stop(self):
         pass
 
+    def close(self):
+        self.stop()
+
 
 def make_vr(config, dry_run=False):
     if dry_run:
         return FakeVR()
+    if device_backend(config, "vr") == "ros2":
+        from control.ros2.vr_connector import Ros2VR
+
+        return Ros2VR(config)
     from control.collection.controller_hints import build_controller_hints
     from control.vr_input import VRInputProcess
 

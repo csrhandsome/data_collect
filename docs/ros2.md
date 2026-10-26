@@ -49,17 +49,23 @@ docker compose -f src/env/compose.yaml build \
 镜像从官方仓库检出固定提交，只构建单机械臂相关包，不构建 Gazebo 和移动底盘。
 Docker 内使用独立的 `/opt/data_collect_venv`，不会使用宿主机 `.venv`。
 该虚拟环境由系统 `/usr/bin/python3` 建立并保留 ROS 系统包路径；
-不要在容器内用 `uv run` 创建另一个不带 ROS 包的新环境，直接使用 `python` / `vr_collect`。
+入口脚本已设置 `UV_PROJECT_ENVIRONMENT=/opt/data_collect_venv` 和 `UV_NO_SYNC=1`，
+因此容器内既可使用 `python` / `vr_collect`，也可使用
+`uv run --no-sync python -m vr_collect --config config/train/panda.yaml`。
+容器使用系统 Python 3.12 和 `--system-site-packages` 环境，不复用宿主机 `.venv`。
+宿主机的 panda-py 流程继续用根目录的 `uv run`，由 `robot.backend: panda` 选择。
 
 编辑 `src/env/franka.config.yaml`，确认 FR3 IP、namespace、是否加载夹爪。
 同时核对 Desk 系统版本是否支持 libfranka 0.20.5；环境不会自动登录 Desk、解锁或激活 FCI。
 `robot.hostname` 只供旧 SDK 后端使用，ROS 驱动连接 IP 来自 bringup 配置。
 
-上游修复并通过 preflight 后，在第一个容器中启动：
+上游修复并通过 preflight 后，在第一个容器中启动机械臂控制器和两路 RealSense：
 
 ```bash
-bash src/env/bringup.sh
+bash src/env/start.sh
 ```
+
+`start.sh` 会拉起 `cameras.sh` 和 `bringup.sh`。采集程序只订阅话题，不会自己打开相机。关掉这个终端时，控制器和相机会一起停。单独启动机械臂仍用 `bringup.sh`。
 
 该脚本调用的官方命令为：
 
@@ -98,6 +104,7 @@ host 网络和 host IPC 用于 Linux；Compose 配置 `SYS_NICE`、rtprio 和 me
 
 ```text
 src/control/
+  base_node.py                    # 与 ROS 无关的 start/read/close 采集接口
   base_runner.py                  # 公共 Runner 接口与命令保护
   runners.py                      # 按 robot.backend 创建子类
   types.py                        # Pose、RobotState、CameraPair 等共用类型
@@ -110,11 +117,12 @@ src/control/
     microphone_connector_thread.py
     grippers/
   ros2/                           # ROS 状态订阅、目标发布、设备订阅
+    base_node.py                  # Ros2Node：公共采集接口 + 私有 ROS runtime
     franka_runner.py               # FrankaRunner
     camera_connector.py
     microphone_connector.py
     gripper_controller.py         # ROS action 与夹爪状态订阅
-    subscription.py
+    subscription.py               # context/executor、等待、故障传播、清理
     bridge.py                     # 额外遥测发布
 ```
 
@@ -122,6 +130,41 @@ src/control/
 位姿限幅、夹爪暂停/恢复和资源释放，具体子类选择各自的通信实现。
 `robotic_arm_controller.py` 仅保留旧 `RoboticArmControler` 构造入口的兼容导出。
 ROS Runner 不启动第二个 FCI 客户端，官方控制器仍由 `bringup.sh` 独立启动。
+
+### 公共采集节点接口
+
+采集和推理通过 `BaseNode.read()` 读取最新数据。机械臂返回 `RobotState`，
+相机返回 `CameraPair`（direct 相机尚无完整帧时可返回 `None`），VR 返回控制器状态。
+`start()` 准备设备，`close()` 释放资源；工厂保持返回已准备好设备的现有行为，
+重复 `start()` 不会新建连接。旧 `get_state()`、`get_frames()`、`latest`、VR `stop()` 保留。
+`BaseNode` 不依赖 rclpy，panda-py 的 uv 环境无需安装 ROS。
+
+```python
+from contextlib import ExitStack
+
+from control.collection.devices import make_cameras, make_vr
+from control.runners import create_runner
+
+with ExitStack() as stack:
+    arm = stack.enter_context(create_runner(config=config))
+    cameras = stack.enter_context(make_cameras(config))
+    vr = stack.enter_context(make_vr(config))
+    state, pair, sample = arm.read(), cameras.read(), vr.read()
+```
+
+`BaseRunner` 继承 `BaseNode[RobotState]`，继续独立提供开流、目标下发、hold、
+轨迹和夹爪接口。`arm.start()` 只连接并准备反馈；运动仍需显式 `start_stream()`，
+命令所有权、反馈过期检查和运动限幅沿用已有公共控制逻辑。
+ROS 相机和 VR 继承 `Ros2Node`，各自定义消息、QoS 和首帧等待；
+机械臂后端、音频订阅复用同一个 `Subscription` 生命周期实现。
+
+这里的统一是采集端读取接口，不是新增本地回调总线，也不承诺跨设备硬同步。
+相机保留调用线程 poll，读取时先处理待收消息；其他订阅可后台 spin，
+同一个 executor 不允许同时后台 spin 和前台 poll。
+direct VR 保留已实测有效的独立进程和共享内存，ROS VR 的 Teleop 发布端也单独运行，
+公共接口不会把 VR 合并进机械臂控制进程。旧 `VRInputProcess` 停止后需要新建实例才能重启。
+音频仍通过 `start_recording()` / `stop_recording()` 连续保存 episode，
+不使用只保留最新样本的 `read()`，以免丢音频块。
 
 配置合并完成后按后端设置默认值：Panda 的 `robot.activate_fci` 和
 `robot.move_to_start` 为 true，ROS 的这两项为 false；`ros2.enabled` 在 ROS 后端

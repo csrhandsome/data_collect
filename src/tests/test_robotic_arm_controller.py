@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from control.base_node import BaseNode
 from control.base_runner import BaseRunner
 from control.direct.fake import FakeBackend
 from control.runners import create_runner
@@ -51,6 +52,25 @@ def test_snapshot_is_immutable_and_ready(arm):
         state.joint_positions[:] = 1
     assert arm.wait_ready(timeout_s=0.1).joint_positions.shape == (7,)
     assert arm.wait_until_stopped(timeout_s=0.1).ee_pose.vector.shape == (6,)
+
+
+@pytest.mark.parametrize("backend_name", ["panda", "ros2"])
+def test_node_read_prepares_feedback_without_starting_motion(backend_name):
+    backend = FakeBackend()
+    arm = create_runner(config={"robot": {"backend": backend_name}}, backend=backend)
+    assert isinstance(arm, BaseNode)
+    with pytest.raises(RuntimeError, match="disconnected"):
+        arm.read()
+    try:
+        arm.start()
+        arm.start()
+        assert backend.calls.count("connect") == 1
+        assert arm.read().joint_positions.shape == (7,)
+        assert not backend.streaming
+        with pytest.raises(RuntimeError):
+            arm.send_ee_target([0.4, 0, 0.4], [0, 0, 0, 1])
+    finally:
+        arm.close()
 
 
 def test_ee_stream_and_hold(arm):
