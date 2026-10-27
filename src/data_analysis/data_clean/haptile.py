@@ -7,8 +7,12 @@ from pathlib import Path
 
 import numpy as np
 
-from data_analysis.data_clean.base import BaseAligner
-from data_analysis.data_clean.lerobot_v3 import GRIPPER_IMAGE_LEFT, GRIPPER_IMAGE_RIGHT, AlignedEpisode
+from data_analysis.data_clean.base import BaseAligner, SkipEpisode
+from data_analysis.data_clean.lerobot_v3 import (
+    GRIPPER_IMAGE_LEFT,
+    GRIPPER_IMAGE_RIGHT,
+    AlignedEpisode,
+)
 
 _VIDEOS = {
     "videos/base_camera_rgb_0": "observation.exterior_image",
@@ -59,6 +63,12 @@ class HapTileAligner(BaseAligner):
             task = _text(handle["language_instruction"][()])
         if gripper.ndim == 1:
             gripper = gripper.reshape(-1, 1)
+        length = min(len(joints), len(ee_pose), len(gripper))
+        if length < 2:
+            raise SkipEpisode(f"{episode_id} has {length} aligned frames")
+        joints = joints[:length]
+        ee_pose = ee_pose[:length]
+        gripper = gripper[:length]
         columns = {
             "observation.joint_position": joints,
             "observation.ee_pose": ee_pose[:, :6],

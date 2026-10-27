@@ -207,6 +207,7 @@ class Ros2Publisher:
                         "x_pressed",
                         "y_pressed",
                         "save_pressed",
+                        "critical_pressed",
                         "gripper_open",
                         "gripper_close",
                     )

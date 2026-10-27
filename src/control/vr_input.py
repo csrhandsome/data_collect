@@ -12,6 +12,7 @@ before downstream IK / joint control consumes the pose stream.
 Deadman switch: both triggers (button 0) held for >long_press_s.
 X (left controller button 4): discard the current episode and reset.
 Y (left controller button 5): save the current episode and reset.
+Left thumbstick click (button 3): enter the critical phase for this episode.
 A/B (right controller buttons 4/5): close/open gripper.
 Right thumbstick Y: DH5 gripper step axis (up=close, down=open).
 """
@@ -28,7 +29,7 @@ from teleop_xr.messages import XRState
 from control.base_node import BaseNode
 from control.util.pose import nlerp_quat_xyzw, normalize_quat_xyzw
 
-# Shared-memory layout (25 doubles, copied under one short lock):
+# Shared-memory layout (26 doubles, copied under one short lock):
 #  [0]  arm_enabled   (0.0 / 1.0)
 #  [1]  pos_x
 #  [2]  pos_y
@@ -49,7 +50,8 @@ from control.util.pose import nlerp_quat_xyzw, normalize_quat_xyzw
 #  [17] pose_seq
 #  [18:21] raw position before input filtering
 #  [21:25] raw quaternion xyzw before input filtering
-_SHM_SIZE = 25
+#  [25] critical_pressed (left thumbstick click, 0.0 / 1.0)
+_SHM_SIZE = 26
 
 
 def _normalize_quaternion(quaternion_xyzw):
@@ -96,6 +98,7 @@ class VRInput:
     pose_seq: int = 0
     raw_position: tuple[float, float, float] | None = None
     raw_quaternion_xyzw: tuple[float, float, float, float] | None = None
+    critical_pressed: bool = False
 
 
 class VRInputReader:
@@ -265,6 +268,7 @@ class VRInputReader:
         # --- Buttons ---
         x_pressed = False
         y_pressed = False
+        critical_pressed = False
         gripper_close = False
         gripper_open = False
         right_stick_x = 0.0
@@ -273,6 +277,8 @@ class VRInputReader:
         # Left controller: X (btn 4) -> discard/reset, Y (btn 5) -> save/reset
         if left_dev and left_dev.gamepad:
             btns = left_dev.gamepad.buttons
+            if len(btns) > 3 and btns[3].pressed:
+                critical_pressed = True
             if len(btns) > 4 and btns[4].pressed:
                 x_pressed = True
             if len(btns) > 5 and btns[5].pressed:
@@ -328,6 +334,7 @@ class VRInputReader:
             pose_seq=self._latest.pose_seq + 1,
             raw_position=(pos_x, pos_y, pos_z),
             raw_quaternion_xyzw=(quat_x, quat_y, quat_z, quat_w),
+            critical_pressed=critical_pressed,
         )
 
 
@@ -431,6 +438,7 @@ class VRInputProcess(BaseNode[VRInput]):
                     v.pose_seq,
                     *(v.raw_position or (v.pos_x, v.pos_y, v.pos_z)),
                     *(v.raw_quaternion_xyzw or (v.quat_x, v.quat_y, v.quat_z, v.quat_w)),
+                    float(v.critical_pressed),
                 )
             time.sleep(0.001)  # 1 kHz — <1 ms latency, negligible CPU
 
@@ -460,6 +468,7 @@ class VRInputProcess(BaseNode[VRInput]):
             raw_quaternion_xyzw=tuple(s[21:25]) if s[17] > 0 else None,
             gripper_velocity_axis=s[14],
             timestamp=s[15],
+            critical_pressed=s[25] > 0.5,
         )
 
 

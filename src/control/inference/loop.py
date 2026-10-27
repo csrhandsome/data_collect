@@ -168,6 +168,7 @@ def _execute_inference(
         requests = 0
         last_axis_ns = 0
         failed = False
+        discard_requested = False
         target_gripper = arm.read().gripper.commanded_open_ratio
         control_source = "BASE"
         policy_step_id = actor_version = None
@@ -196,6 +197,12 @@ def _execute_inference(
                     enabled=False, save=False, discard=False, close=False, open=False,
                     axis=0.0, source_ns=0, source_seq=0,
                 )
+                if sample.save or sample.discard:
+                    discard_requested = sample.discard
+                    logger.info("Discarding inference episode" if sample.discard else "Saving inference episode")
+                    break
+                if recorder is not None and sample.enter_critical_phase:
+                    recorder.enter_critical_phase(now)
                 enabled = sample.enabled
                 position, quat = state.ee_position, state.ee_quaternion_xyzw
                 if enabled != takeover:
@@ -203,6 +210,8 @@ def _execute_inference(
                     plan = None
                     mapper.reset()
                     takeover = enabled
+                    if recorder is not None:
+                        recorder.control_event("takeover_start" if enabled else "takeover_end", now)
                 if enabled:
                     if arm.gripper_busy:
                         mapper.reset(state)
@@ -305,8 +314,11 @@ def _execute_inference(
             finish_stream(arm)
             if recorder is not None:
                 index = recorder.index
-                recorder.finish(arm.read(), save=not failed, publish=True, source="inference")
-                if not failed and recorder.dataset.meta.total_episodes > index:
+                recorder.finish(
+                    arm.read(), save=not failed and not discard_requested,
+                    publish=True, source="inference",
+                )
+                if not failed and not discard_requested and recorder.dataset.meta.total_episodes > index:
                     sidecar = (
                         recorder.root / "audio" if recorder.audio_path else recorder.root
                     ) / f"episode_{index:06d}.sync.json"

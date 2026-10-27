@@ -21,6 +21,7 @@ SOURCES = {
     "wirefishing": Path("/mnt/nas/WireFishing-M"),
     "touch_and_go": Path("/mnt/nas/Touch-and-Go"),
     "tactile_video_pretrain_nc": Path("/mnt/nas/tactile-video-pretrain-nc"),
+    "vitamin": Path("/mnt/nas/ViTaMIn"),
 }
 OUTPUT_ROOT = Path("/home/mirnagroup/align-trial")
 LIMIT = 1

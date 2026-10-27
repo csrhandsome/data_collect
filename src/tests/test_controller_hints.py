@@ -12,11 +12,13 @@ def actions(hints, hand):
 def test_collection_instructions_match_save_discard_and_franka_controls():
     config = load_config()
     config["gripper"]["type"] = "franka"
+    config["robot"]["move_to_start"] = True
     hints = build_controller_hints(config)
     left, right = actions(hints, "left"), actions(hints, "right")
     assert left["Y"] == "保存当前片段并回位"
     assert left["X"] == "丢弃当前片段并回位"
     assert "0.5 秒" in left["双食指扳机"]
+    assert left["左摇杆按下"] == "进入关键阶段，持续到本回合结束（重复按无效）"
     assert right["A"] == "闭合夹爪"
     assert right["B"] == "张开夹爪"
     assert not any("摇杆" in button for button in right)
@@ -50,8 +52,8 @@ def test_disabled_recording_or_gripper_does_not_advertise_inactive_buttons():
     assert build_controller_hints({"vr": {"show_controller_hints": False}}) == {}
 
 
-def test_takeover_hints_do_not_claim_save_buttons_or_pause_policy():
+def test_takeover_hints_include_episode_and_critical_controls():
     hints = build_controller_hints({"inference": {"enable_vr_takeover": True}})
-    assert not {"X", "Y"} & actions(hints, "left").keys()
+    assert {"X", "Y", "左摇杆按下"} <= actions(hints, "left").keys()
     assert actions(hints, "left")["松开任一扳机"] == "交回策略控制"
     assert actions(hints, "right")["夹爪操作"] == "仅人工接管时生效"

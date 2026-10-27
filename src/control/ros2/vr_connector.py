@@ -33,6 +33,7 @@ _FIELDS = (
 
 def dumps_vr(sample):
     payload = {name: getattr(sample, name) for name in _FIELDS}
+    payload["critical_pressed"] = bool(getattr(sample, "critical_pressed", False))
     payload["pose_monotonic_ns"] = str(int(sample.pose_monotonic_ns))
     payload["raw_position"] = sample.raw_position
     payload["raw_quaternion_xyzw"] = sample.raw_quaternion_xyzw
@@ -42,6 +43,7 @@ def dumps_vr(sample):
 def loads_vr(text):
     raw = json.loads(text)
     sample = {name: raw[name] for name in _FIELDS}
+    sample["critical_pressed"] = bool(raw.get("critical_pressed", False))
     sample["pose_monotonic_ns"] = int(raw["pose_monotonic_ns"])
     sample["pose_seq"] = int(sample["pose_seq"])
     for key in ("raw_position", "raw_quaternion_xyzw"):

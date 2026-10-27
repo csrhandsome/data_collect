@@ -335,3 +335,124 @@ ROS 测试目前位于 `src/tests/ros2/`，VR 提示测试位于 `src/tests/test
 
 宿主机测试在目录迁移前完整回归为 220 项通过、3 项失败，失败仍是上述已知回放测试。
 真机 FCI 与真实设备时钟仍待验证，官方示例控制器覆盖外部目标的问题及启动拦截保持有效。
+
+## 5090 双 D435 收帧超时排查（2026-10-26）
+
+本次复现的收帧超时主因已通过对照测试确认：宿主机 UDP 接收缓冲上限过小，
+限制了 CycloneDDS 接收大图像。只提高 `net.core.rmem_max`，保留原线材、USB Hub、
+相机配置和项目代码，真实双相机 ROS 连续采集和视频录制均通过。
+
+测试机器为 SSH 别名 `5090`（`MS-7E06`），远端仓库为
+`/home/sustechdl/three/data_collect`，分支 `dev-ros2`，提交 `b0f4673`。
+环境为 Linux `6.11.0-29-generic`、现有 Docker 镜像
+`data-collect/franka-ros2-jazzy:dev`、ROS 2 Jazzy 和 CycloneDDS。
+只启动 `src/env/cameras.sh`，未启动机械臂 bringup 或连接真实机械臂。
+
+### 相机与故障表现
+
+两台 D435 分别为 external `825412070292`、wrist `825412070487`，
+均使用 RGB8、640×480、30 FPS，仅开启彩色流。USB 拓扑显示两台均以
+5000 Mb/s 连接，共用一个 Hub，其中腕部相机还经过一层嵌套 Hub。
+
+驱动和以下话题能正常启动，但图像接收不稳定：
+
+```text
+/camera/external/color/image_raw
+/camera/wrist/color/image_raw
+```
+
+初次测试首帧等待超时；后续连续读取虽能初始化，但约 1.2 秒后报
+`ROS camera pair is stale or exceeds maximum timestamp skew`。
+该次测试期间宿主机 UDP `RcvbufErrors` 增加 1707。
+原有 `net.core.rmem_max` 为 `212992` 字节（208 KiB），
+而一张 640×480 RGB 图像的像素数据为 `921600` 字节（900 KiB）。
+
+### USB 与 DDS 对照结果
+
+USB 直采使用 `pyrealsense2`，绕过 ROS；合成图像测试不打开相机，
+由两个独立进程通过 DDS 发布、订阅与真实相机相同大小和速率的两路图像。
+合成图像使用独立的 `ROS_DOMAIN_ID=43`，真实相机使用 Compose 默认值 42。
+
+| 测试 | 参数 | 结果 |
+| --- | --- | --- |
+| USB 单台直采 | 两台分别采集 10 秒 | 各收到 287 帧，无帧号跳跃，最大帧间隔约 33.6 ms |
+| USB 双台同时直采 | 原线材和 Hub，采集 30 秒 | 外部 887 帧、腕部 900 帧；无帧号跳跃，最大帧间隔分别为 36.6 / 37.3 ms |
+| DDS 双路合成图像 | 原缓冲上限 208 KiB | 约 2.008 秒后超时，UDP `RcvbufErrors` 增加 2188 |
+| DDS 双路合成图像 | 仅提高宿主机上限到 8 MiB | 连续 12 秒通过，各收到 361 帧，UDP 缓冲丢包为 0 |
+| DDS 双路合成图像 | 上限 8 MiB，并显式请求 4 MiB CycloneDDS 接收缓冲 | 连续 30 秒通过，各收到 900 帧，UDP 缓冲丢包为 0 |
+| DDS 双路合成图像 | 恢复原上限 208 KiB | 约 2.605 秒再次超时，UDP `RcvbufErrors` 增加 956 |
+| 真实双相机 ROS 采集 | 仅提高宿主机上限到 8 MiB，使用默认 CycloneDDS 配置 | 连续 30 秒通过，各收到 900 帧（30 FPS），UDP 缓冲丢包为 0 |
+
+USB 直采计数包含启动预热的影响；双台测试先启动外部相机、再启动腕部相机，
+外部相机初始计数偏少，但其连续帧号没有跳跃，也没有超过 200 ms 的停顿。
+
+提高缓冲上限后的真实 ROS 测试共完成 2964 次读取，返回的预处理图像为
+224×224、连续内存的 RGB uint8。外部/腕部图像源时间戳年龄最大分别为
+67.0 / 71.7 ms，两路源时间戳差最大 29.8 ms，读取耗时 p99 为 11.358 ms。
+随后保留真实 ROS 相机，使用 `FakeBackend` 机械臂和 `FakeVR` 运行完整采集流程，
+300 个周期完成，出现 1 次调度超期；两路 MP4 各成功保存并解码 90 帧，
+同步 sidecar 包含 90 条帧记录。
+
+### 修复方法与当前状态
+
+已验证的最小调整是在 **5090 宿主机** 提高接收缓冲上限；Compose 使用 host 网络。
+临时生效的命令为：
+
+```bash
+sudo sysctl -w net.core.rmem_max=8388608
+```
+
+需要长期保留时，在宿主机写入专用配置并加载：
+
+```bash
+sudo tee /etc/sysctl.d/99-data-collect-dds.conf >/dev/null <<'EOF'
+net.core.rmem_max = 8388608
+EOF
+sudo sysctl -p /etc/sysctl.d/99-data-collect-dds.conf
+```
+
+设置后重启相机和采集的 ROS 进程或容器，使新建套接字按新上限申请缓冲。
+`rmem_max` 是允许申请的上限，不会把现有套接字自动扩容到 8 MiB。
+真实相机通过测试时未修改 `rmem_default`、`wmem_max`，也未设置额外的
+`CYCLONEDDS_URI`。显式请求 4 MiB 的测试属于额外对照，并非本次最小修复的必要条件。
+
+2026-10-26 排查结束时仅做了临时调参，已恢复 `net.core.rmem_max=212992`，
+当时未安装持久化配置，测试容器和相机节点均已关闭。
+
+2026-10-27 已在 **5090 宿主机** 安装
+`/etc/sysctl.d/99-data-collect-dds.conf`（root:root，权限 0644），
+并通过 `sysctl -p` 立即加载，核实当前值为 `net.core.rmem_max=8388608`。
+已确认该文件出现在 systemd 的有效 sysctl 配置中，且 `systemd-sysctl.service`
+属于开机 `sysinit.target` 的依赖，之后每次开机都会自动加载。
+此次未重启主机或现有 ROS 进程；若相机或采集进程在加载前已运行，仍需重启它们，
+使新建套接字按新上限申请缓冲。
+
+### 线材、Hub 与尚未解决的问题
+
+内核历史日志出现过 `uvcvideo ... Non-zero status (-71)`，对应 `EPROTO`。
+此类 USB 错误可能与设备、固件、线材或控制器有关，不能仅凭该日志认定某根线材损坏。
+本次短时 USB 单台、双台直采均稳定，且不用相机的合成 DDS 测试也复现了故障，
+提高缓冲后原硬件链路通过。因此本次 ROS 超时应先处理 DDS 缓冲；
+这些测试仍不能完全排除线材、接头或 Hub 的其他间歇性故障。
+
+此前在同一远端执行的以下测试为 **78 通过、2 失败**（13.68 秒）：
+
+```bash
+docker compose -f src/env/compose.yaml run --rm -T \
+  -e DATA_COLLECT_TEST_ROS2=1 ros2 \
+  python -m pytest src/tests/ros2 src/tests/test_base_node.py -ra
+```
+
+失败项为 `test_dds_camera_audio_and_recording`（停止发布后未按预期抛出过期异常）
+和 `test_stale_camera_source_times_out_and_cleans_up`（源时间戳落后 10 秒仍被接受）。
+当前相机就绪检查依赖主机收包时间，处理积压消息可能刷新该时间，且未校验源时间戳年龄。
+这两项属于应用层过期校验问题，本次缓冲区调整没有修复它们，测试代码也未修改。
+
+远端原始报告、诊断脚本和 JSON/日志位于
+`5090:/tmp/data-collect-camera-diagnose-2c7loyDB/`；最初失败记录位于
+`5090:/tmp/data-collect-camera-check-k9X6MxrE/`。两者均为临时目录，可能被系统清理，
+主要结论和修复步骤已记录于本节。
+
+依据：[CycloneDDS 大样本接收缓冲 FAQ](https://cyclonedds.io/content/faq)、
+[CycloneDDS 接收缓冲配置说明](https://github.com/eclipse-cyclonedds/cyclonedds/blob/master/docs/manual/config/config_file_reference.rst)、
+[Linux USB 错误码说明](https://docs.kernel.org/driver-api/usb/error-codes.html)。

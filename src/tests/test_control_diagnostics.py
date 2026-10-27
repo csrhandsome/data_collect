@@ -172,7 +172,7 @@ def test_collection_writes_diagnostics_without_an_active_episode(tmp_path, hz):
 
 def test_shared_memory_snapshot_includes_raw_and_filtered_pose():
     vr = VRInputProcess()
-    payload = [0.0] * 25
+    payload = [0.0] * len(vr._shm)
     payload[0] = payload[7] = payload[24] = 1.0
     payload[1:4] = [0.1, 0.2, 0.3]
     payload[16:18] = [1_000_000_000, 7]

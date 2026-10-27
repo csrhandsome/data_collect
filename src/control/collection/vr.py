@@ -23,6 +23,7 @@ class ResampledVR:
     axis: float
     source_ns: int
     source_seq: int
+    enter_critical_phase: bool = False
 
 
 class VRResampler:
@@ -38,6 +39,13 @@ class VRResampler:
             value = bool(getattr(vr, name, False)) and fresh
             edges.append(value and not self.previous.get(name, False))
             self.previous[name] = value
+        # A stale button state must never produce an event, including after
+        # reconnecting while the stick is still held. Release it before retrying.
+        critical_pressed = bool(getattr(vr, "critical_pressed", False))
+        enter_critical_phase = (
+            fresh and critical_pressed and not self.previous.get("critical_pressed", False)
+        )
+        self.previous["critical_pressed"] = critical_pressed
         return ResampledVR(
             np.array([vr.pos_x, vr.pos_y, vr.pos_z]),
             normalize_quat_xyzw([vr.quat_x, vr.quat_y, vr.quat_z, vr.quat_w]),
@@ -46,6 +54,7 @@ class VRResampler:
             float(vr.gripper_velocity_axis),
             source_ns,
             int(vr.pose_seq),
+            enter_critical_phase=enter_critical_phase,
         )
 
 

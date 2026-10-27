@@ -10,7 +10,7 @@ def build_controller_hints(config):
     takeover = bool(config.get("inference", {}).get("enable_vr_takeover", False))
     recording = config.get("dataset", {}).get("enable_logging", True)
     left = []
-    if not takeover and recording:
+    if takeover or recording:
         reset = "并回位" if config.get("robot", {}).get("move_to_start", True) else "，保持当前位置"
         left.extend(
             [
@@ -20,6 +20,7 @@ def build_controller_hints(config):
         )
     left.extend(
         [
+            {"button": "左摇杆按下", "action": "进入关键阶段，持续到本回合结束（重复按无效）"},
             {
                 "button": "双食指扳机",
                 "action": f"同时按住 {hold}，{'接管' if takeover else '启用跟随'}",

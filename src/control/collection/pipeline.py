@@ -75,6 +75,8 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 diagnostics.mark("vr_read")
                 now = time.monotonic_ns()
                 sample = resampler.sample(raw_sample, now)
+                if recorder is not None and sample.enter_critical_phase:
+                    recorder.enter_critical_phase(now)
                 if arm.gripper_busy:
                     # The controller is paused for the gripper; discard unsent VR motion.
                     mapper.reset(state)
@@ -101,7 +103,11 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 if recorder is not None:
                     if changed and not recorder.active:
                         recorder.start()
-                    recorder.trace(state, sample, position, quaternion)
+                    target = arm.get_ee_target()
+                    recorder.trace(
+                        state, sample, position, quaternion,
+                        command_submitted_ns=target.submitted_monotonic_ns,
+                    )
                     if pair is not None:
                         if now - min(pair.front_ns, pair.wrist_ns) > int(
                             config["camera"].get("max_age_s", 0.2) * 1e9

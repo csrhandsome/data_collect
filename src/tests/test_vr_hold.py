@@ -155,6 +155,7 @@ def test_collection_sends_fixed_idle_target_without_starting_recording(tmp_path,
     monkeypatch.setattr(pipeline, "EpisodeRecorder", lambda *args: recorder)
     config = load_config()
     config["robot"]["move_to_start"] = False
+    config["ros2"]["enabled"] = False
     config["audio"].update(enabled=False, vad_enabled=False)
 
     result = pipeline.run_collection(config, dry_run=True, max_steps=5)
