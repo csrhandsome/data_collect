@@ -171,18 +171,22 @@ def test_force_yaml_metadata_without_legacy_group(enabled):
     assert result.source == "RL"
 
 
-def test_request_observation_keys_match_recording_schema():
+@pytest.mark.parametrize("wrench_enabled", [False, True])
+def test_request_observation_keys_match_recording_schema(wrench_enabled):
+    from dataclasses import replace
+
     from control.collection.devices import FakeCameras
     from control.collection.schema import features
     from control.direct.fake import FakeBackend
     from control.inference.policy import build_observation
 
     cfg = load_config(INFERENCE_CONFIG)
+    cfg["observation"]["ee_wrench"] = wrench_enabled
     backend = FakeBackend()
     cameras = FakeCameras(cfg["camera"])
     try:
         request = build_observation(
-            backend.snapshot(),
+            replace(backend.snapshot(), ee_wrench=np.arange(6, dtype=float)),
             cameras.get_frames(),
             "test",
             "ee",
@@ -195,6 +199,8 @@ def test_request_observation_keys_match_recording_schema():
             if key.startswith("observation.")
         }
         assert {key for key in request if key.startswith("observation.")} == expected
+        if wrench_enabled:
+            np.testing.assert_allclose(request["observation.ee_wrench"], np.arange(6))
     finally:
         cameras.close()
 

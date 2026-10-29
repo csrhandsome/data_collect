@@ -9,7 +9,16 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from replay.backend.api import datasets, ee, episodes, health, operations, streams, video
+from replay.backend.api import (
+    datasets,
+    ee,
+    episodes,
+    health,
+    operations,
+    ros2_health,
+    streams,
+    video,
+)
 from replay.backend.config import configured_data_root
 from replay.backend.errors import ReplayError
 from replay.backend.operations import OperationManager
@@ -49,6 +58,7 @@ def create_app(
 
     for router in (
         health.router,
+        ros2_health.router,
         datasets.router,
         episodes.router,
         ee.router,

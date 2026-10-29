@@ -5,6 +5,7 @@ matching the ``latest`` / ``stop`` surface used by collection.
 """
 
 import json
+import time
 from types import SimpleNamespace
 
 from control.ros2.base_node import Ros2Node
@@ -58,7 +59,11 @@ class Ros2VR(Ros2Node):
         ros = cfg.get("ros2", {})
         self._topic = ros.get("topic", "/vr/input")
         self._sample = None
-        super().__init__("vr", config.get("ros2", {}).get("namespace", ""))
+        self._stale_after_s = float(cfg.get("stale_after_s", 0.5))
+        super().__init__(
+            "vr", config.get("ros2", {}).get("namespace", ""),
+            monitoring=config.get("ros2", {}).get("monitoring"),
+        )
         self._timeout = float(ros.get("startup_timeout_s", 10))
         self.start()
 
@@ -78,11 +83,12 @@ class Ros2VR(Ros2Node):
         from rclpy.qos import QoSProfile, ReliabilityPolicy
         from std_msgs.msg import String
 
-        self._subscription = node.create_subscription(
+        self._subscription = self._source.subscribe(
             String,
             self._topic,
             self._receive,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
+            expected_hz=100.0, timeout_s=0.5,
         )
 
     def _receive(self, message):
@@ -90,10 +96,14 @@ class Ros2VR(Ros2Node):
             sample = loads_vr(message.data)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             self._source.node.get_logger().warning(f"Invalid VR sample: {exc}", throttle_duration_sec=2.0)
-            return
+            return False
         with self._source.condition:
             self._sample = sample
             self._source.condition.notify_all()
+        # The ROS publisher can keep sending while the headset itself stops updating.
+        return sample.pose_monotonic_ns > 0 and (
+            -0.1 <= (time.monotonic_ns() - sample.pose_monotonic_ns) / 1e9 <= self._stale_after_s
+        )
 
     def read(self):
         with self._source.condition:

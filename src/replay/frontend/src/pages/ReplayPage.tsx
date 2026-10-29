@@ -10,6 +10,7 @@ import { Timeline } from '../components/workspace/Timeline'
 import { VisualizationCard } from '../components/workspace/VisualizationCard'
 import { OperationPanel } from '../components/workspace/OperationPanel'
 import { EpisodeAnnotation } from '../components/workspace/EpisodeAnnotation'
+import { Ros2HealthPanel } from '../components/workspace/Ros2HealthPanel'
 import { useApiResource } from '../hooks/useApiResource'
 import { useLatestEpisode } from '../hooks/useLatestEpisode'
 import { usePlayback } from '../hooks/usePlayback'
@@ -252,6 +253,7 @@ export function ReplayPage() {
           </span>
         </div>
       </header>
+      <Ros2HealthPanel />
       <div className="relative grid grid-cols-1 md:min-h-0 md:flex-1 md:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)]">
         <DataSidebar
           datasets={datasets}

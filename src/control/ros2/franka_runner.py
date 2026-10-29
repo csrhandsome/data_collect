@@ -38,10 +38,13 @@ class Ros2Backend:
     def __init__(self, config):
         self.config = config
         self.cfg = config.get("ros2", {})
+        self._ee_wrench_enabled = config.get("observation", {}).get("ee_wrench", False)
         self.namespace = self.cfg.get("namespace", "").strip("/")
         self.frame = self.cfg.get("base_frame", "panda_link0")
         self.timeout = float(self.cfg.get("state_timeout_s", 0.25))
-        self._source = Subscription("data_collect_control", self.topic(""))
+        self._source = Subscription(
+            "data_collect_control", self.topic(""), monitoring=self.cfg.get("monitoring")
+        )
         self._condition = self._source.condition
         self._state = None
         self._streaming = False
@@ -81,13 +84,15 @@ class Ros2Backend:
             )),
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
         )
-        self._subscription = node.create_subscription(
+        self._subscription = self._source.subscribe(
             FrankaRobotState,
             self.topic(self.cfg.get("robot_state_topic", "franka_robot_state_broadcaster/robot_state")),
             self._on_state,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+            expected_hz=float(self.config.get("control", {}).get("frequency_hz", 100)),
+            timeout_s=self.timeout,
         )
-        self.gripper = Ros2GripperController(self.config, node)
+        self.gripper = Ros2GripperController(self.config, node, source=self._source)
         try:
             self.gripper.connect()
         except BaseException:
@@ -135,11 +140,15 @@ class Ros2Backend:
                 robot_mode=_robot_mode_name(msg.robot_mode),
                 control_command_success_rate=float(msg.control_command_success_rate),
                 current_errors=str(msg.current_errors),
+                ee_wrench=(
+                    np.asarray(getattr(msg, "o_f_ext_hat_k", None), dtype=np.float64)
+                    if self._ee_wrench_enabled else None
+                ),
             )
         except (ValueError, IndexError, TypeError) as exc:
             # Invalid messages do not refresh the last valid feedback receipt.
             self._node.get_logger().warning(str(exc), throttle_duration_sec=2.0)
-            return
+            return False
         with self._condition:
             self._state = state
             self._condition.notify_all()

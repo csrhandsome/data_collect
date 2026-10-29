@@ -6,12 +6,14 @@ from uuid import uuid4
 
 
 class Subscription:
-    def __init__(self, name, namespace=""):
+    def __init__(self, name, namespace="", *, monitoring=None):
         self.name, self.namespace = name, namespace
         self.condition = threading.Condition()
         self.node = self.context = self.executor = self.thread = None
         self.failure = None
         self._background = True
+        self.monitoring = monitoring or {}
+        self._diagnostics = None
 
     def start(self, setup, *, background=True):
         if self.node is not None:
@@ -32,6 +34,13 @@ class Subscription:
                 f"{self.name}_{uuid4().hex[:8]}", namespace=self.namespace or "/",
                 context=self.context, use_global_arguments=False,
             )
+            if self.monitoring.get("enabled", False):
+                try:
+                    from control.ros2.diagnostics import SubscriptionDiagnostics
+
+                    self._diagnostics = SubscriptionDiagnostics(self.node, self.name, self.monitoring)
+                except Exception as exc:
+                    self.node.get_logger().warning(f"Subscription monitoring unavailable: {exc}")
             setup(self.node)
             self.executor = SingleThreadedExecutor(context=self.context)
             self.executor.add_node(self.node)
@@ -41,6 +50,15 @@ class Subscription:
         except BaseException:
             self.close()
             raise
+
+    def subscribe(self, message_type, topic, callback, qos, *, expected_hz=0.0, timeout_s=1.0):
+        if self._diagnostics is None:
+            return self.node.create_subscription(message_type, topic, callback, qos)
+        return self._diagnostics.subscribe(
+            message_type, topic, callback, qos,
+            min_hz=expected_hz * float(self.monitoring.get("min_rate_ratio", 0.8)),
+            timeout_s=timeout_s,
+        )
 
     def poll(self, timeout_sec, *, limit=8):
         """Handle pending callbacks on the caller thread. No background spin required."""
@@ -95,6 +113,9 @@ class Subscription:
             self.thread.join(timeout=2)
             if self.thread.is_alive():
                 raise RuntimeError(f"{self.name} worker did not stop; resources retained")
+        if self._diagnostics is not None:
+            self._diagnostics.publish(stopped=True)
+            self._diagnostics = None
         if before_destroy is not None:
             before_destroy()
         if self.node is not None:

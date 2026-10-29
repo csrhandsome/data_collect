@@ -47,6 +47,11 @@ ros2:
   telemetry_namespace: /data_collect
   publish_hz: 30.0
   publish_images: true
+  monitoring:
+    enabled: true           # warning-only；不改变控制保护或订阅队列
+    startup_grace_s: 10.0    # 启动宽限时间，避免驱动尚未就绪时误报
+    window_s: 5.0            # 接收频率统计窗口
+    min_rate_ratio: 0.8      # 低于预期频率的该比例时 warning
 control:
   mode: ee
   frequency_hz: 100.0
@@ -102,7 +107,7 @@ vr:
   show_controller_hints: true  # 在左右手柄旁显示当前采集模式的操作说明
   host: 0.0.0.0
   port: 4443
-  # backend 默认随 robot.backend。ros2 时采集只订阅，Teleop 由 src/env/start.sh 里的节点发布。
+  # backend 默认随 robot.backend。ros2 时采集只订阅，Teleop 由 scripts/deploy_ros2.sh 发布。
   ros2:
     topic: /vr/input
     startup_timeout_s: 10

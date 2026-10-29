@@ -36,11 +36,27 @@ def test_storage_inheritance_and_partial_override(tmp_path, monkeypatch):
         "observation.joint_position",
         "observation.ee_pose",
         "observation.ee_position",
+        "observation.ee_wrench",
         "observation.gripper_position",
         "action.joint_position",
         "action.ee_pose",
         "action.gripper_position",
     }
+
+
+def test_wrench_capture_is_opt_in_and_ros2_only():
+    config = load_config()
+    assert config["observation"]["ee_wrench"] is False
+    assert "observation.ee_wrench" not in features(32, "ee", False)
+    config["observation"]["ee_wrench"] = True
+    validate(config)
+    schema = features(32, "ee", False, config["observation"], config["action"])
+    assert schema["observation.ee_wrench"] == {
+        "dtype": "float32", "shape": (6,), "names": ["fx", "fy", "fz", "tx", "ty", "tz"]
+    }
+    config["robot"]["backend"] = "panda"
+    with pytest.raises(ValueError, match="ee_wrench requires robot.backend=ros2"):
+        validate(config)
 
 
 @pytest.mark.parametrize(

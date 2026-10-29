@@ -8,10 +8,11 @@ from control.types import GripperState
 
 
 class Ros2GripperController:
-    def __init__(self, config, node):
+    def __init__(self, config, node, *, source=None):
         self.config = config
         self.cfg = config.get("ros2", {})
         self._node = node
+        self._source = source
         self._ratio, self._width = 1.0, None
         self._local_gripper = None
         self._clients = []
@@ -46,13 +47,16 @@ class Ros2GripperController:
         self._clients = list(self._actions.values())
         self._stop_client = self._node.create_client(Trigger, self._node.resolve_topic_name(f"{prefix}/stop"))
         self._trigger_type = Trigger
-        self._gripper_sub = self._node.create_subscription(
+        subscribe = self._source.subscribe if self._source is not None else self._node.create_subscription
+        self._gripper_sub = subscribe(
             JointState, self._node.resolve_topic_name(f"{prefix}/joint_states"), self._on_gripper, 1
         )
 
     def _on_gripper(self, msg):
         if len(msg.position) == 2 and np.isfinite(msg.position).all():
             self._width = float(sum(msg.position))
+        else:
+            return False
 
     def _wait_future(self, future):
         done = threading.Event()

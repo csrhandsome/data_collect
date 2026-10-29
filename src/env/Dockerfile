@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv python3-dev python3-pip python3-colcon-common-extensions python3-rosdep \
     libeigen3-dev libpoco-dev libfmt-dev libspdlog-dev \
     libgl1 libglib2.0-0 libportaudio2 libsndfile1 ffmpeg libusb-1.0-0 \
-    ros-jazzy-rmw-cyclonedds-cpp ros-jazzy-control-msgs ros-jazzy-xacro \
+    ros-jazzy-rmw-cyclonedds-cpp ros-jazzy-control-msgs ros-jazzy-diagnostic-msgs ros-jazzy-xacro \
     ros-jazzy-joint-state-publisher ros-jazzy-joint-state-broadcaster \
     ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-rviz2 \
     && rm -rf /var/lib/apt/lists/*

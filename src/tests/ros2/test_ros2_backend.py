@@ -180,6 +180,7 @@ def ros_peer():
     peer.frame = "panda_link0"
     peer.age_s = 0
     peer.position = [0.4, 0.0, 0.4]
+    peer.wrench = [1.0, -2.0, 3.0, 0.1, -0.2, 0.3]
     publisher = node.create_publisher(
         FrankaRobotState, "franka_robot_state_broadcaster/robot_state", 1
     )
@@ -196,6 +197,7 @@ def ros_peer():
         msg.o_t_ee = transform.flatten(order="F").tolist()
         msg.q = [i * 0.01 for i in range(1, 8)]
         msg.dq = [0.0] * 7
+        msg.o_f_ext_hat_k = peer.wrench
         publisher.publish(msg)
 
     def command(msg):
@@ -257,10 +259,17 @@ def until(predicate, timeout=2):
 
 
 @ROS_TEST
-def test_real_pose_command_state_order_and_stale_guard(ros_peer, ros_config):
+@pytest.mark.parametrize("wrench_enabled", [False, True])
+def test_real_pose_command_state_order_and_stale_guard(ros_peer, ros_config, wrench_enabled):
+    ros_config["observation"]["ee_wrench"] = wrench_enabled
     with create_runner(config=peer_config(ros_peer, ros_config)) as arm:
         np.testing.assert_allclose(arm.get_state().joint_positions, np.arange(1, 8) * 0.01)
         assert arm.get_state().base_frame == "panda_link0"
+        if wrench_enabled:
+            np.testing.assert_allclose(arm.get_state().ee_wrench, ros_peer.wrench)
+            assert not arm.get_state().ee_wrench.flags.writeable
+        else:
+            assert arm.get_state().ee_wrench is None
         until(lambda: arm._backend._publisher.get_subscription_count() > 0)
         arm.start_stream()
         arm.send_ee_target([0.41, 0.0, 0.4], [0, 0, 0, 2])
@@ -278,6 +287,43 @@ def test_real_pose_command_state_order_and_stale_guard(ros_peer, ros_config):
         ros_peer.publish_state = True
         until(lambda: time.monotonic_ns() - arm._backend._state.sampled_monotonic_ns < 0.1e9)
         arm.stop_stream()
+
+
+@ROS_TEST
+def test_wrench_feedback_is_republished_over_dds_and_invalid_values_expire(ros_peer, ros_config):
+    from geometry_msgs.msg import WrenchStamped
+
+    from control.ros2.bridge import Ros2Publisher
+
+    config = peer_config(ros_peer, ros_config)
+    config["observation"]["ee_wrench"] = True
+    config["ros2"].update(enabled=True, telemetry_namespace=ros_peer.namespace)
+    received = []
+    subscription = ros_peer.node.create_subscription(
+        WrenchStamped, "robot/ee_wrench", received.append, 1
+    )
+    try:
+        with create_runner(config=config) as arm, Ros2Publisher(config) as bridge:
+            until(lambda: bridge._publishers["robot/ee_wrench"].get_subscription_count() > 0)
+            state = arm.get_state()
+            bridge.submit(state)
+            until(lambda: bool(received))
+            message = received[-1]
+            np.testing.assert_allclose(
+                [message.wrench.force.x, message.wrench.force.y, message.wrench.force.z,
+                 message.wrench.torque.x, message.wrench.torque.y, message.wrench.torque.z],
+                ros_peer.wrench,
+            )
+            assert message.header.frame_id == state.base_frame
+            assert message.header.stamp.sec > 0
+            ros_peer.wrench[0] = float("nan")
+            time.sleep(0.25)
+            with pytest.raises(TimeoutError, match="stale"):
+                arm.get_state()
+            ros_peer.wrench[0] = 1.0
+            until(lambda: time.monotonic_ns() - arm._backend._state.sampled_monotonic_ns < 0.1e9)
+    finally:
+        ros_peer.node.destroy_subscription(subscription)
 
 
 @ROS_TEST

@@ -56,6 +56,10 @@ class Ros2Publisher:
         self._publishers = {}
         self._last_image_ns = {}
         cfg = config.get("ros2", {})
+        self._publish_ee_wrench = (
+            config.get("robot", {}).get("backend") == "ros2"
+            and config.get("observation", {}).get("ee_wrench", False)
+        )
         if not cfg.get("enabled", False):
             return
 
@@ -100,6 +104,10 @@ class Ros2Publisher:
         from std_msgs.msg import String
 
         self._types = {"pose": PoseStamped, "image": Image, "joints": JointState, "json": String}
+        if self._publish_ee_wrench:
+            from geometry_msgs.msg import WrenchStamped
+
+            self._types["wrench"] = WrenchStamped
         self._context = Context()
         # No default context, global ROS arguments, /clock, or signal handlers.
         rclpy.init(args=[], context=self._context, signal_handler_options=SignalHandlerOptions.NO)
@@ -132,6 +140,8 @@ class Ros2Publisher:
             "vr/input": "json",
             "timestamps": "json",
         }
+        if self._publish_ee_wrench:
+            topics["robot/ee_wrench"] = "wrench"
         if self._publish_images:
             topics.update({f"camera/{name}/image": "image" for name in self._camera_frames})
         for topic, kind in topics.items():
@@ -191,6 +201,10 @@ class Ros2Publisher:
                 "busy": bool(getattr(state.gripper, "busy", False)),
             },
         }
+        if self._publish_ee_wrench:
+            if state.ee_wrench is None:
+                raise ValueError("ROS 2 external wrench feedback is unavailable")
+            robot["ee_wrench"] = tuple(float(x) for x in state.ee_wrench)
         vr_copy = None
         if vr is not None:
             vr_copy = {
@@ -314,6 +328,16 @@ class Ros2Publisher:
             robot["base_frame"],
             robot_stamp,
         )
+        if self._publish_ee_wrench:
+            message = self._types["wrench"]()
+            self._header(message, robot["base_frame"], robot_stamp)
+            message.wrench.force.x, message.wrench.force.y, message.wrench.force.z = (
+                robot["ee_wrench"][:3]
+            )
+            message.wrench.torque.x, message.wrench.torque.y, message.wrench.torque.z = (
+                robot["ee_wrench"][3:]
+            )
+            self._publishers["robot/ee_wrench"].publish(message)
         self._json(
             "robot/gripper_state",
             {

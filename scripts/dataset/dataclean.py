@@ -8,7 +8,7 @@ import sys
 import traceback
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from data_analysis.data_clean import ALIGNERS  # noqa: E402

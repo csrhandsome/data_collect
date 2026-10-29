@@ -14,8 +14,8 @@ class Ros2Node(BaseNode[Sample]):
     keeps executor callbacks on the reading thread, as required by the cameras.
     """
 
-    def __init__(self, name, namespace="", *, background=True):
-        self._source = Subscription(name, namespace)
+    def __init__(self, name, namespace="", *, background=True, monitoring=None):
+        self._source = Subscription(name, namespace, monitoring=monitoring)
         self._background = background
 
     @abstractmethod

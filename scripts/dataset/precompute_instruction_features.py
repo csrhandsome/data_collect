@@ -13,19 +13,19 @@ encoders from the sibling openpi checkout (``openpi.shared.audio_tools``):
 Examples:
     # Qwen dry-run
     OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 \\
-      $OPENPI_ROOT/.venv/bin/python scripts/precompute_instruction_features.py \\
+      $OPENPI_ROOT/.venv/bin/python scripts/dataset/precompute_instruction_features.py \\
       --encoder qwen --dataset-root data/dataset/franka_lerobot_7_6_audio \\
       --dry-run --limit 1 --workers 1 --threads-per-worker 4
 
     # USAD dry-run (MIT-SLS/USAD2-Large)
     OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 \\
-      $OPENPI_ROOT/.venv/bin/python scripts/precompute_instruction_features.py \\
+      $OPENPI_ROOT/.venv/bin/python scripts/dataset/precompute_instruction_features.py \\
       --encoder usad --dataset-root data/dataset/franka_lerobot_7_6_audio \\
       --dry-run --limit 1 --workers 1 --threads-per-worker 4
 
     # Full USAD precompute
     OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 \\
-      $OPENPI_ROOT/.venv/bin/python scripts/precompute_instruction_features.py \\
+      $OPENPI_ROOT/.venv/bin/python scripts/dataset/precompute_instruction_features.py \\
       --encoder usad --dataset-root data/dataset/franka_lerobot_7_6_audio \\
       --workers 4 --threads-per-worker 4
 """
@@ -52,7 +52,7 @@ DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
 os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
 os.environ.setdefault("HF_HUB_ENDPOINT", DEFAULT_HF_ENDPOINT)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "data" / "dataset" / "franka_lerobot_7_6_audio"
 _OPENPI_CANDIDATES = (
     Path(os.environ["OPENPI_ROOT"]) if os.environ.get("OPENPI_ROOT") else None,

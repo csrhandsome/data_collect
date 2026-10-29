@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import tarfile
@@ -59,66 +60,69 @@ class FeelSightAligner(BaseAligner):
     def iter_episodes(self, source: Path, work: Path, done: set[str] | None = None):
         finished = done or set()
         archive = self._archive(source)
-        current_id = None
-        buckets: dict[tuple[str, str], list[tuple[int, bytes]]] = {}
+        frames_root = work / "frames"
+        frames_root.mkdir(parents=True, exist_ok=True)
+        print(f"[feelsight] reading {archive.name}", flush=True)
         with tarfile.open(archive, "r|gz") as handle:
             for member in handle:
                 match = _MEMBER.search(member.name or "")
                 if match is None or not member.isfile():
                     continue
                 episode_id = f"{match.group(1)}/{match.group(2)}"
-                if current_id is None:
-                    current_id = episode_id
-                if episode_id != current_id:
-                    yield from self._emit(current_id, buckets, work, finished)
-                    current_id = episode_id
-                    buckets = {}
                 if episode_id in finished:
                     continue
                 key = (match.group(3), match.group(4))
-                if key not in _VIEWS:
+                feature = _VIEWS.get(key)
+                if feature is None:
                     continue
                 extracted = handle.extractfile(member)
                 if extracted is None:
                     continue
-                buckets.setdefault(key, []).append((int(match.group(5)), extracted.read()))
-        if current_id is not None:
-            yield from self._emit(current_id, buckets, work, finished)
+                destination = frames_root / episode_id / feature.replace(".", "_") / f"{int(match.group(5)):06d}.jpg"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(extracted.read())
+        episode_dirs = sorted({path.parent.parent for path in frames_root.rglob("*.jpg")})
+        for episode_dir in episode_dirs:
+            episode_id = str(episode_dir.relative_to(frames_root))
+            episode = self._encode_dir(episode_id, episode_dir, work / "encoded")
+            if episode is None:
+                continue
+            yield episode
+            shutil.rmtree(episode_dir, ignore_errors=True)
 
-    def _emit(self, episode_id: str, buckets: dict, work: Path, finished: set[str]):
-        if episode_id in finished or not buckets:
-            return
-        folder = work / "current"
-        if folder.exists():
-            shutil.rmtree(folder)
-        folder.mkdir(parents=True)
+    def _encode_dir(self, episode_id: str, episode_dir: Path, work: Path) -> AlignedEpisode | None:
+        if work.exists():
+            shutil.rmtree(work)
+        work.mkdir(parents=True)
         videos = {}
-        length = None
-        for key, feature in _VIEWS.items():
-            frames = [payload for _, payload in sorted(buckets.get(key, []))]
+        counts = []
+        for _key, feature in _VIEWS.items():
+            frames = sorted((episode_dir / feature.replace(".", "_")).glob("*.jpg"))
             if len(frames) < 2:
-                print(f"[feelsight] skip {episode_id}: missing {key}", flush=True)
-                shutil.rmtree(folder, ignore_errors=True)
-                return
-            image_dir = folder / feature.replace(".", "_")
-            image_dir.mkdir()
-            for index, payload in enumerate(frames):
-                (image_dir / f"{index:04d}.jpg").write_bytes(payload)
-            video = folder / f"{feature.replace('.', '_')}.mp4"
-            _jpg_to_mp4(image_dir, video, fps=10)
+                print(f"[feelsight] skip {episode_id}: missing {feature}", flush=True)
+                shutil.rmtree(work, ignore_errors=True)
+                return None
+            sequence = work / feature.replace(".", "_")
+            sequence.mkdir()
+            for index, source in enumerate(frames):
+                destination = sequence / f"{index:06d}.jpg"
+                try:
+                    os.link(source, destination)
+                except OSError:
+                    shutil.copyfile(source, destination)
+            video = work / f"{feature.replace('.', '_')}.mp4"
+            _jpg_to_mp4(sequence, video, fps=10)
             videos[feature] = video
-            length = len(frames) if length is None else min(length, len(frames))
-        object_name = episode_id.split("/", 1)[0]
+            counts.append(len(frames))
+        length = min(counts)
         zeros = np.zeros((length, 1), dtype=np.float32)
-        episode = AlignedEpisode(
+        return AlignedEpisode(
             key=episode_id,
-            task=f"feel {object_name}",
+            task=f"feel {episode_id.split('/', 1)[0]}",
             fps=10.0,
             videos=videos,
             columns={"observation.gripper_position": zeros, "action.gripper_position": zeros},
         )
-        yield episode
-        shutil.rmtree(folder, ignore_errors=True)
 
     def load(self, source: Path, episode_id: str, work: Path) -> AlignedEpisode:
         archive = self._archive(source)

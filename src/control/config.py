@@ -106,6 +106,13 @@ def validate(config):
             if not isinstance(cfg.get(key), str) or not cfg[key].strip():
                 raise ValueError(f"ros2.{key} must be a nonempty string")
     control = config.get("control", {})
+    monitoring = config.get("ros2", {}).get("monitoring", {})
+    if not isinstance(monitoring, dict) or not isinstance(monitoring.get("enabled", False), bool):
+        raise ValueError("ros2.monitoring must be a mapping with a boolean enabled")
+    for key, default in (("startup_grace_s", 10), ("window_s", 5), ("min_rate_ratio", 0.8)):
+        positive_rate(monitoring.get(key, default), f"ros2.monitoring.{key}")
+    if float(monitoring.get("min_rate_ratio", 0.8)) > 1:
+        raise ValueError("ros2.monitoring.min_rate_ratio must be at most 1")
     if control.get("mode", "ee") != "ee":
         raise ValueError("control.mode must be ee; action fields select saved joint/ee labels")
     if config.get("dataset", {}).get("action_space", "joint") not in ("joint", "ee"):
@@ -121,6 +128,8 @@ def validate(config):
         config.get("observation"),
         config.get("action"),
     )
+    if (config.get("observation") or {}).get("ee_wrench", False) and backend != "ros2":
+        raise ValueError("observation.ee_wrench requires robot.backend=ros2")
     if "video_encoder" in config.get("dataset", {}):
         from lerobot.configs import RGBEncoderConfig
 

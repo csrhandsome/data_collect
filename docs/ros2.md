@@ -62,16 +62,17 @@ Docker 内使用独立的 `/opt/data_collect_venv`，不会使用宿主机 `.ven
 上游修复并通过 preflight 后，在第一个容器中启动机械臂控制器和两路 RealSense：
 
 ```bash
-bash src/env/start.sh
+bash scripts/deploy_ros2.sh
 ```
 
-`start.sh` 会拉起 `cameras.sh` 和 `bringup.sh`。采集程序只订阅话题，不会自己打开相机。关掉这个终端时，控制器和相机会一起停。单独启动机械臂仍用 `bringup.sh`。
+`scripts/deploy_ros2.sh` 会拉起 `src/env/cameras.sh`、`src/env/bringup.sh`、
+VR 发布节点和诊断桥接进程。采集程序只订阅话题，不会自己打开相机。
+关掉这个终端时，这些进程及其子进程会一起停。单独启动机械臂仍用 `src/env/bringup.sh`。
 
 该脚本调用的官方命令为：
 
 ```bash
-ros2 launch franka_bringup example.launch.py \
-  controller_names:=cartesian_impedance_example_controller \
+ros2 launch panda_cartesian_controller panda_bringup.launch.py \
   robot_config_file:=/workspace/src/env/franka.config.yaml
 ```
 
@@ -93,6 +94,67 @@ VR 使用原 Teleop XR HTTPS 服务（4443），Docker 使用 host 网络。
 `ROS_DOMAIN_ID` 默认 42，所有 ROS 容器与观察终端应相同。
 host 网络和 host IPC 用于 Linux；Compose 配置 `SYS_NICE`、rtprio 和 memlock，
 宿主机仍须具备适用于 FR3 的实时内核和实时调度权限，容器不会提供独立内核。
+
+## 订阅监控与前端 warning
+
+部署入口和数据脚本分开放置：
+
+```text
+scripts/
+  deploy_docker.sh       # 在宿主机进入容器
+  deploy_ros2.sh         # 在容器内启动 ROS2 环境和诊断桥接
+  deploy_page.sh         # 在宿主机启动网页
+  dataset/              # 原有数据处理、上传和下载脚本
+```
+
+在第一个终端执行 `bash scripts/deploy_docker.sh` 后，容器内运行
+`bash scripts/deploy_ros2.sh`。第二个终端同样进入容器后运行
+`python -m vr_collect --config config/train/panda.yaml`。宿主机第三个终端执行
+`bash scripts/deploy_page.sh`，打开页面顶部的「ROS2 订阅监控」。
+
+监控配置继承自 `config/train/panda.yaml`：
+
+```yaml
+ros2:
+  monitoring:
+    enabled: true
+    startup_grace_s: 10.0
+    window_s: 5.0
+    min_rate_ratio: 0.8
+```
+
+现有 `Subscription` 统一包装真正的机械臂、VR、相机、麦克风和 Franka 夹爪
+订阅回调，不新增图像或机器人状态订阅。每秒发布标准
+`diagnostic_msgs/msg/DiagnosticArray` 到 `/diagnostics`。
+`diagnostics.py` 负责统计与诊断，`diagnostics_bridge.py` 负责发现驱动、汇总诊断和记录恢复事件，
+shell 只负责进程生命周期。没有开启的设备不列为缺失。
+
+频率统计使用接收侧单调时钟。相机以 `camera.fps`、VR 以发布心跳 100 Hz、
+机器人状态以控制循环 `control.frequency_hz` 为最低需求基准，乘以 `min_rate_ratio`
+后作为频率阈值。机器人状态不要求完整消费驱动 1 kHz 的每个消息。
+音频块长度可变、夹爪发布频率未固定，因此这两项只检查超时和无效数据。
+带 header 的消息还检查源时间戳；VR 同时检查头显是否继续更新，
+避免 ROS 心跳正常但输入已经冻结时显示为正常。
+
+以下情形只生成监控 warning：启动宽限时间结束仍未发现发布节点、
+订阅没有消息或消息中断、频率低于阈值、无效数据，以及订阅进程诊断心跳中断。
+状态恢复会记录恢复事件，同一持续异常不反复刷屏。`depth=1` 与状态缓存
+正常覆盖中间样本不会直接计为丢帧，监控也不声称提供精确丢帧数量。
+监控不会关闭控制器或终止采集；原有反馈过期、运动限幅和录制完整性保护继续生效。
+
+诊断桥接只订阅小型诊断消息，并使用 ROS graph 查询发布节点是否存在。
+采集尚未启动时显示「发布节点在线，等待采集订阅」，发现发布节点不等于已验证数据正常。
+实际订阅的接收状态以其自身诊断为准；订阅心跳超过 3 秒未更新会 warning。
+
+桥接进程每秒原子更新 `data/runtime/ros2_health.json`，FastAPI 的
+`GET /api/ros2/health` 读取该快照，前端每秒刷新。此文件位于 Docker 与宿主机
+共享数据目录，网页后端无需安装 ROS。监控快照超过 5 秒未更新时显示「监控未连接」，
+保留最后记录供排查，但不把旧的正常状态显示为当前正常。
+最近 100 个状态变化保留在内存和快照中，前端展示最近 10 条，重启监控后重新开始记录。
+
+`ROS2_DATA_DIR` 自定义数据目录时，两个部署脚本会使用对应的共享路径；
+单独运行网页后端或跨机器部署时，可通过 `ROS2_HEALTH_PATH` 指定同一份状态快照。
+这是当前单机 Docker 工作方式的轻量桥接；跨主机且没有共享目录时，需要另行配置传输。
 
 ## 配置与消息
 
@@ -178,19 +240,44 @@ DH5 如启用，仍由原串口后端访问本地设备，触觉图像沿用原�
 
 | 方向 | 默认 topic / action | 类型 |
 | --- | --- | --- |
-| Python → controller | `/cartesian_impedance_example_controller/equilibrium_pose` | `geometry_msgs/PoseStamped` |
+| Python → controller | `/cartesian_pose_impedance_controller/equilibrium_pose` | `geometry_msgs/PoseStamped` |
 | broadcaster → Python | `/franka_robot_state_broadcaster/robot_state` | `franka_msgs/FrankaRobotState` |
 | Python → Franka gripper | `/franka_gripper/move`、`/franka_gripper/grasp` | `franka_msgs/action/Move`、`Grasp` |
 | Python → gripper stop | `/franka_gripper/stop` | `std_srvs/Trigger` |
 | gripper → Python | `/franka_gripper/joint_states` | `sensor_msgs/JointState` |
 
 这里 Python **发布** equilibrium_pose，官方 controller **订阅**。
-目标必须是 `fr3_link0` 坐标系，位置单位 m，四元数顺序 xyzw，消息带 ROS 时间戳。
+
+末端外力估计可在 `config/train/panda.yaml` 或其子配置中按需开启（默认关闭）：
+
+```yaml
+observation:
+  ee_wrench: true
+```
+
+此字段仅支持 `robot.backend: ros2`。Python 复用现有
+`/franka_robot_state_broadcaster/robot_state` 订阅，读取 `o_f_ext_hat_k`；
+不新增 FCI 连接，也不改变 EE 目标位姿控制。数据为刚度坐标系 K 原点处、
+沿机器人基坐标系轴表达的外力／力矩估计，顺序为
+`[Fx, Fy, Fz, Tx, Ty, Tz]`，单位为 N、N·m。它不是策略预测的目标力。
+字段开启时要求六个数均有限；缺失或非法消息不会刷新反馈，持续异常会触发原有过期保护。
+
+开启后，LeRobot 保存 `observation.ee_wrench`（`float32[6]`），
+控制轨迹和同步 sidecar 同时保存 `ee_wrench`，推理请求携带同名 observation 字段。
+额外遥测启用（`ros2.enabled: true`）时，还会发布
+`/data_collect/robot/ee_wrench`（`geometry_msgs/msg/WrenchStamped`），
+header 使用与实测 EE 位姿相同的基坐标系和反馈接收时间。
+外部节点可用 `ros2 topic echo /data_collect/robot/ee_wrench` 订阅查看。
+`ros2.enabled: false` 仅关闭额外遥测，仍可读取和保存外力。
+关闭 `ee_wrench` 后不读取、不保存，也不创建该遥测 publisher；Franka 驱动原有状态发布继续运行。
+开启会改变数据集 schema，续录已有数据集时需选择新的 `dataset.date` 或数据目录。
+
+目标必须是 `panda_link0` 坐标系，位置单位 m，四元数顺序 xyzw，消息带 ROS 时间戳。
 frame_id 是校验标签，代码不会自动做 TF 变换。
 ROS namespace 在 `franka.config.yaml` 和 Python `ros2.namespace` 中同步设置；
 配置的 endpoint 会被相对该 namespace 解析。
 
-反馈使用真实 `measured_joint_state` 和 `o_t_ee`，按关节名重排为 1…7。
+反馈使用状态消息中的真实 `q`、`dq` 和 `o_t_ee`，关节数组按 1…7 排列。
 不会将发布目标冒充实测数据。首条有效状态超时、反馈过期、源时间戳过期、坐标系错误
 或 controller 订阅者消失时拒绝继续下发。多机使用时需要同步系统时钟。
 原有目标相对实测位姿的平移/旋转保护继续生效。

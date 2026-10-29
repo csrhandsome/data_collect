@@ -78,6 +78,10 @@ def build_observation(state, pair, prompt, space, *, tactile=None, step=0, field
             "observation.joint_position": state.joint_positions.astype(np.float32),
         }
     )
+    if (fields or {}).get("ee_wrench", False):
+        if state.ee_wrench is None:
+            raise ValueError("Policy external wrench input is missing")
+        result["observation.ee_wrench"] = state.ee_wrench.astype(np.float32)
     if tactile is not None:
         left, right = tactile
         if left is None or right is None:

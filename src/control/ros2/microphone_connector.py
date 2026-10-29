@@ -28,7 +28,10 @@ class Ros2Microphone:
                 or min(self.sample_rate, self.channels, self._timeout, self._max_age) <= 0):
             raise ValueError("Audio sample rate, channels and max age must be positive")
         self._topic = ros.get("topic", "/microphone/audio")
-        self._source = Subscription("microphone", config.get("ros2", {}).get("namespace", ""))
+        self._source = Subscription(
+            "microphone", config.get("ros2", {}).get("namespace", ""),
+            monitoring=config.get("ros2", {}).get("monitoring"),
+        )
         self._last_received_ns = None
         self._wave = self._temp = None
         self.default_output_path = self.last_metadata_path = None
@@ -50,9 +53,10 @@ class Ros2Microphone:
         from rclpy.qos import QoSProfile, ReliabilityPolicy
         from std_msgs.msg import Int16MultiArray
 
-        self._subscription = node.create_subscription(
+        self._subscription = self._source.subscribe(
             Int16MultiArray, self._topic, self._receive,
             QoSProfile(depth=100, reliability=ReliabilityPolicy.BEST_EFFORT),
+            timeout_s=self._max_age,
         )
 
     def _receive(self, message):
@@ -60,7 +64,7 @@ class Ros2Microphone:
         if not pcm.size or pcm.size % self.channels or message.layout.data_offset:
             self._source.node.get_logger().warning("Invalid interleaved PCM16 audio chunk",
                                                    throttle_duration_sec=2.0)
-            return
+            return False
         now = time.monotonic_ns()
         with self._source.condition:
             if self.is_recording:

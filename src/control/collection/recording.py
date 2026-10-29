@@ -152,6 +152,8 @@ class EpisodeRecorder:
             "vr_orientation_xyzw": vr.quaternion_xyzw.tolist(),
             "vr_arm_enabled": vr.enabled,
         }
+        if "observation.ee_wrench" in self.feature_keys:
+            record["ee_wrench"] = self._wrench(state).tolist()
         self.trace_writer.submit(record)
         self.trace_count += 1
 
@@ -171,6 +173,8 @@ class EpisodeRecorder:
             ),
             "task": self.config["dataset"]["instruction"],
         }
+        if "observation.ee_wrench" in self.feature_keys:
+            frame["observation.ee_wrench"] = self._wrench(state).astype(np.float32)
         if "observation.exterior_image" in self.feature_keys:
             frame["observation.exterior_image"] = pair.front.copy()
         if "observation.wrist_image_left" in self.feature_keys:
@@ -206,6 +210,8 @@ class EpisodeRecorder:
             "ee_orientation_xyzw": state.ee_quaternion_xyzw.tolist(),
             "gripper_position": state.gripper.commanded_open_ratio,
         }
+        if "observation.ee_wrench" in self.feature_keys:
+            record["ee_wrench"] = self._wrench(state).tolist()
         self.records.append(record)
         self.pending = (
             {
@@ -215,6 +221,12 @@ class EpisodeRecorder:
             },
             record,
         )
+
+    @staticmethod
+    def _wrench(state):
+        if state.ee_wrench is None:
+            raise RuntimeError("observation.ee_wrench enabled but ROS 2 wrench feedback is unavailable")
+        return state.ee_wrench
 
     def _complete(self, state, terminal=False):
         if self.pending is None:

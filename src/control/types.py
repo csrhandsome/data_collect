@@ -104,6 +104,8 @@ class RobotState:
     robot_mode: str | None = None
     control_command_success_rate: float | None = None
     current_errors: str | None = None
+    # External wrench at stiffness frame K, expressed in base_frame: N, N m.
+    ee_wrench: np.ndarray | None = None
 
     def __post_init__(self):
         for name, shape in (
@@ -118,6 +120,10 @@ class RobotState:
                 raise ValueError(f"{name} must be finite with shape {shape}")
             value.setflags(write=False)
             object.__setattr__(self, name, value)
+        if self.ee_wrench is not None:
+            value = as_vector(self.ee_wrench, 6, "EE external wrench")
+            value.setflags(write=False)
+            object.__setattr__(self, "ee_wrench", value)
 
     @property
     def ee_pose(self) -> EEPose:

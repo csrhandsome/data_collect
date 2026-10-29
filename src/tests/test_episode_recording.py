@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -12,6 +13,53 @@ from control.collection.vr import VRResampler
 from control.direct.fake import FakeBackend
 from data_analysis.dataset_io import episode_dataframe, episode_paths
 from replay.scripts.read_dataset import read_dataset
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_optional_ros_wrench_is_saved_in_parquet_and_traces(tmp_path, enabled):
+    config = {
+        "robot": {"backend": "ros2"},
+        "dataset": {"repo_id": "local/wrench", "date": "capture", "root": str(tmp_path),
+                    "instruction": "Contact", "action_space": "ee"},
+        "camera": {"image_hw": 32, "fps": 30},
+        "control": {"frequency_hz": 100},
+        "observation": {
+            "exterior_image": False, "wrist_image_left": False,
+            "joint_position": False, "ee_pose": False, "ee_position": True,
+            "gripper_position": False, "ee_wrench": enabled,
+        },
+        "action": {"joint_position": False, "ee_pose": False, "gripper_position": False},
+    }
+    dataset, root = open_dataset(config)
+    recorder = EpisodeRecorder(dataset, root, config)
+    base = FakeBackend().snapshot()
+    image = np.zeros((32, 32, 3), dtype=np.uint8)
+    expected = []
+    try:
+        recorder.start()
+        for index in range(3):
+            wrench = np.array([index + 1, -2, 3, 0.1, -0.2, 0.3])
+            expected.append(wrench)
+            state = replace(base, ee_wrench=wrench, sampled_monotonic_ns=base.sampled_monotonic_ns + index)
+            sample = VRResampler().sample(FakeVR().latest, state.sampled_monotonic_ns)
+            recorder.trace(state, sample, state.ee_position, state.ee_quaternion_xyzw)
+            ns = state.sampled_monotonic_ns
+            recorder.frame(state, CameraPair(image, image, ns, ns, 0, 0))
+        recorder.finish(state)
+        recorder.finalize()
+    finally:
+        recorder.close()
+    rows = episode_dataframe(episode_paths(root)[0], 0)
+    sync = json.loads((root / "episode_000000.sync.json").read_text())
+    trace = [json.loads(line) for line in (root / sync["action_trace"]).read_text().splitlines()]
+    assert ("observation.ee_wrench" in rows) is enabled
+    if enabled:
+        np.testing.assert_allclose(np.stack(rows["observation.ee_wrench"]), expected, rtol=1e-6)
+        assert np.stack(rows["observation.ee_wrench"]).dtype == np.float32
+        np.testing.assert_allclose([row["ee_wrench"] for row in trace], expected)
+        np.testing.assert_allclose([row["ee_wrench"] for row in sync["frame_records"]], expected)
+    else:
+        assert all("ee_wrench" not in row for row in trace + sync["frame_records"])
 
 
 @pytest.mark.parametrize("audio", [False, True])

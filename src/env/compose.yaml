@@ -22,6 +22,7 @@ services:
       DATA_COLLECT_INFERENCE_CONFIG: /workspace/config/inference/panda.yaml
       SDL_VIDEODRIVER: dummy
       SDL_AUDIODRIVER: dummy
+      ROS2_HEALTH_PATH: /workspace/data/runtime/ros2_health.json
     volumes:
       - ../..:/workspace
       - /dev:/dev

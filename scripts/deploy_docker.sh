@@ -2,7 +2,7 @@
 # 启动唯一的 Franka ROS 2 镜像并进入 shell。在仓库根目录执行。
 set -euo pipefail
 
-root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 image="data-collect/franka-ros2-jazzy:dev"
@@ -29,6 +29,7 @@ exec docker run --rm -it \
   -e DATA_COLLECT_INFERENCE_CONFIG=/workspace/config/inference/panda.yaml \
   -e SDL_VIDEODRIVER=dummy \
   -e SDL_AUDIODRIVER=dummy \
+  -e ROS2_HEALTH_PATH=/workspace/data/runtime/ros2_health.json \
   -v "$root:/workspace" \
   -v /dev:/dev \
   -v "${ROS2_DATA_DIR:-$root/data}:/workspace/data" \

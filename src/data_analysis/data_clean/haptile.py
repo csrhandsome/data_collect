@@ -22,6 +22,15 @@ _VIDEOS = {
 }
 
 
+def _has_dataset(handle, key: str) -> bool:
+    node = handle
+    for part in key.split("/"):
+        if part not in node:
+            return False
+        node = node[part]
+    return True
+
+
 def _text(value) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", "replace")
@@ -53,6 +62,8 @@ class HapTileAligner(BaseAligner):
         videos = {}
         with h5py.File(h5_path, "r") as handle:
             for source_key, feature in _VIDEOS.items():
+                if not _has_dataset(handle, source_key):
+                    raise SkipEpisode(f"missing {source_key}")
                 blob = bytes(handle[source_key][()])
                 path = work / f"{feature.replace('.', '_')}.mp4"
                 path.write_bytes(blob)

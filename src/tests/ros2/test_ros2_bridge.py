@@ -40,6 +40,15 @@ class Image:
         self.header = header()
 
 
+class WrenchStamped:
+    def __init__(self):
+        self.header = header()
+        self.wrench = SimpleNamespace(
+            force=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+            torque=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        )
+
+
 class String:
     def __init__(self):
         self.data = ""
@@ -147,7 +156,7 @@ def ros(monkeypatch):
         DurabilityPolicy=SimpleNamespace(VOLATILE="VOLATILE"),
     )
     for name, messages in (
-        ("geometry_msgs", {"PoseStamped": PoseStamped}),
+        ("geometry_msgs", {"PoseStamped": PoseStamped, "WrenchStamped": WrenchStamped}),
         ("sensor_msgs", {"Image": Image, "JointState": JointState}),
         ("std_msgs", {"String": String}),
     ):
@@ -218,6 +227,27 @@ def cameras(front_ns=8_700_000_111, wrist_ns=8_600_000_222):
 
 def stamp_ns(message):
     return message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
+
+
+@pytest.mark.parametrize("backend,enabled", [("ros2", True), ("ros2", False), ("panda", True)])
+def test_external_wrench_topic_is_ros2_opt_in_and_copies_feedback(ros, backend, enabled):
+    cfg = config()
+    cfg.update(robot={"backend": backend}, observation={"ee_wrench": enabled})
+    robot = state()
+    robot.ee_wrench = np.array([1, -2, 3, 0.1, -0.2, 0.3])
+    with Ros2Publisher(cfg) as bridge:
+        bridge.submit(robot)
+        robot.ee_wrench[:] = 99
+        ros.wait_for("timestamps")
+        if backend != "ros2" or not enabled:
+            assert "robot/ee_wrench" not in ros.publishers
+            return
+        message = ros.wait_for("robot/ee_wrench")
+        assert vars(message.wrench.force) == {"x": 1, "y": -2, "z": 3}
+        assert vars(message.wrench.torque) == {"x": 0.1, "y": -0.2, "z": 0.3}
+        assert message.header.frame_id == "panda_link0"
+        assert stamp_ns(message) == stamp_ns(ros.wait_for("robot/ee_pose"))
+        assert ros.publishers["robot/ee_wrench"].qos.reliability == "RELIABLE"
 
 
 def test_disabled_never_imports_ros_or_starts_worker():

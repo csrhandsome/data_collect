@@ -8,6 +8,7 @@ OBSERVATION_FIELDS = {
     "joint_position": [f"joint_{i}" for i in range(7)],
     "ee_pose": ["x", "y", "z", "roll", "pitch", "yaw"],
     "ee_position": ["x", "y", "z"],
+    "ee_wrench": ["fx", "fy", "fz", "tx", "ty", "tz"],
     "gripper_position": ["commanded_open_ratio"],
 }
 ACTION_FIELDS = {
@@ -43,6 +44,9 @@ def features(image_hw, action_space, tactile, observation=None, action=None):
     ):
         validate_fields(selection, group)
         for key, names in fields.items():
+            # Wrench capture is opt-in; old/partial configs keep their schema.
+            if key == "ee_wrench" and not (selection or {}).get(key, False):
+                continue
             if not (selection or {}).get(key, True):
                 continue
             if key.startswith("gripper_image") and not tactile:

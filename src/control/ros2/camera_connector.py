@@ -41,7 +41,11 @@ class Ros2Cameras(Ros2Node[CameraPair]):
         self._raw = {}
         self._cache = {}
         self._counts = {"front": 0, "wrist": 0}
-        super().__init__("camera", config.get("ros2", {}).get("namespace", ""), background=False)
+        self._expected_hz = float(cfg.get("fps", 30))
+        super().__init__(
+            "camera", config.get("ros2", {}).get("namespace", ""), background=False,
+            monitoring=config.get("ros2", {}).get("monitoring"),
+        )
         self._timeout = float(cfg.get("startup_timeout_s", 10))
         self._topics = {
             "front": ros.get("external_image_topic", "/camera/external/color/image_raw"),
@@ -70,8 +74,10 @@ class Ros2Cameras(Ros2Node[CameraPair]):
         from sensor_msgs.msg import Image
 
         self._subscriptions = [
-            node.create_subscription(Image, topic, lambda msg, key=key: self._receive(key, msg),
-                                     qos_profile_sensor_data)
+            self._source.subscribe(
+                Image, topic, lambda msg, key=key: self._receive(key, msg), qos_profile_sensor_data,
+                expected_hz=self._expected_hz, timeout_s=self._max_age,
+            )
             for key, topic in self._topics.items()
         ]
 
@@ -82,7 +88,7 @@ class Ros2Cameras(Ros2Node[CameraPair]):
             self._source.node.get_logger().warning(
                 "ROS camera message has no header stamp or image size", throttle_duration_sec=2.0,
             )
-            return
+            return False
         # Keep the latest packet only. Cropping here makes the control thread
         # miss the other camera while it resizes a backlog.
         packet = (

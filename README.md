@@ -19,8 +19,14 @@ ROS 输入的 topic 和音频格式见 [ROS 设备配置](docs/ros2.md#ros-输�
 ```bash
 uv sync --locked
 uv run vr_collect --config config/train/panda.yaml
-bash dev.sh
+bash scripts/deploy_page.sh
 ```
+
+部署入口集中在 `scripts/`：`deploy_docker.sh` 进入 Franka 容器，
+容器内运行 `deploy_ros2.sh` 启动驱动、相机、VR 和订阅诊断，
+`deploy_page.sh` 启动网页。原有数据处理、上传和下载脚本位于 `scripts/dataset/`。
+网页顶部的「ROS2 订阅监控」显示实际订阅的 warning 和恢复状态，
+可通过 `ros2.monitoring` 调整开关、启动宽限时间和频率阈值，详见 [ROS2 监控](docs/ros2.md#订阅监控与前端-warning)。
 
 Electron + Nuitka Linux 桌面版的构建、运行和产物测试见
 [replay/desktop/README.md](src/replay/desktop/README.md)。
