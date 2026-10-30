@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Inside the Docker shell: controllers, cameras, VR and warning-only diagnostics.
-# Desk FCI must already be on. This script does not activate FCI.
+# Bringup unlocks the brakes and activates FCI through the standalone Desk client.
 #
 #   bash scripts/deploy_docker.sh
 #   bash scripts/deploy_ros2.sh
@@ -12,6 +12,11 @@ set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+
+if ! command -v ros2 >/dev/null 2>&1; then
+  echo 'ROS 2 environment missing. Run bash scripts/deploy_docker.sh first, then bash scripts/deploy_ros2.sh inside the container.' >&2
+  exit 1
+fi
 
 cam_pid=""
 vr_pid=""

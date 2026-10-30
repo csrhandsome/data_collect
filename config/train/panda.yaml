@@ -31,6 +31,7 @@ robot:
   password: 'Design@2018'
   # activate_fci / move_to_start 默认：panda=true，ros2=false。
   # 可显式覆盖；ROS 后端不支持设为 true。
+  # ROS 部署脚本会单独登录 Desk 解锁及激活 FCI；采集端不重复操作。
 ros2:
   namespace: ""
   # 与 src/env/franka.config.yaml 中的 Panda base frame 一致。O_T_EE 在 panda_link0。

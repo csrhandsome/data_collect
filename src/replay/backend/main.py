@@ -30,13 +30,18 @@ def create_app(
     operation_manager: OperationManager | None = None,
     frontend_root: Path | None = None,
     shutdown_timeout: float | None = 30,
+    start_collect: bool = False,
 ) -> FastAPI:
     manager = operation_manager or OperationManager()
 
     @asynccontextmanager
     async def lifespan(_application):
-        yield
-        await asyncio.to_thread(manager.close, timeout=shutdown_timeout)
+        try:
+            if start_collect:
+                manager.start("collect", manager.command("collect"))
+            yield
+        finally:
+            await asyncio.to_thread(manager.close, timeout=shutdown_timeout)
 
     application = FastAPI(title="Franka Replay", version="0.1.0", lifespan=lifespan)
     application.state.dataset_registry = DatasetRegistry(configured_data_root(data_root))

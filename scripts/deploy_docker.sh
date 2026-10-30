@@ -24,6 +24,9 @@ exec docker run --rm -it \
   --device-cgroup-rule "c 166:* rwm" \
   --device-cgroup-rule "c 116:* rwm" \
   -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}" \
+  -e FRANKA_USERNAME \
+  -e FRANKA_PASSWORD \
+  -e ROS2_DESK_AUTO_UNLOCK \
   -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
   -e DATA_COLLECT_CONFIG=/workspace/config/train/panda.yaml \
   -e DATA_COLLECT_INFERENCE_CONFIG=/workspace/config/inference/panda.yaml \

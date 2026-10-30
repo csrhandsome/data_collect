@@ -45,12 +45,14 @@ class OperationManager:
         config_path: Path | None = None,
         simulate: bool = False,
         max_steps: int = 60,
+        pythonpath: str | None = None,
     ):
         self.repo_root = repo_root
         self.runtime_command = runtime_command
         self.config_path = config_path
         self.simulate = simulate
         self.max_steps = max_steps
+        self.pythonpath = pythonpath
         self._lock = threading.RLock()
         self._operation: Operation | None = None
         self._process: subprocess.Popen | None = None
@@ -108,6 +110,8 @@ class OperationManager:
                 raise ReplayError(409, "已有任务在运行，请等待完成或先停止。")
             env = {**os.environ, "PYTHONUNBUFFERED": "1"}
             env.pop("PYTHONPATH", None)
+            if self.pythonpath is not None:
+                env["PYTHONPATH"] = self.pythonpath
             try:
                 self._process = subprocess.Popen(
                     command,

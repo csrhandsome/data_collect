@@ -50,6 +50,45 @@ def test_task_logs_failure_and_bounded_history():
         manager.close()
 
 
+@pytest.mark.parametrize("stop_from_page", [False, True])
+def test_api_autostarts_one_managed_collection_and_stops_it(tmp_path, stop_from_page):
+    class ManagedCollector(OperationManager):
+        def command(self, kind, args=None):
+            assert kind == "collect"
+            return [sys.executable, "-u", "-c", (
+                "import signal,time,sys; "
+                "signal.signal(signal.SIGINT, lambda *_: sys.exit(0)); "
+                "print('READY'); time.sleep(30)"
+            )]
+
+    manager = ManagedCollector(tmp_path)
+    with TestClient(create_app(tmp_path, manager, start_collect=True)) as client:
+        deadline = time.monotonic() + 5
+        while "READY" not in manager.snapshot().logs:
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        current = client.get("/api/operations").json()["operation"]
+        assert current["kind"] == "collect" and current["state"] == "running"
+        assert client.post("/api/operations", json={"kind": "collect"}).status_code == 409
+        if stop_from_page:
+            assert client.post(f'/api/operations/{current["id"]}/stop').status_code == 200
+            assert wait_finished(manager).state == "cancelled"
+    assert manager.snapshot().state == "cancelled"
+
+
+@pytest.mark.parametrize("pythonpath", [None, "/workspace/src:/workspace"])
+def test_task_pythonpath_is_explicit(tmp_path, monkeypatch, pythonpath):
+    monkeypatch.setenv("PYTHONPATH", "unrelated-host-path")
+    manager = OperationManager(tmp_path, pythonpath=pythonpath)
+    try:
+        manager.start("collect", [sys.executable, "-c", "import os; print(os.environ.get('PYTHONPATH', 'unset'))"])
+        finished = wait_finished(manager)
+        assert finished.state == "succeeded"
+        assert finished.logs == [pythonpath or "unset"]
+    finally:
+        manager.close()
+
+
 def test_task_conflict_stop_and_cleanup():
     manager = OperationManager()
     try:

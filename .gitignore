@@ -11,6 +11,8 @@ wheels/
 data/*
 !data/franka_mjcf/
 # Local documentation
+/AGENTS.md
+/specs/
 /data/doc/
 src/data_analysis/quality_reports
 .codex

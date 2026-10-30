@@ -1,10 +1,10 @@
 # Panda 数据采集与回放
 
 ROS 2 Jazzy 版本：参见 [ROS 2 Docker 与遥操作](docs/ros2.md)。
-环境文件位于 `src/env/`，使用官方 `franka_ros2` Jazzy 控制器。
+环境文件位于 `src/env/`，使用 Panda/FER 适配的 `franka_ros2` Jazzy 驱动和项目笛卡尔阻抗控制器。
 采集统一使用 `config/train/panda.yaml`，只需将 `robot.backend` 设为 `panda` 或 `ros2`；
-推理配置继承此选择。FCI 激活和自动回位默认在 Panda 后端开启、ROS 后端关闭，
-ROS 遥测默认随 ROS 后端开启。ROS 后端需要已加载 ROS 环境及单独启动的官方控制器。
+推理配置继承此选择。采集端 FCI 激活和自动回位默认在 Panda 后端开启、ROS 后端关闭，
+ROS 遥测默认随 ROS 后端开启。ROS 后端需要已加载 ROS 环境及单独启动的 ROS2 控制器。
 相机和麦克风默认跟随后端切换：Panda 使用本地设备，ROS 使用 topic 订阅；
 可分别通过 `camera.backend`、`audio.backend` 显式选 `direct` 或 `ros2`。
 ROS 输入的 topic 和音频格式见 [ROS 设备配置](docs/ros2.md#ros-输入设备)。
@@ -15,16 +15,21 @@ ROS 输入的 topic 和音频格式见 [ROS 设备配置](docs/ros2.md#ros-输�
 
 项目使用 **Python 3.12、LeRobot 0.6.1（最新正式版）和 v3.0 数据格式**。
 依赖版本记录在 `uv.lock` 中。LeRobot 0.6 起的数据操作需要 `dataset` extra，项目已启用。
+默认环境已移除旧 IK 使用的 `dm-robotics-moma` 及其 JAX 依赖链；当前 ROS2 采集和推理不依赖它们。
+Docker 构建通过 `uv sync --locked` 使用同一份依赖，重新构建时也不会安装这条依赖链。
 
 ```bash
 uv sync --locked
-uv run vr_collect --config config/train/panda.yaml
 bash scripts/deploy_page.sh
 ```
 
 部署入口集中在 `scripts/`：`deploy_docker.sh` 进入 Franka 容器，
-容器内运行 `deploy_ros2.sh` 启动驱动、相机、VR 和订阅诊断，
-`deploy_page.sh` 启动网页。原有数据处理、上传和下载脚本位于 `scripts/dataset/`。
+容器内运行 `deploy_ros2.sh` 自动通过 Desk 解锁、激活 FCI，并启动驱动、相机、VR 和订阅诊断，
+`deploy_runner.sh` 只启动监听已有 ROS2 话题的采集 runner。
+机械臂驱动、相机、VR 和诊断仍由你在另一个容器终端单独运行 `deploy_ros2.sh`。`deploy_page.sh` 在这套 runner 上再启动网页和 API，
+网页中的日志、运行状态和停止按钮对应同一个采集任务。两个入口二选一，不要同时运行。
+Ctrl+C 只结束 runner 并保存，独立启动的 ROS2 驱动继续运行。两个 runner 入口可从宿主机运行，需预先构建 ROS2 镜像；
+网页入口还需要 pnpm。原有数据处理、上传和下载脚本位于 `scripts/dataset/`。
 网页顶部的「ROS2 订阅监控」显示实际订阅的 warning 和恢复状态，
 可通过 `ros2.monitoring` 调整开关、启动宽限时间和频率阈值，详见 [ROS2 监控](docs/ros2.md#订阅监控与前端-warning)。
 

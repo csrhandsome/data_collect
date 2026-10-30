@@ -12,11 +12,15 @@ services:
     network_mode: host
     ipc: host
     init: true
+    stop_grace_period: 60s
     working_dir: /workspace
     stdin_open: true
     tty: true
     environment:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+      FRANKA_USERNAME: ${FRANKA_USERNAME:-}
+      FRANKA_PASSWORD: ${FRANKA_PASSWORD:-}
+      ROS2_DESK_AUTO_UNLOCK: ${ROS2_DESK_AUTO_UNLOCK:-1}
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       DATA_COLLECT_CONFIG: /workspace/config/train/panda.yaml
       DATA_COLLECT_INFERENCE_CONFIG: /workspace/config/inference/panda.yaml

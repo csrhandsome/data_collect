@@ -1,99 +1,84 @@
-# ROS 2 Jazzy：Docker、FR3 遥操作与采集
+# ROS 2 Jazzy：Panda Docker、遥操作与采集
 
-Docker 环境使用 Ubuntu 24.04、ROS 2 Jazzy、系统 Python 3.12。用户已确认
-使用官方 `frankarobotics/franka_ros2` 的 `jazzy` 分支及 FR3。环境位于 `src/env/`
-（项目原目录拼写是 `src`）。没有自写、复制或修改 C++ controller。
+当前机器人是 Panda / FER。镜像使用 Ubuntu 24.04、ROS 2 Jazzy、系统 Python 3.12，
+固定 `mul-cps/franka_ros2` 的 FER 适配提交 `c0e1f8206211` 和
+`mul-cps/libfranka` 提交 `55e4ab7654`（0.9.2 协议）。不要替换为面向新协议的 libfranka 0.20.x。
+控制器是项目内的 `panda_cartesian_controller/CartesianPoseImpedanceController`，
+只跟踪外部 `equilibrium_pose`，不生成示例轨迹。
 
-命令链路：VR → 原有 `VRResampler`、`EEMapper` → `FrankaRunner`（继承 `BaseRunner`）
-→ `Ros2Backend` → `rclpy` 发布 `geometry_msgs/PoseStamped`
-→ 官方 `cartesian_impedance_example_controller` → libfranka / FCI → FR3。
-Python 默认 100 Hz，底层实时循环由官方 C++ 控制器负责。
-
-## 当前官方控制器的阻塞问题
-
-固定的官方提交为 `4acc05c01ebfcdf916ee6b3df966df0ad7b2f9ec`，
-`libfranka=0.20.5`，`franka_description=2.9.0`。
-该提交虽然订阅 `~/equilibrium_pose`，但 `update()` 每次都调用
-`updateMotionTarget()`，后者生成周期示例轨迹并写回同一个 target buffer。
-因此外部位置目标会被周期轨迹覆盖，不能保证 VR 的独占控制。
-
-`src/env/bringup.sh` 会先只读检查这个问题，发现后退出，不启动机械臂。
-官方源码保持原样；不要绕过检查直接在真机运行示例。
-应选择官方修复了该行为的提交，再通过 `FRANKA_ROS2_REF=<commit>` 重建镜像。
-检查只是识别已知问题，不能代替实际跟踪验证。
-这也是当前代码不能宣称完成真机闭环验证的原因。
-
-源码与接口依据：
-
-- [官方 Cartesian impedance 文档](https://frankarobotics.github.io/docs/doc/franka_ros2_jazzy/franka_example_controllers/doc/index.html)
-- [固定提交的 controller 源码](https://github.com/frankarobotics/franka_ros2/blob/4acc05c01ebfcdf916ee6b3df966df0ad7b2f9ec/franka_example_controllers/src/fr3/cartesian_impedance_example_controller.cpp)
-- [官方 FrankaRobotState 消息](https://github.com/frankarobotics/franka_ros2/blob/4acc05c01ebfcdf916ee6b3df966df0ad7b2f9ec/franka_msgs/msg/FrankaRobotState.msg)
+命令链路：VR → `VRResampler`、`EEMapper` → `FrankaRunner` → `Ros2Backend`
+→ `geometry_msgs/PoseStamped` → C++ Cartesian impedance controller → libfranka / FCI → Panda。
+Python 默认 100 Hz，底层控制循环为 1 kHz。
+`bringup.sh` 在操作 Desk 前执行只读 controller preflight；这不能代替真机目标跟踪验证。
 
 ## 构建与启动
 
-在仓库根目录下运行。先在 `config/train/panda.yaml` 中设置 `robot.backend: ros2`；
-采集和推理共用此后端选择，宿主机和容器读取相同配置：
+启动分工如下：先在独立容器终端运行 `bash scripts/deploy_ros2.sh`，负责
+Desk 解锁/FCI、机械臂驱动、相机、VR Server 和诊断，之后保持该终端运行。
+
+另一个宿主机终端中，`bash scripts/deploy_runner.sh` 只启动监听 ROS2 话题的采集 runner；
+需要网页时改用 `bash scripts/deploy_page.sh`，它启动 runner、API 和网页。
+这两个 runner 入口二选一，它们只连接已有的 ROS2、相机和 VR 话题。
+网页前端运行在宿主机，API 与采集任务运行在独立 ROS 环境容器内，共用 host 网络及 domain ID。
+Ctrl+C 结束 runner 时会保存采集，单独启动的 `deploy_ros2.sh` 继续运行。
+`bash scripts/deploy_runner.sh --max-steps 500` 可限制 runner 的循环步数。
+
+在仓库根目录下运行，`config/train/panda.yaml` 设置 `robot.backend: ros2`。
+机器人 IP 以 `src/env/franka.config.yaml` 的 `robot_ip` 为准，Desk 与 ROS 连接同一地址。
+构建后，第一个终端进入容器并启动：
 
 ```bash
 docker compose -f src/env/compose.yaml build
-docker compose -f src/env/compose.yaml run --rm ros2
-```
-
-若构建需要使用宿主机已有代理，可显式传递 Docker 内置代理参数：
-
-```bash
-docker compose -f src/env/compose.yaml build \
-  --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg ALL_PROXY
-```
-
-镜像从官方仓库检出固定提交，只构建单机械臂相关包，不构建 Gazebo 和移动底盘。
-Docker 内使用独立的 `/opt/data_collect_venv`，不会使用宿主机 `.venv`。
-该虚拟环境由系统 `/usr/bin/python3` 建立并保留 ROS 系统包路径；
-入口脚本已设置 `UV_PROJECT_ENVIRONMENT=/opt/data_collect_venv` 和 `UV_NO_SYNC=1`，
-因此容器内既可使用 `python` / `vr_collect`，也可使用
-`uv run --no-sync python -m vr_collect --config config/train/panda.yaml`。
-容器使用系统 Python 3.12 和 `--system-site-packages` 环境，不复用宿主机 `.venv`。
-宿主机的 panda-py 流程继续用根目录的 `uv run`，由 `robot.backend: panda` 选择。
-
-编辑 `src/env/franka.config.yaml`，确认 FR3 IP、namespace、是否加载夹爪。
-同时核对 Desk 系统版本是否支持 libfranka 0.20.5；环境不会自动登录 Desk、解锁或激活 FCI。
-`robot.hostname` 只供旧 SDK 后端使用，ROS 驱动连接 IP 来自 bringup 配置。
-
-上游修复并通过 preflight 后，在第一个容器中启动机械臂控制器和两路 RealSense：
-
-```bash
+bash scripts/deploy_docker.sh
+# 以下在容器内执行：
 bash scripts/deploy_ros2.sh
 ```
 
-`scripts/deploy_ros2.sh` 会拉起 `src/env/cameras.sh`、`src/env/bringup.sh`、
-VR 发布节点和诊断桥接进程。采集程序只订阅话题，不会自己打开相机。
-关掉这个终端时，这些进程及其子进程会一起停。单独启动机械臂仍用 `src/env/bringup.sh`。
+脚本通过独立的 `src/env/desk_bringup.py` 直接向 Desk 发送 HTTPS 请求，
+完成登录、获取控制权、解锁制动器、激活 FCI，不导入 panda-py。
+再启动 ROS 控制器。Desk 会话保持到 ROS 退出，之后停用 FCI、释放控制权并登出，
+不自动锁回制动器。运动和状态连接由 ROS 驱动持有。Desk 客户端使用 Python 标准库实现 HTTP 通信，
+配置解析使用项目已有的 PyYAML。控制 token 以 0600 权限保存在共享的
+`data/runtime/desk_tokens.json`，容器重启后可恢复本脚本原有的控制权。
+相机、VR 节点和订阅诊断也由部署脚本启动，退出时一起清理。
 
-该脚本调用的官方命令为：
+凭据默认读取 `DATA_COLLECT_CONFIG`（缺省 `config/train/panda.yaml`，支持 `extends`）
+中的 `robot.username` / `robot.password`。环境变量 `FRANKA_USERNAME` / `FRANKA_PASSWORD`
+优先，两种 Docker 入口都会传入这些变量。不要把密码写到命令行参数中。
+单独执行 `bash src/env/bringup.sh` 也会进行相同的 Desk 准备。
+`robot_config_file:=/path/to/config.yaml` 覆盖后，Desk 会使用该文件的 `robot_ip`。
+
+如果要手动操作 Desk：
 
 ```bash
-ros2 launch panda_cartesian_controller panda_bringup.launch.py \
-  robot_config_file:=/workspace/src/env/franka.config.yaml
+ROS2_DESK_AUTO_UNLOCK=0 bash scripts/deploy_ros2.sh
 ```
 
-第二个终端打开另一个容器，运行 VR 采集：
+手动模式需要提前解锁并激活 FCI。自动模式也不能解除实体急停/用户停止按钮，
+不能强制抢占其他 Desk 会话；遇到控制权占用时，先在 Desk 释放控制权再重试。
+`Other` 是拒绝启动时的机器人模式，日志不能仅凭此值区分制动器、FCI 或其他状态；
+`Move command rejected ... Did you open the brakes?` 才是此次退出的直接原因。
+控制器显示 `activated` 只代表 ROS 生命周期切换完成，不代表机器人已接受力矩控制。
+
+第二个终端：
 
 ```bash
-docker compose -f src/env/compose.yaml run --rm ros2 \
-  python -m vr_collect --config config/train/panda.yaml
+bash scripts/deploy_docker.sh
+# 容器内：
+python -m vr_collect --config config/train/panda.yaml
 ```
 
-原 VR 的启用手势、A/B 夹爪、Y 保存、X 丢弃保持原行为。
-VR 使用原 Teleop XR HTTPS 服务（4443），Docker 使用 host 网络。
+也可以保持第一个 ROS2 终端运行，在另一个宿主机终端运行 `deploy_runner.sh`；
+需要网页时用 `deploy_page.sh`，不要再重复运行 `vr_collect`。VR 使用 Teleop XR HTTPS 服务（4443）。
+两路 D435 的序列号配置在 `src/env/cameras.sh`，采集端只订阅相应 topic。
+Docker 使用 host 网络和 IPC、`SYS_NICE`、rtprio 与 memlock，不启用 privileged。
+数据默认挂载到仓库 `data/`，也可通过 `ROS2_DATA_DIR=/absolute/path` 设置。
+`ROS_DOMAIN_ID` 默认 42，所有容器应一致。宿主机需要实时内核；容器共享宿主机内核。
+当前日志的非实时内核警告不是 `Other` 模式拒绝命令的直接原因。
 
-本配置保留原有相机序列号，使用前改成当前连接的 RealSense。
-容器共享 USB、视频、输入、串口设备；以 root 运行以便访问这些设备，但未启用 privileged。
-数据默认保存在当前仓库的 `data/`，宿主机和容器使用相同的数据配置；
-可用 `ROS2_DATA_DIR=/absolute/path` 指定挂载目录。
-
-`ROS_DOMAIN_ID` 默认 42，所有 ROS 容器与观察终端应相同。
-host 网络和 host IPC 用于 Linux；Compose 配置 `SYS_NICE`、rtprio 和 memlock，
-宿主机仍须具备适用于 FR3 的实时内核和实时调度权限，容器不会提供独立内核。
+Docker 用系统 Python 3.12 创建 `/opt/data_collect_venv` 并保留 ROS 系统包路径，
+不复用宿主机 `.venv`。入口已设置 `UV_PROJECT_ENVIRONMENT` 和 `UV_NO_SYNC=1`。
+宿主机未加载 ROS 时，部署脚本会在启动后台进程前退出并提示先进入 Docker。
 
 ## 订阅监控与前端 warning
 
@@ -103,14 +88,14 @@ host 网络和 host IPC 用于 Linux；Compose 配置 `SYS_NICE`、rtprio 和 me
 scripts/
   deploy_docker.sh       # 在宿主机进入容器
   deploy_ros2.sh         # 在容器内启动 ROS2 环境和诊断桥接
-  deploy_page.sh         # 在宿主机启动网页
+  deploy_runner.sh      # 只启动监听已有 ROS2 话题的 runner
+  deploy_page.sh         # 在宿主机启动完整 runner、API 和网页
   dataset/              # 原有数据处理、上传和下载脚本
 ```
 
-在第一个终端执行 `bash scripts/deploy_docker.sh` 后，容器内运行
-`bash scripts/deploy_ros2.sh`。第二个终端同样进入容器后运行
-`python -m vr_collect --config config/train/panda.yaml`。宿主机第三个终端执行
-`bash scripts/deploy_page.sh`，打开页面顶部的「ROS2 订阅监控」。
+先在独立容器终端执行 `bash scripts/deploy_ros2.sh`，保持其运行；
+另一个宿主机终端执行 `bash scripts/deploy_page.sh`，打开页面顶部的「ROS2 订阅监控」。
+只需要监听采集、不需要网页时，第二个终端改用 `deploy_runner.sh`。
 
 监控配置继承自 `config/train/panda.yaml`：
 
@@ -231,10 +216,10 @@ direct VR 保留已实测有效的独立进程和共享内存，ROS VR 的 Teleo
 配置合并完成后按后端设置默认值：Panda 的 `robot.activate_fci` 和
 `robot.move_to_start` 为 true，ROS 的这两项为 false；`ros2.enabled` 在 ROS 后端
 默认为 true，在 Panda 后端默认为 false。可显式覆盖默认值，但 ROS 后端不允许
-启用 FCI 自动激活或关节回位。`inference.move_to_start` 仍保持默认 false。
+启用采集端 FCI 自动激活或关节回位；Desk 准备由部署脚本负责。`inference.move_to_start` 仍保持默认 false。
 
 Docker 按根目录 `pyproject.toml` 和 `uv.lock` 安装依赖，包含 `panda-python`；
-选择 ROS 后端时没有第二个 Python FCI 客户端，Franka 夹爪使用 ROS action，不加载 panda_py。
+选择 ROS 后端时没有第二个 Python FCI 客户端，Franka 夹爪使用 ROS action。部署阶段使用独立的 Desk HTTP 客户端管理网页会话，也不加载 panda_py。
 镜像提供 Node.js 22 和 npm，用于构建当前锁定的 Teleop XR Git fork 的 WebXR 页面。
 DH5 如启用，仍由原串口后端访问本地设备，触觉图像沿用原录制接口。
 

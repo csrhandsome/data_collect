@@ -13,7 +13,6 @@ dependencies = [
     "websockets==16.0",
     "msgpack==1.1.2",
     "dm-control==1.0.31",
-    "dm-robotics-moma==0.10.0",
     "langchain-openai==1.1.10",
     "lerobot[dataset]==0.6.1",
     "crcmod==1.7",
