@@ -8,6 +8,7 @@ from contextlib import ExitStack
 
 import numpy as np
 
+from control.collection.async_recording import AsyncEpisodeRecorder
 from control.collection.dataset import open_dataset
 from control.collection.devices import make_cameras, make_microphone, make_vr
 from control.collection.recording import EpisodeRecorder
@@ -52,6 +53,13 @@ def run_collection(config, *, dry_run=False, max_steps=0):
             dataset, root = open_dataset(config)
             initial_episodes = dataset.meta.total_episodes
             recorder = EpisodeRecorder(dataset, root, config, microphone)
+            if microphone is None:
+                recorder = AsyncEpisodeRecorder(recorder)
+            else:
+                # Audio APIs start/stop a live stream and cannot reconstruct a
+                # boundary delayed behind a previous save. Preserve alignment
+                # until audio capture can hand off immutable episode buffers.
+                logger.info("Audio enabled: preserving synchronous capture boundaries")
             stack.callback(recorder.close)
         if config.get("robot", {}).get("move_to_start", True):
             arm.move_to_start()
@@ -72,6 +80,8 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 diagnostics.begin_tick(steps, tick_ns, rate.overruns)
                 reset_requested = False
                 command_sent = False
+                if recorder is not None:
+                    recorder.check()
                 state = arm.read()
                 diagnostics.mark("state_read")
                 raw_sample = vr.read()

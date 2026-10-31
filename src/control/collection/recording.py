@@ -48,7 +48,13 @@ class EpisodeRecorder:
         self.critical_phase_start_ns = None
         self.control_events = []
 
-    def start(self):
+    def check(self):
+        for writer in (self.writer, self.trace_writer):
+            if writer is not None:
+                writer._raise_if_failed()
+
+    def start(self, *, started_ns=None):
+        started = time.perf_counter()
         if self._closed:
             raise RuntimeError("Recorder is closed")
         if self.active:
@@ -59,7 +65,7 @@ class EpisodeRecorder:
             self.dataset, _ = open_dataset(self.config)
             self.writer = AsyncDatasetFrames(self.dataset)
         self.index = int(self.dataset.meta.total_episodes)
-        self.started_ns = time.monotonic_ns()
+        self.started_ns = time.monotonic_ns() if started_ns is None else started_ns
         self.critical_phase_start_ns = None
         self.control_events = []
         self.trace_count = self.unique_vr = 0
@@ -83,6 +89,7 @@ class EpisodeRecorder:
                 self.trace_sink.file.close()
                 raise RuntimeError("Microphone refused episode start")
         self.active = True
+        logger.info("Episode %s started (open %.3f s)", self.index, time.perf_counter() - started)
 
     def enter_critical_phase(self, timestamp_ns=None):
         """Latch a phase boundary in this episode; idle presses are ignored."""
@@ -253,13 +260,18 @@ class EpisodeRecorder:
         self.writer.submit(frame)
         self.pending = None
 
-    def finish(self, state, *, save=True, success=None, publish=False, source="collection"):
+    def finish(self, state, *, save=True, success=None, publish=False, source="collection", stopped_ns=None):
         if not self.active:
             return
+        started = time.perf_counter()
+        now = time.monotonic_ns() if stopped_ns is None else stopped_ns
+        logger.info("Episode %s: %s requested, %s frames", self.index,
+                    "save" if save else "discard", len(self.records))
         self._complete(state, terminal=True)
         self.writer.drain()
         self.trace_writer.close()
         self.trace_sink.file.close()
+        drained = time.perf_counter()
         saved_audio = None
         if self.microphone is not None:
             self.microphone.default_output_path = self.audio_path if save and self.records else None
@@ -270,7 +282,6 @@ class EpisodeRecorder:
             self.active = False
             self.records = []
             return
-        now = time.monotonic_ns()
         sync = {
             "episode_index": self.index,
             "task": self.config["dataset"]["instruction"],
@@ -322,6 +333,7 @@ class EpisodeRecorder:
         # The recorder owns live camera/image-writer threads. Forking encoder
         # processes here can inherit locked native libraries and deadlock.
         self.dataset.save_episode(parallel_encoding=False)
+        encoded = time.perf_counter()
         self.active = False
         self.records = []
         if publish:
@@ -331,6 +343,11 @@ class EpisodeRecorder:
             sync["saved_at_ns"] = time.time_ns()
             temporary.write_text(json.dumps(sync, indent=2, ensure_ascii=False))
         temporary.replace(path)
+        logger.info(
+            "Episode %s saved: drain=%.3f s, data/video/audio=%.3f s, publish=%.3f s, total=%.3f s",
+            self.index, drained - started, encoded - drained,
+            time.perf_counter() - encoded, time.perf_counter() - started,
+        )
 
     def finalize(self):
         """Seal saved episodes for reading/editing; the next start resumes lazily.

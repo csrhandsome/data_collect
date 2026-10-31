@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from control.collection._episode_deletion import (
@@ -121,6 +122,7 @@ def compact_dataset(root: Path) -> bool:
     available during the expensive remux, with a short lock for publication.
     """
     root = Path(root).resolve()
+    started = time.perf_counter()
     with dataset_access(root):
         info, episodes = _load_metadata(root)
         if len(episodes) < 2 or not _needs_compaction(root, info, episodes):
@@ -171,7 +173,8 @@ def compact_dataset(root: Path) -> bool:
                 _sync_directory(transaction)
             except OSError as exc:
                 logger.warning("合并已提交，但目录落盘确认失败：%s", exc)
-        logger.info("采集文件合并完成：%s；episode 编号及附加记录保持不变", root.name)
+        logger.info("采集文件合并完成：%s；耗时 %.3f s；episode 编号及附加记录保持不变",
+                    root.name, time.perf_counter() - started)
     finally:
         shutil.rmtree(transaction)
     return True
