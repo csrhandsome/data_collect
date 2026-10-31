@@ -93,6 +93,14 @@ def test_legacy_field_selection_is_rejected():
         validate(config)
 
 
+def test_compaction_defaults_on_and_requires_a_boolean():
+    config = load_config()
+    assert config["dataset"]["compact_on_stop"] is True
+    config["dataset"]["compact_on_stop"] = "false"
+    with pytest.raises(ValueError, match="compact_on_stop"):
+        validate(config)
+
+
 def test_parent_field_selection_uses_child_tactile_settings(tmp_path):
     config = load_config()
     parent = tmp_path / "dataset.yaml"

@@ -6,6 +6,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from .dataset_lock import dataset_access
+
 
 def confined(root, relative):
     root = Path(root).resolve()
@@ -32,6 +34,11 @@ def update_sync(root, episode_index, changes, *, audio=False):
     Collection, annotations and offline audio processing share sidecars. Merge
     only changed fields so a slow audio job cannot overwrite a newer annotation.
     """
+    with dataset_access(root):
+        return _update_sync(root, episode_index, changes, audio=audio)
+
+
+def _update_sync(root, episode_index, changes, *, audio=False):
     root = Path(root).resolve()
     lock_path = root / ".episode-sync.lock"
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)

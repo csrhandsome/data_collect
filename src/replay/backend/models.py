@@ -29,6 +29,7 @@ class DatasetSummary(APIModel):
     id: str
     name: str
     version: str
+    storage_revision: str = ""
     robot_type: str | None
     fps: float
     total_episodes: int

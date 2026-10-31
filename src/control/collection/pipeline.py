@@ -28,6 +28,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
     from control.direct.fake import FakeBackend
 
     recorder = None
+    initial_episodes = 0
     with ExitStack() as stack:
         ros2 = stack.enter_context(Ros2Publisher(config))
         diagnostics = stack.enter_context(ControlDiagnostics(config))
@@ -49,6 +50,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
         stack.callback(scene.close)
         if config["dataset"].get("enable_logging", True):
             dataset, root = open_dataset(config)
+            initial_episodes = dataset.meta.total_episodes
             recorder = EpisodeRecorder(dataset, root, config, microphone)
             stack.callback(recorder.close)
         if config.get("robot", {}).get("move_to_start", True):
@@ -181,6 +183,14 @@ def run_collection(config, *, dry_run=False, max_steps=0):
             if recorder is not None:
                 recorder.finish(arm.read(), save=not failed, publish=True)
         logger.info("Acquisition finished: %s ticks, %s overruns", steps, rate.overruns)
+    if (recorder is not None
+            and recorder.dataset.meta.total_episodes > initial_episodes
+            and config["dataset"].get("compact_on_stop", True)):
+        # All hardware and recording writers have closed. Keep per-save
+        # publication fast; pack sealed shards only when this session ends.
+        from data_analysis.compact_v3 import compact_dataset
+
+        compact_dataset(recorder.root)
     if recorder is not None and config.get("audio", {}).get("vad_enabled", False) and not dry_run:
         audio_files = (recorder.root / "audio").glob("episode_*.wav")
         if recorder.dataset.meta.total_episodes > 0 and any(path.is_file() for path in audio_files):

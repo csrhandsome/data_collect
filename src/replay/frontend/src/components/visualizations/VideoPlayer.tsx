@@ -10,6 +10,7 @@ interface VideoPlayerProps {
   rate: number
   seekVersion: number
   onToggle: () => void
+  onReload?: () => void
 }
 
 export function VideoPlayer({
@@ -19,6 +20,7 @@ export function VideoPlayer({
   rate,
   seekVersion,
   onToggle,
+  onReload,
 }: VideoPlayerProps) {
   const element = useRef<HTMLVideoElement>(null)
   const [ready, setReady] = useState(false)
@@ -111,7 +113,7 @@ export function VideoPlayer({
           src={video.url}
           muted
           playsInline
-          preload="auto"
+          preload="metadata"
           onLoadedMetadata={loadedMetadata}
           onTimeUpdate={enforceBounds}
           onWaiting={() => setBuffering(true)}
@@ -129,7 +131,10 @@ export function VideoPlayer({
             )
               player.currentTime = latestClipTime.current
           }}
-          onError={() => setError('视频无法解码或读取，请检查 MP4 文件。')}
+          onError={() => {
+            setError('视频无法解码或读取，请检查 MP4 文件。')
+            onReload?.()
+          }}
           aria-label={`${video.feature} 相机视频`}
           data-testid={`video-${video.feature}`}
         />

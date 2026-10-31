@@ -167,7 +167,7 @@ def test_dataset_scan_detects_added_and_moved_datasets(copy_dataset, tmp_path: P
     with TestClient(create_app(tmp_path)) as connection:
         assert connection.get("/api/datasets").json() == {"datasets": []}
         first = copy_dataset()
-        copy_dataset("demo_v30", tmp_path / "second_dataset")
+        shutil.copytree(first, tmp_path / "second_dataset")
         response = connection.get("/api/datasets")
         assert response.status_code == 200
         assert [item["id"] for item in response.json()["datasets"]] == [

@@ -9,6 +9,7 @@ from ._common import (
     _get_episode,
     _integer,
     _load_metadata,
+    storage_revision,
 )
 
 
@@ -48,4 +49,5 @@ def resolve_video(root: Path, episode_index: int, feature: str) -> dict:
         "end_time_s": end,
         "duration_s": end - start,
         "fps": fps,
+        "version": storage_revision(root),
     }

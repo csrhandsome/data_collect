@@ -11,6 +11,7 @@ export interface DatasetSummary {
   id: string
   name: string
   version: string
+  storage_revision?: string
   robot_type: string | null
   fps: number
   total_episodes: number

@@ -101,6 +101,8 @@ def validate(config):
         raise ValueError("dataset.action_space must be joint or ee")
     if "image_storage" in config.get("dataset", {}):
         raise ValueError("dataset.image_storage was removed; camera features always use MP4")
+    if not isinstance(config.get("dataset", {}).get("compact_on_stop", True), bool):
+        raise ValueError("dataset.compact_on_stop must be a boolean")
     if "fields" in config.get("dataset", {}):
         raise ValueError("dataset.fields was replaced by observation/action mappings")
     features(

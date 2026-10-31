@@ -114,9 +114,7 @@ export function ReplayPage() {
       list.data?.datasets.some((item) => item.id === datasetId)
     ) {
       const blocks = episode.data.blocks
-      const cameras = blocks.filter(
-        (feature) => feature.kind === 'video',
-      )
+      const cameras = blocks.filter((feature) => feature.kind === 'video')
       const ee = blocks.find((feature) => feature.kind === 'ee')
       setWorkspace({ selectionKey, features: [...cameras, ...(ee ? [ee] : [])] })
       setPendingLatest(null)
@@ -378,7 +376,7 @@ export function ReplayPage() {
             >
               {features.map((feature) => (
                 <VisualizationCard
-                  key={`${selectionKey}:${feature.key}`}
+                  key={`${selectionKey}:${feature.key}:${dataset.data?.storage_revision || ''}`}
                   feature={feature}
                   datasetId={datasetId}
                   episodeIndex={episodeIndex}

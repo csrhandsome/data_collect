@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from ._common import _episode_summary, _load_metadata
+from ._common import _episode_summary, _load_metadata, storage_revision
 from .read_sidecars import catalog
 
 
@@ -14,6 +14,7 @@ def read_dataset(root: Path) -> dict:
         "id": root.name,
         "name": info.get("name", root.name),
         "version": info["codebase_version"],
+        "storage_revision": storage_revision(root),
         "robot_type": info.get("robot_type"),
         "fps": info["fps"],
         "total_episodes": info["total_episodes"],
