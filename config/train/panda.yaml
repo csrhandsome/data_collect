@@ -119,7 +119,7 @@ vr:
     startup_timeout_s: 10
   long_press_s: 0.5
   position_alpha: 0.6
-  rotation_alpha: 0.35
+  rotation_alpha: 0.6  # 减少旋转输入的滤波拖尾；越大越跟手，也会保留更多手柄抖动。
   stale_after_s: 0.5
   translation_gain: 1.0
   rotation_gain: 0.4
