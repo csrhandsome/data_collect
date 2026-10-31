@@ -1,6 +1,8 @@
 """Joint reset must follow measured feedback and stop before VR can resume."""
 
+import importlib.util
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -72,8 +74,11 @@ def test_joint_reset_is_bounded_waits_for_arrival_and_restores_cartesian_hold(mo
 @pytest.mark.parametrize("distance,error", [(0.4, ValueError), (0.1, TimeoutError)])
 def test_joint_reset_never_reports_arrival_for_nonfollowing_feedback(monkeypatch, distance, error):
     peer = ResetPeer(monkeypatch, follows=False)
-    with pytest.raises(error):
+    with pytest.raises(error) as failure:
         joint_motion.move_joints(peer, START + distance, 0.2)
+    if error is TimeoutError:
+        for field in ("max_position_error=", "max_velocity=", "target_q=", "error_q=", "measured_dq="):
+            assert field in str(failure.value)
     assert len(peer.holds) == 1
     assert not peer._streaming
 
@@ -123,3 +128,16 @@ def test_cancelled_workflow_reset_does_not_restart_vr_stream():
     with pytest.raises(RuntimeError, match="not completed"):
         reset_robot(arm)
     assert events == ["wait_gripper", "stop_stream"]
+
+
+def test_preflight_rejects_controller_with_old_joint_damping(tmp_path):
+    source = Path(__file__).resolve().parents[2] / "env/check_controller.py"
+    spec = importlib.util.spec_from_file_location("controller_preflight", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    library = tmp_path / "controller.so"
+    library.write_bytes(b"filter_coefficient ~/joint_reset")
+    with pytest.raises(RuntimeError, match="paired joint damping"):
+        module.check_installed(library)
+    library.write_bytes(library.read_bytes() + b" Joint reset paired damping:")
+    module.check_installed(library)

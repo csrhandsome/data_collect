@@ -1,4 +1,5 @@
 #include "panda_cartesian_controller/cartesian_pose_impedance_controller.hpp"
+#include "panda_cartesian_controller/joint_impedance.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -106,6 +107,12 @@ CartesianPoseImpedanceController::CallbackReturn CartesianPoseImpedanceControlle
       "~/joint_reset", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
       std::bind(&CartesianPoseImpedanceController::jointResetCallback, this,
                 std::placeholders::_1));
+  const JointImpedanceGains joint_gains;
+  RCLCPP_INFO(get_node()->get_logger(),
+              "Joint reset paired damping: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
+              joint_gains.damping[0], joint_gains.damping[1], joint_gains.damping[2],
+              joint_gains.damping[3], joint_gains.damping[4], joint_gains.damping[5],
+              joint_gains.damping[6]);
   param_cb_handle_ = get_node()->add_on_set_parameters_callback(std::bind(
       &CartesianPoseImpedanceController::onParameterUpdate, this, std::placeholders::_1));
   return CallbackReturn::SUCCESS;
@@ -196,21 +203,14 @@ controller_interface::return_type CartesianPoseImpedanceController::update(
     if (!joint_reset_fault_) {
       reset_hold_ = filter_params_ * target.joints + (1.0 - filter_params_) * reset_hold_;
     }
-    // Same joint stiffness as the pinned Franka move-to-start example, with
-    // critical damping and the driver's existing gravity compensation.
-    const std::array<double, 7> stiffness{600, 600, 600, 600, 250, 150, 50};
+    const JointVector torque = jointImpedanceTorque(
+        reset_hold_, q_, dq_, coriolis, previous_torque_, period.seconds(), have_previous_torque_);
     for (int i = 0; i < num_joints; ++i) {
-      double torque = stiffness[i] * (reset_hold_[i] - q_[i]) -
-                      2.0 * std::sqrt(stiffness[i]) * dq_[i] + coriolis[i];
-      if (have_previous_torque_) {
-        const double delta = 1000.0 * std::clamp(period.seconds(), 0.0, 0.001);
-        torque = std::clamp(torque, previous_torque_[i] - delta, previous_torque_[i] + delta);
-      }
-      previous_torque_[i] = torque;
-      if (!command_interfaces_[i].set_value(torque)) {
+      if (!command_interfaces_[i].set_value(torque[i])) {
         return controller_interface::return_type::ERROR;
       }
     }
+    previous_torque_ = torque;
     have_previous_torque_ = true;
     // Reseed Cartesian and nullspace references throughout the reset, so
     // switching back never replays the previous VR target.

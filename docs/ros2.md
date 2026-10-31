@@ -30,6 +30,9 @@ Ctrl+C 结束 runner 时会保存采集，单独启动的 `deploy_ros2.sh` 继�
 ROS2 使用现有控制器的 `~/joint_reset` 关节目标通道执行平滑回位，不建立 SDK 连接。
 只有实测关节位置和速度稳定到位才继续；反馈过期、跟随误差超限或超时会中止。
 控制器在关节指令断流超过 250 ms 时锁定实测关节位置，等待新的 Cartesian hold 解除。
+关节回位使用所锁定 FER Panda 示例配套的刚度与阻尼，不使用假定单位惯量的
+`2*sqrt(K)` 关节阻尼。启动日志会输出 `Joint reset paired damping`；preflight 拒绝旧版插件。
+到位超时日志包含目标/实测关节角、各轴误差和速度，可区分位置未到位与速度未稳定。
 此功能需要重建 C++ 控制器镜像并由用户重新启动驱动；旧插件会被 preflight 拒绝。
 
 VR 目标超过与实测末端的距离或角度保护时，runner 会拒绝该目标并发送当前实测位姿作为
@@ -236,10 +239,10 @@ direct VR 保留已实测有效的独立进程和共享内存，ROS VR 的 Teleo
 音频仍通过 `start_recording()` / `stop_recording()` 连续保存 episode，
 不使用只保留最新样本的 `read()`，以免丢音频块。
 
-配置合并完成后按后端设置默认值：Panda 的 `robot.activate_fci` 和
-`robot.move_to_start` 为 true，ROS 的这两项为 false；`ros2.enabled` 在 ROS 后端
+配置合并完成后按后端设置默认值：Panda 的 `robot.activate_fci` 为 true，ROS 为 false；
+两种后端的 `robot.move_to_start` 均默认为 true。`ros2.enabled` 在 ROS 后端
 默认为 true，在 Panda 后端默认为 false。可显式覆盖默认值，但 ROS 后端不允许
-启用采集端 FCI 自动激活或关节回位；Desk 准备由部署脚本负责。`inference.move_to_start` 仍保持默认 false。
+启用采集端 FCI 自动激活；Desk 准备由部署脚本负责。`inference.move_to_start` 仍保持默认 false。
 
 Docker 按根目录 `pyproject.toml` 和 `uv.lock` 安装依赖，包含 `panda-python`；
 选择 ROS 后端时没有第二个 Python FCI 客户端，Franka 夹爪使用 ROS action。部署阶段使用独立的 Desk HTTP 客户端管理网页会话，也不加载 panda_py。

@@ -37,6 +37,11 @@ def check_installed(library):
             "Installed controller predates joint reset support. "
             "Rebuild the image and recreate this container before starting ROS."
         )
+    if b"Joint reset paired damping:" not in path.read_bytes():
+        raise RuntimeError(
+            "Installed controller predates paired joint damping. "
+            "Rebuild the image and recreate this container before starting ROS."
+        )
 
 
 if __name__ == "__main__":

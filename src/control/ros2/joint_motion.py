@@ -1,5 +1,6 @@
 """Bounded joint reset over the existing ROS impedance controller."""
 
+import logging
 import time
 
 import numpy as np
@@ -8,6 +9,7 @@ from control.util.pose import as_vector
 
 JOINT_LOWER = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
 JOINT_UPPER = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
+logger = logging.getLogger(__name__)
 
 
 def validate_joint_target(target):
@@ -41,6 +43,7 @@ def move_joints(backend, target, speed):
     backend._joint_cancel.clear()
     started = time.monotonic()
     settled_since = None
+    logger.info("Joint reset: max displacement %.4f rad, trajectory %.3f s", distance, duration)
     backend._streaming = True  # Allows the measured Cartesian hold in finally.
     try:
         while not backend._joint_cancel.is_set():
@@ -66,7 +69,16 @@ def move_joints(backend, target, speed):
             else:
                 settled_since = None
             if elapsed >= duration + arrival_timeout:
-                raise TimeoutError("Joint reset endpoint was not measured within arrival tolerance")
+                error = target - state.joint_positions
+                raise TimeoutError(
+                    "Joint reset endpoint was not measured within arrival tolerance: "
+                    f"elapsed={elapsed:.3f} s, trajectory={duration:.3f} s, "
+                    f"position_tolerance={tolerance:.6f} rad, velocity_tolerance=0.005 rad/s, "
+                    f"max_position_error={np.max(np.abs(error)):.6f} rad, "
+                    f"max_velocity={np.max(np.abs(state.joint_velocities)):.6f} rad/s, "
+                    f"target_q={target.tolist()}, measured_q={state.joint_positions.tolist()}, "
+                    f"error_q={error.tolist()}, measured_dq={state.joint_velocities.tolist()}"
+                )
             backend._joint_cancel.wait(0.01)
         return False
     finally:
