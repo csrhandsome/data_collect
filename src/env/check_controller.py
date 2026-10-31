@@ -32,6 +32,11 @@ def check_installed(library):
             "Installed controller predates configurable target filtering. "
             "Rebuild the image and recreate this container before starting ROS."
         )
+    if b"~/joint_reset" not in path.read_bytes():
+        raise RuntimeError(
+            "Installed controller predates joint reset support. "
+            "Rebuild the image and recreate this container before starting ROS."
+        )
 
 
 if __name__ == "__main__":

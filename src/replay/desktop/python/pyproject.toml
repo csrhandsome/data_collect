@@ -45,7 +45,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
-teleop-xr = { git = "https://github.com/csrhandsome/teleop_xr.git", rev = "7afc820eb09e74ae1c5650d6f1b3b8d559a3db3a" }
+teleop-xr = { git = "https://github.com/csrhandsome/teleop_xr.git", rev = "775819674d812f1a18fcfde470b25101cd8e82a3" }
 torch = { index = "pytorch-cpu" }
 torchvision = { index = "pytorch-cpu" }
 torchaudio = { index = "pytorch-cpu" }

@@ -23,6 +23,15 @@ Desk 解锁/FCI、机械臂驱动、相机、VR Server 和诊断，之后保持�
 Ctrl+C 结束 runner 时会保存采集，单独启动的 `deploy_ros2.sh` 继续运行。
 `bash scripts/deploy_runner.sh --max-steps 500` 可限制 runner 的循环步数。
 
+默认启动采集时，以及按 Y 保存、按 X 舍弃片段后，都会回到
+`robot.start_joint_position` 配置的七个关节角，再恢复 VR 控制。
+回位轨迹不计入片段；回位结束后需要松开双扳机再重新按住接管。
+`robot.move_to_start: false` 可显式关闭自动回位。
+ROS2 使用现有控制器的 `~/joint_reset` 关节目标通道执行平滑回位，不建立 SDK 连接。
+只有实测关节位置和速度稳定到位才继续；反馈过期、跟随误差超限或超时会中止。
+控制器在关节指令断流超过 250 ms 时锁定实测关节位置，等待新的 Cartesian hold 解除。
+此功能需要重建 C++ 控制器镜像并由用户重新启动驱动；旧插件会被 preflight 拒绝。
+
 VR 目标超过与实测末端的距离或角度保护时，runner 会拒绝该目标并发送当前实测位姿作为
 hold，保持采集进程运行。日志会打印目标 XYZ、实测 XYZ、偏差和阈值。
 松开双扳机后重新按住即可重新建立 VR 锚点；等待期间的手柄位移不会补发。

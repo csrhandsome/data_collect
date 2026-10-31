@@ -22,7 +22,11 @@ def reset_robot(arm):
     if arm.get_capabilities().gripper:
         arm.gripper_open()
     if arm._config.get("robot", {}).get("move_to_start", True):
-        arm.move_to_start()
+        logging.getLogger(__name__).info("Returning robot to configured start joints")
+        result = arm.move_to_start()
+        if result.status != "succeeded":
+            raise RuntimeError("Return to start pose was not completed")
+        logging.getLogger(__name__).info("Robot returned to start joints")
     arm.start_stream()
 
 

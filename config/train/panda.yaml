@@ -29,8 +29,11 @@ robot:
   hostname: 192.168.1.100
   username: 'BionicDL-Franka'
   password: 'Design@2018'
-  # activate_fci / move_to_start 默认：panda=true，ros2=false。
-  # 可显式覆盖；ROS 后端不支持设为 true。
+  # 两种后端默认在启动及保存/舍弃片段后回到 start_joint_position。
+  # move_to_start: false 可关闭自动回位；activate_fci 默认 panda=true、ros2=false。
+  joint_tolerance_rad: 0.02
+  arrival_timeout_s: 5.0
+  max_reset_joint_error_rad: 0.2
   # ROS 部署脚本会单独登录 Desk 解锁及激活 FCI；采集端不重复操作。
 ros2:
   namespace: ""

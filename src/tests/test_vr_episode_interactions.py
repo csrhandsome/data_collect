@@ -128,6 +128,60 @@ def test_collection_ignores_idle_phase_press(tmp_path, monkeypatch, mark_after_s
 
 
 @pytest.mark.parametrize("discard", [False, True])
+def test_collection_save_and_discard_both_return_to_start_before_rearming(
+    tmp_path, monkeypatch, discard
+):
+    from control.collection import pipeline
+    from control.collection.vr import ResampledVR
+
+    config = config_for(tmp_path)
+    config["robot"].update(backend="ros2", move_to_start=True)
+    backend = FakeBackend()
+    monkeypatch.setattr("control.direct.fake.FakeBackend", lambda: backend)
+    moves = []
+    instances = []
+    original_init = EpisodeRecorder.__init__
+    original_move = backend.move_joints
+    original_start = EpisodeRecorder.start
+    starts = []
+
+    def init_recorder(recorder, *args, **kwargs):
+        original_init(recorder, *args, **kwargs)
+        instances.append(recorder)
+
+    def move(target, speed):
+        assert not instances[0].active  # Reset motion is outside the episode.
+        moves.append(np.array(target))
+        return original_move(target, speed)
+
+    def start(recorder):
+        starts.append(True)
+        original_start(recorder)
+
+    tick = 0
+
+    def sample(resampler, raw, now):
+        nonlocal tick
+        tick += 1
+        return ResampledVR(
+            position=np.array([tick * 0.01, 0, 0]), quaternion_xyzw=np.array([0, 0, 0, 1]),
+            enabled=tick != 6, save=tick == 4 and not discard, discard=tick == 4 and discard,
+            close=False, open=False, axis=0, source_ns=now, source_seq=tick, released=tick == 6,
+        )
+
+    monkeypatch.setattr(pipeline.EpisodeRecorder, "__init__", init_recorder)
+    monkeypatch.setattr(pipeline.EpisodeRecorder, "start", start)
+    monkeypatch.setattr(backend, "move_joints", move)
+    monkeypatch.setattr(VRResampler, "sample", sample)
+    run_collection(config, dry_run=True, max_steps=6)
+    assert len(moves) == 2  # Startup and either save or discard.
+    for target in moves:
+        np.testing.assert_array_equal(target, config["robot"]["start_joint_position"])
+    assert len(starts) == 1  # Holding the deadman across reset cannot start another episode.
+    assert bool(list(tmp_path.rglob("*.sync.json"))) is not discard
+
+
+@pytest.mark.parametrize("discard", [False, True])
 def test_inference_controller_end_and_phase_with_same_episode_takeover(tmp_path, monkeypatch, discard):
     original = VRResampler.sample
     tick = 0

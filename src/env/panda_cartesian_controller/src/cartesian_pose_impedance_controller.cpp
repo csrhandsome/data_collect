@@ -2,11 +2,23 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <functional>
 
 #include <franka/robot_state.h>
 
 namespace panda_cartesian_controller {
+
+namespace {
+int64_t steadyNow() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+constexpr std::array<double, 7> joint_lower{-2.8973, -1.7628, -2.8973, -3.0718,
+                                          -2.8973, -0.0175, -2.8973};
+constexpr std::array<double, 7> joint_upper{2.8973, 1.7628, 2.8973, -0.0698,
+                                          2.8973, 3.7525, 2.8973};
+}  // namespace
 
 CartesianPoseImpedanceController::CartesianGains CartesianPoseImpedanceController::buildGains(
     const std::array<double, num_cartesian_dof>& k) {
@@ -90,6 +102,10 @@ CartesianPoseImpedanceController::CallbackReturn CartesianPoseImpedanceControlle
       "~/equilibrium_pose", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
       std::bind(&CartesianPoseImpedanceController::equilibriumPoseCallback, this,
                 std::placeholders::_1));
+  sub_joint_reset_ = get_node()->create_subscription<sensor_msgs::msg::JointState>(
+      "~/joint_reset", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
+      std::bind(&CartesianPoseImpedanceController::jointResetCallback, this,
+                std::placeholders::_1));
   param_cb_handle_ = get_node()->add_on_set_parameters_callback(std::bind(
       &CartesianPoseImpedanceController::onParameterUpdate, this, std::placeholders::_1));
   return CallbackReturn::SUCCESS;
@@ -110,6 +126,8 @@ CartesianPoseImpedanceController::CallbackReturn CartesianPoseImpedanceControlle
   initial_target.position = position_init;
   initial_target.orientation = orientation_init;
   target_pose_buffer_.initRT(initial_target);
+  joint_reset_active_ = joint_reset_fault_ = have_previous_torque_ = false;
+  torque_transition_ticks_ = 0;
   return CallbackReturn::SUCCESS;
 }
 
@@ -143,7 +161,7 @@ CartesianPoseImpedanceController::currentOrientationAndTranslation() {
 }
 
 controller_interface::return_type CartesianPoseImpedanceController::update(
-    const rclcpp::Time&, const rclcpp::Duration&) {
+    const rclcpp::Time&, const rclcpp::Duration& period) {
   readJointState();
   Eigen::Quaterniond orientation;
   Eigen::Vector3d position;
@@ -160,6 +178,51 @@ controller_interface::return_type CartesianPoseImpedanceController::update(
   transform.rotate(orientation.toRotationMatrix());
 
   const TargetPose target = *target_pose_buffer_.readFromRT();
+  if (target.joint_reset) {
+    if (!joint_reset_active_) {
+      joint_reset_active_ = true;
+      joint_reset_fault_ = false;
+      reset_hold_ = q_;
+    }
+    // Loss of the runner or excessive lag latches a measured joint hold. New
+    // joint packets cannot clear this latch; a Cartesian hold must rearm it.
+    if (!joint_reset_fault_ &&
+        (steadyNow() - target.received_ns > 250000000 ||
+         (target.joints - q_).cwiseAbs().maxCoeff() > 0.2)) {
+      joint_reset_fault_ = true;
+      reset_hold_ = q_;
+      RCLCPP_ERROR(get_node()->get_logger(), "Joint reset stopped: stale command or tracking guard");
+    }
+    if (!joint_reset_fault_) {
+      reset_hold_ = filter_params_ * target.joints + (1.0 - filter_params_) * reset_hold_;
+    }
+    // Same joint stiffness as the pinned Franka move-to-start example, with
+    // critical damping and the driver's existing gravity compensation.
+    const std::array<double, 7> stiffness{600, 600, 600, 600, 250, 150, 50};
+    for (int i = 0; i < num_joints; ++i) {
+      double torque = stiffness[i] * (reset_hold_[i] - q_[i]) -
+                      2.0 * std::sqrt(stiffness[i]) * dq_[i] + coriolis[i];
+      if (have_previous_torque_) {
+        const double delta = 1000.0 * std::clamp(period.seconds(), 0.0, 0.001);
+        torque = std::clamp(torque, previous_torque_[i] - delta, previous_torque_[i] + delta);
+      }
+      previous_torque_[i] = torque;
+      if (!command_interfaces_[i].set_value(torque)) {
+        return controller_interface::return_type::ERROR;
+      }
+    }
+    have_previous_torque_ = true;
+    // Reseed Cartesian and nullspace references throughout the reset, so
+    // switching back never replays the previous VR target.
+    position_d_ = position;
+    orientation_d_ = orientation;
+    q_d_nullspace_ = q_;
+    return controller_interface::return_type::OK;
+  }
+  if (joint_reset_active_) {
+    torque_transition_ticks_ = 500;
+  }
+  joint_reset_active_ = joint_reset_fault_ = false;
   const CartesianGains target_gains = *cartesian_gains_buffer_.readFromRT();
   const double target_nullspace_stiffness = *nullspace_stiffness_buffer_.readFromRT();
   // Match panda-py: consume the filtered target in this torque computation.
@@ -207,9 +270,18 @@ controller_interface::return_type CartesianPoseImpedanceController::update(
                        tau_d.norm());
 
   for (int i = 0; i < num_joints; i++) {
+    if (torque_transition_ticks_ > 0 && have_previous_torque_) {
+      const double delta = 1000.0 * std::clamp(period.seconds(), 0.0, 0.001);
+      tau_d[i] = std::clamp(tau_d[i], previous_torque_[i] - delta, previous_torque_[i] + delta);
+    }
     if (!command_interfaces_[i].set_value(tau_d[i])) {
       return controller_interface::return_type::ERROR;
     }
+    previous_torque_[i] = tau_d[i];
+  }
+  have_previous_torque_ = true;
+  if (torque_transition_ticks_ > 0) {
+    --torque_transition_ticks_;
   }
 
   return controller_interface::return_type::OK;
@@ -242,6 +314,36 @@ void CartesianPoseImpedanceController::equilibriumPoseCallback(
     return;
   }
   target.orientation.normalize();
+  const int64_t stamp = rclcpp::Time(msg->header.stamp).nanoseconds();
+  if (stamp <= last_command_stamp_) {
+    return;
+  }
+  last_command_stamp_ = stamp;
+  target_pose_buffer_.writeFromNonRT(target);
+}
+
+void CartesianPoseImpedanceController::jointResetCallback(
+    const sensor_msgs::msg::JointState::SharedPtr msg) {
+  if (msg->name.size() != num_joints || msg->position.size() != num_joints) {
+    return;
+  }
+  const int64_t stamp = rclcpp::Time(msg->header.stamp).nanoseconds();
+  const int64_t age = get_node()->now().nanoseconds() - stamp;
+  if (stamp <= last_command_stamp_ || age < -100000000 || age > 250000000) {
+    return;
+  }
+  TargetPose target;
+  target.joint_reset = true;
+  target.received_ns = steadyNow();
+  for (int i = 0; i < num_joints; ++i) {
+    const double value = msg->position[i];
+    if (msg->name[i] != arm_id_ + "_joint" + std::to_string(i + 1) ||
+        !std::isfinite(value) || value <= joint_lower[i] || value >= joint_upper[i]) {
+      return;
+    }
+    target.joints[i] = value;
+  }
+  last_command_stamp_ = stamp;
   target_pose_buffer_.writeFromNonRT(target);
 }
 

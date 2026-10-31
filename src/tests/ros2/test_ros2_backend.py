@@ -37,7 +37,7 @@ def test_shared_config_selects_backend_and_defaults(tmp_path, backend, purpose):
     assert type(arm._backend).__name__ == ("Ros2Backend" if is_ros else "PandaBackend")
     assert arm.get_capabilities().finite_motion is not is_ros
     assert not arm.get_status().connected
-    assert config["robot"]["move_to_start"] is not is_ros
+    assert config["robot"]["move_to_start"] is True
     assert config["robot"]["activate_fci"] is not is_ros
     assert config["ros2"]["enabled"] is is_ros
     original = load_config(ROOT / f"config/{purpose}/panda.yaml")
@@ -116,13 +116,14 @@ def ros_config(tmp_path):
     "section,key,value",
     [
         ("robot", "backend", "unknown"),
-        ("robot", "move_to_start", True),
         ("robot", "activate_fci", True),
         ("ros2", "state_timeout_s", 0),
         ("ros2", "state_timeout_s", float("nan")),
         ("ros2", "arm_id", ""),
         ("ros2", "base_frame", ""),
-        ("inference", "move_to_start", True),
+        ("robot", "start_joint_position", [0] * 7),
+        ("robot", "joint_tolerance_rad", 0),
+        ("robot", "max_reset_joint_error_rad", 0.3),
         ("inference", "action_space", "joint"),
     ],
 )
@@ -167,6 +168,7 @@ def ros_peer():
     from rclpy.action import ActionServer
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
+    from sensor_msgs.msg import JointState
     from std_srvs.srv import Trigger
 
     context = Context()
@@ -180,6 +182,8 @@ def ros_peer():
     peer.frame = "panda_link0"
     peer.age_s = 0
     peer.position = [0.4, 0.0, 0.4]
+    peer.joints = (np.arange(1, 8) * 0.01).tolist()
+    peer.joint_commands = []
     peer.wrench = [1.0, -2.0, 3.0, 0.1, -0.2, 0.3]
     publisher = node.create_publisher(
         FrankaRobotState, "franka_robot_state_broadcaster/robot_state", 1
@@ -195,7 +199,7 @@ def ros_peer():
         transform = np.eye(4)
         transform[:3, 3] = peer.position
         msg.o_t_ee = transform.flatten(order="F").tolist()
-        msg.q = [i * 0.01 for i in range(1, 8)]
+        msg.q = peer.joints
         msg.dq = [0.0] * 7
         msg.o_f_ext_hat_k = peer.wrench
         publisher.publish(msg)
@@ -205,6 +209,14 @@ def ros_peer():
 
     node.create_subscription(
         PoseStamped, "cartesian_pose_impedance_controller/equilibrium_pose", command, 1
+    )
+
+    def joint_command(msg):
+        peer.joint_commands.append(msg)
+        peer.joints = list(msg.position)
+
+    node.create_subscription(
+        JointState, "cartesian_pose_impedance_controller/joint_reset", joint_command, 1
     )
     node.create_timer(0.01, state)
 
@@ -246,6 +258,8 @@ def peer_config(peer, config):
         namespace=peer.namespace, connect_timeout_s=2, state_timeout_s=0.15, enabled=False
     )
     config["gripper"]["type"] = "none"
+    # Streaming tests do not exercise startup/reset motion; test it separately.
+    config["robot"]["move_to_start"] = False
     config["reactive_desk"]["reactive_desk_enabled"] = False
     return config
 
@@ -256,6 +270,24 @@ def until(predicate, timeout=2):
         if time.monotonic() >= deadline:
             raise TimeoutError("ROS peer did not observe the expected event")
         time.sleep(0.01)
+
+
+@ROS_TEST
+def test_real_dds_joint_reset_then_cartesian_stream(ros_peer, ros_config):
+    config = peer_config(ros_peer, ros_config)
+    ros_peer.joints = [0, -0.5, 0, -2, 0, 1.5, 0.7]
+    target = np.array(ros_peer.joints) + 0.03
+    config["robot"]["start_joint_position"] = target.tolist()
+    with create_runner(config=config) as arm:
+        result = arm.move_to_start()
+        assert result.status == "succeeded"
+        np.testing.assert_allclose(result.final_state.joint_positions, target, atol=1e-6)
+        assert ros_peer.joint_commands
+        assert ros_peer.joint_commands[-1].name == [f"panda_joint{i}" for i in range(1, 8)]
+        assert not arm.get_status().motion_running
+        arm.start_stream()
+        arm.send_ee_target(result.final_state.ee_position, result.final_state.ee_quaternion_xyzw)
+        until(lambda: bool(ros_peer.commands))
 
 
 @ROS_TEST

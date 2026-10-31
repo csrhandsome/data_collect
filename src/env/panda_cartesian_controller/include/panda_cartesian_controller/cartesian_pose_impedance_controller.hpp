@@ -17,6 +17,7 @@
 #include <controller_interface/controller_interface.hpp>
 #include <franka_semantic_components/franka_robot_model.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <realtime_tools/realtime_buffer.hpp>
 
@@ -42,6 +43,9 @@ class CartesianPoseImpedanceController : public controller_interface::Controller
   struct TargetPose {
     Eigen::Vector3d position{Eigen::Vector3d::Zero()};
     Eigen::Quaterniond orientation{1.0, 0.0, 0.0, 0.0};
+    bool joint_reset{false};
+    Eigen::Matrix<double, num_joints, 1> joints{Eigen::Matrix<double, num_joints, 1>::Zero()};
+    int64_t received_ns{0};
   };
   struct CartesianGains {
     Eigen::Matrix<double, num_cartesian_dof, num_cartesian_dof> stiffness{
@@ -54,6 +58,7 @@ class CartesianPoseImpedanceController : public controller_interface::Controller
   void readJointState();
   std::tuple<Eigen::Quaterniond, Eigen::Vector3d> currentOrientationAndTranslation();
   void equilibriumPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+  void jointResetCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
   rcl_interfaces::msg::SetParametersResult onParameterUpdate(
       const std::vector<rclcpp::Parameter>& parameters);
   Eigen::Matrix<double, num_cartesian_dof, 1> computeError(
@@ -71,10 +76,18 @@ class CartesianPoseImpedanceController : public controller_interface::Controller
   Eigen::Vector3d position_d_;
   Eigen::Quaterniond orientation_d_;
   Eigen::Matrix<double, num_joints, 1> q_d_nullspace_;
+  Eigen::Matrix<double, num_joints, 1> reset_hold_;
+  Eigen::Matrix<double, num_joints, 1> previous_torque_;
+  bool joint_reset_active_{false};
+  bool joint_reset_fault_{false};
+  bool have_previous_torque_{false};
+  int torque_transition_ticks_{0};
+  int64_t last_command_stamp_{0};
   realtime_tools::RealtimeBuffer<TargetPose> target_pose_buffer_;
   realtime_tools::RealtimeBuffer<CartesianGains> cartesian_gains_buffer_;
   realtime_tools::RealtimeBuffer<double> nullspace_stiffness_buffer_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_equilibrium_pose_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_joint_reset_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 };
 

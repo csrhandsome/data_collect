@@ -27,7 +27,7 @@ def load_config(path=DEFAULT_CONFIG, _seen=None):
         robot = result.setdefault("robot", {})
         backend = robot.setdefault("backend", "panda")
         robot.setdefault("activate_fci", backend == "panda")
-        robot.setdefault("move_to_start", backend == "panda")
+        robot.setdefault("move_to_start", True)
         result.setdefault("ros2", {}).setdefault("enabled", backend == "ros2")
         for section in ("camera", "audio"):
             result.setdefault(section, {}).setdefault(
@@ -66,12 +66,17 @@ def validate(config):
         if isinstance(channels, bool) or not isinstance(channels, int) or channels <= 0:
             raise ValueError("audio.channels must be a positive integer")
     if backend == "ros2":
-        if robot.get("move_to_start", True):
-            raise ValueError("ROS equilibrium control requires robot.move_to_start=false")
         if robot.get("activate_fci", False):
             raise ValueError("ROS backend leaves FCI ownership to franka_ros2; disable activate_fci")
-        if config.get("inference", {}).get("move_to_start", False):
-            raise ValueError("ROS backend requires inference.move_to_start=false")
+        from control.ros2.joint_motion import validate_joint_target
+        from control.util.robot import start_joint_position
+
+        validate_joint_target(start_joint_position(config))
+        for key, default in (("arrival_timeout_s", 5.0), ("joint_tolerance_rad", 0.02),
+                             ("max_reset_joint_error_rad", 0.2)):
+            positive_rate(robot.get(key, default), f"robot.{key}")
+        if float(robot.get("max_reset_joint_error_rad", 0.2)) > 0.2:
+            raise ValueError("robot.max_reset_joint_error_rad must not exceed 0.2")
         if config.get("inference", {}).get("action_space", "ee") != "ee":
             raise ValueError("ROS equilibrium control requires inference.action_space=ee")
         cfg = config.get("ros2", {})

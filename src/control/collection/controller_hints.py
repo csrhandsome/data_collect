@@ -11,7 +11,7 @@ def build_controller_hints(config):
     recording = config.get("dataset", {}).get("enable_logging", True)
     left = []
     if takeover or recording:
-        reset = "并回位" if config.get("robot", {}).get("move_to_start", True) else "，保持当前位置"
+        reset = "并回初始位置" if config.get("robot", {}).get("move_to_start", True) else "，保持当前位置"
         left.extend(
             [
                 {"button": "Y", "action": f"保存当前片段{reset}"},

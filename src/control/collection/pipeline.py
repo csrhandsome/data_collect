@@ -158,7 +158,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 if reset_requested:
                     reset_robot(arm)
                     state = arm.read()
-                    mapper.reset(state)
+                    mapper.suspend_until_release(state)
                     if diagnostics.enabled:
                         diagnostics.event("stream_reset", hold_position=state.ee_position.tolist())
                 steps += 1

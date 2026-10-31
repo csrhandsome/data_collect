@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 import numpy as np
@@ -48,6 +49,7 @@ class Ros2Backend:
         self._condition = self._source.condition
         self._state = None
         self._streaming = False
+        self._joint_cancel = threading.Event()
         self.gripper = None
 
     def topic(self, name):
@@ -75,8 +77,17 @@ class Ros2Backend:
         from franka_msgs.msg import FrankaRobotState
         from geometry_msgs.msg import PoseStamped
         from rclpy.qos import QoSProfile, ReliabilityPolicy
+        from sensor_msgs.msg import JointState
 
         self._pose_type = PoseStamped
+        self._joint_type = JointState
+        self._joint_publisher = node.create_publisher(
+            JointState,
+            self.topic(self.cfg.get(
+                "joint_reset_topic", "cartesian_pose_impedance_controller/joint_reset"
+            )),
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
+        )
         self._publisher = node.create_publisher(
             PoseStamped,
             self.topic(self.cfg.get(
@@ -197,9 +208,16 @@ class Ros2Backend:
         self._streaming = False
 
     def move_joints(self, target, speed):
-        raise NotImplementedError(
-            "Equilibrium PoseStamped cannot command joints; initialize in Franka bringup"
-        )
+        from control.ros2.joint_motion import move_joints
+
+        return move_joints(self, target, speed)
+
+    def publish_joints(self, target):
+        msg = self._joint_type()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.name = [f"{self.cfg.get('arm_id', 'panda')}_joint{i}" for i in range(1, 8)]
+        msg.position = list(map(float, target))
+        self._joint_publisher.publish(msg)
 
     def move_ee(self, position, quaternion, speed):
         raise NotImplementedError("Use execute_ee_trajectory for bounded Cartesian motion")
@@ -208,6 +226,7 @@ class Ros2Backend:
         raise NotImplementedError("ROS backend does not implement FK; use robot_state_publisher/TF")
 
     def cancel(self):
+        self._joint_cancel.set()
         state = self.snapshot()
         if self._streaming:
             self.target(state.ee_position, state.ee_quaternion_xyzw, None)

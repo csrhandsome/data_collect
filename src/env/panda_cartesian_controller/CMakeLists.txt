@@ -17,6 +17,7 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(franka_semantic_components REQUIRED)
 find_package(franka_hardware REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -35,6 +36,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
   franka_semantic_components::franka_semantic_components
   realtime_tools::realtime_tools
   ${geometry_msgs_TARGETS}
+  ${sensor_msgs_TARGETS}
 )
 if(${hardware_interface_VERSION} VERSION_GREATER_EQUAL "4.20")
   target_compile_definitions(${PROJECT_NAME} PRIVATE HW_HAS_SET_NODISCARD)

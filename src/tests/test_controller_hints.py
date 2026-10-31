@@ -15,8 +15,8 @@ def test_collection_instructions_match_save_discard_and_franka_controls():
     config["robot"]["move_to_start"] = True
     hints = build_controller_hints(config)
     left, right = actions(hints, "left"), actions(hints, "right")
-    assert left["Y"] == "保存当前片段并回位"
-    assert left["X"] == "丢弃当前片段并回位"
+    assert left["Y"] == "保存当前片段并回初始位置"
+    assert left["X"] == "丢弃当前片段并回初始位置"
     assert "0.5 秒" in left["双食指扳机"]
     assert left["左摇杆按下"] == "进入关键阶段，持续到本回合结束（重复按无效）"
     assert right["A"] == "闭合夹爪"
