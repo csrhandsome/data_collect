@@ -23,6 +23,8 @@ class ResampledVR:
     axis: float
     source_ns: int
     source_seq: int
+    enter_critical_phase: bool = False
+    released: bool = False
 
 
 class VRResampler:
@@ -38,6 +40,13 @@ class VRResampler:
             value = bool(getattr(vr, name, False)) and fresh
             edges.append(value and not self.previous.get(name, False))
             self.previous[name] = value
+        # A stale button state must never produce an event, including after
+        # reconnecting while the stick is still held. Release it before retrying.
+        critical_pressed = bool(getattr(vr, "critical_pressed", False))
+        enter_critical_phase = (
+            fresh and critical_pressed and not self.previous.get("critical_pressed", False)
+        )
+        self.previous["critical_pressed"] = critical_pressed
         return ResampledVR(
             np.array([vr.pos_x, vr.pos_y, vr.pos_z]),
             normalize_quat_xyzw([vr.quat_x, vr.quat_y, vr.quat_z, vr.quat_w]),
@@ -46,6 +55,8 @@ class VRResampler:
             float(vr.gripper_velocity_axis),
             source_ns,
             int(vr.pose_seq),
+            enter_critical_phase=enter_critical_phase,
+            released=bool(fresh and not vr.arm_enabled),
         )
 
 
@@ -54,16 +65,27 @@ class EEMapper:
 
     def __init__(self, config):
         self.config = config
+        self._waiting_for_release = False
         self.reset()
 
+    @property
+    def waiting_for_release(self):
+        return self._waiting_for_release
+
+    def suspend_until_release(self, state):
+        """Drop unsent VR motion and require a fresh deadman release to rearm."""
+        self.reset(state)
+        self._waiting_for_release = True
+
     def reset(self, state=None):
-        """Clear the VR anchor and optionally seed the pose held while idle."""
+        """Clear the VR anchor without clearing a pending release interlock."""
+        held_pose = self._hold_pose if self._waiting_for_release and state is None else None
         self.anchor = None
         self.last_ns = None
         self._hold_pose = (
             (state.ee_position.copy(), state.ee_quaternion_xyzw.copy())
             if state is not None
-            else None
+            else held_pose
         )
         self._command_pose = None
         self._desired_pose = self._hold_pose
@@ -83,9 +105,17 @@ class EEMapper:
             "rotation_speed_limited": self._rotation_limited,
             "workspace_limited": self._workspace_limited,
             "dt_s": self._dt_s,
+            "waiting_for_release": self._waiting_for_release,
         }
 
     def map(self, sample, state, now_ns):
+        if self._waiting_for_release:
+            # A stale sample also has enabled=False; only a fresh release rearms.
+            if getattr(sample, "released", False):
+                self._waiting_for_release = False
+            else:
+                position, quaternion = self._hold_pose
+                return position.copy(), quaternion.copy()
         if not sample.enabled:
             # Capture once at startup, trigger release, or loss of fresh VR input.
             # Following the measured pose every tick would allow gravity-induced drift.

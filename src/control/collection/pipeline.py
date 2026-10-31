@@ -14,7 +14,9 @@ from control.collection.recording import EpisodeRecorder
 from control.collection.vr import EEMapper, VRResampler
 from control.control_diagnostics import ControlDiagnostics
 from control.reactive_desk_client import ScenePublisher
-from control.robotic_arm_controller import RoboticArmControler
+from control.ros2.bridge import Ros2Publisher
+from control.runners import create_runner
+from control.types import EETargetLimitError
 from control.util.pose import quat_angle_xyzw
 from control.util.robot import finish_stream, handle_gripper, reset_robot
 from control.util.timing import FixedRate
@@ -23,18 +25,19 @@ logger = logging.getLogger(__name__)
 
 
 def run_collection(config, *, dry_run=False, max_steps=0):
-    from control._panda.fake import FakeBackend
+    from control.direct.fake import FakeBackend
 
     recorder = None
     with ExitStack() as stack:
+        ros2 = stack.enter_context(Ros2Publisher(config))
         diagnostics = stack.enter_context(ControlDiagnostics(config))
         arm = stack.enter_context(
-            RoboticArmControler(config=config, backend=FakeBackend() if dry_run else None)
+            create_runner(config=config, backend=FakeBackend() if dry_run else None)
         )
         cameras = make_cameras(config, dry_run)
         stack.callback(cameras.close)
         vr = make_vr(config, dry_run)
-        stack.callback(vr.stop)
+        stack.callback(vr.close)
         microphone = (
             make_microphone(config, dry_run)
             if config["dataset"].get("enable_logging", True)
@@ -53,7 +56,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
         arm.start_stream()
         resampler = VRResampler(float(config.get("vr", {}).get("stale_after_s", 0.5)))
         mapper = EEMapper(config.get("vr", {}))
-        state = arm.get_state()
+        state = arm.read()
         mapper.reset(state)
         if diagnostics.enabled:
             diagnostics.event("stream_start", hold_position=state.ee_position.tolist())
@@ -67,12 +70,14 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 diagnostics.begin_tick(steps, tick_ns, rate.overruns)
                 reset_requested = False
                 command_sent = False
-                state = arm.get_state()
+                state = arm.read()
                 diagnostics.mark("state_read")
-                raw_sample = vr.latest
+                raw_sample = vr.read()
                 diagnostics.mark("vr_read")
                 now = time.monotonic_ns()
                 sample = resampler.sample(raw_sample, now)
+                if recorder is not None and sample.enter_critical_phase:
+                    recorder.enter_critical_phase(now)
                 if arm.gripper_busy:
                     # The controller is paused for the gripper; discard unsent VR motion.
                     mapper.reset(state)
@@ -81,23 +86,41 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 scene.publish(state.ee_position, now, config["dataset"]["instruction"])
                 diagnostics.mark("scene_publish")
                 # Idle pose corrections are not operator actions that start an episode.
-                changed = sample.enabled and (
+                changed = sample.enabled and not mapper.waiting_for_release and (
                     np.linalg.norm(position - state.ee_position) > 1e-6
                     or quat_angle_xyzw(quaternion, state.ee_quaternion_xyzw) > 1e-6
                 )
                 if not arm.gripper_busy:
-                    arm.send_ee_target(position, quaternion)
+                    try:
+                        arm.send_ee_target(position, quaternion)
+                    except EETargetLimitError as exc:
+                        # Keep the runner alive without accepting or clipping the rejected target.
+                        state = arm.hold()
+                        mapper.suspend_until_release(state)
+                        position, quaternion = mapper.map(sample, state, now)
+                        changed = False
+                        diagnostics.event("vr_target_guard", **exc.details)
+                        logger.warning(
+                            "%s；已保持当前位置，请松开双扳机后重新按住接管。", exc
+                        )
                     command_sent = True
-                    gripper_changed, last_axis_ns = handle_gripper(
-                        arm, sample, state, now, last_axis_ns, config
-                    )
-                    changed = changed or gripper_changed
+                    if not mapper.waiting_for_release:
+                        gripper_changed, last_axis_ns = handle_gripper(
+                            arm, sample, state, now, last_axis_ns, config
+                        )
+                        changed = changed or gripper_changed
                 diagnostics.mark("command_and_gripper")
+                pair = cameras.read() if recorder is not None or ros2.enabled else None
+                ros2.submit(state, vr=raw_sample,
+                            target=(position, quaternion) if command_sent else None, cameras=pair)
                 if recorder is not None:
                     if changed and not recorder.active:
                         recorder.start()
-                    recorder.trace(state, sample, position, quaternion)
-                    pair = cameras.get_frames()
+                    target = arm.get_ee_target()
+                    recorder.trace(
+                        state, sample, position, quaternion,
+                        command_submitted_ns=target.submitted_monotonic_ns,
+                    )
                     if pair is not None:
                         if now - min(pair.front_ns, pair.wrist_ns) > int(
                             config["camera"].get("max_age_s", 0.2) * 1e9
@@ -117,7 +140,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                     )
                     if sample.save or sample.discard or expired:
                         recorder.finish(
-                            arm.get_state(),
+                            arm.read(),
                             save=not sample.discard,
                             publish=True,
                         )
@@ -134,8 +157,8 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 )
                 if reset_requested:
                     reset_robot(arm)
-                    state = arm.get_state()
-                    mapper.reset(state)
+                    state = arm.read()
+                    mapper.suspend_until_release(state)
                     if diagnostics.enabled:
                         diagnostics.event("stream_reset", hold_position=state.ee_position.tolist())
                 steps += 1
@@ -156,7 +179,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
             diagnostics.event("loop_end", ticks=steps, overruns=rate.overruns, failed=failed)
             finish_stream(arm)
             if recorder is not None:
-                recorder.finish(arm.get_state(), save=not failed, publish=True)
+                recorder.finish(arm.read(), save=not failed, publish=True)
         logger.info("Acquisition finished: %s ticks, %s overruns", steps, rate.overruns)
     if recorder is not None and config.get("audio", {}).get("vad_enabled", False) and not dry_run:
         audio_files = (recorder.root / "audio").glob("episode_*.wav")

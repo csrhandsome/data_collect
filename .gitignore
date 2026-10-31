@@ -11,12 +11,14 @@ wheels/
 data/*
 !data/franka_mjcf/
 # Local documentation
+/AGENTS.md
+/specs/
 /data/doc/
 src/data_analysis/quality_reports
 .codex
-scripts/data2modelscope.py
-scripts/modelscope2data.py
-scripts/modelscope2weights.py
+scripts/dataset/data2modelscope.py
+scripts/dataset/modelscope2data.py
+scripts/dataset/modelscope2weights.py
 
 # Frontend dependencies and verification output
 node_modules/
@@ -25,3 +27,7 @@ playwright-report/
 test-results/
 .ruff_cache/
 .pytest_cache/
+
+# ROS / Docker local build artifacts
+/ros2_ws/
+/src/env/.env

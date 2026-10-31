@@ -1,13 +1,37 @@
 # Panda 数据采集与回放
 
+ROS 2 Jazzy 版本：参见 [ROS 2 Docker 与遥操作](docs/ros2.md)。
+环境文件位于 `src/env/`，使用 Panda/FER 适配的 `franka_ros2` Jazzy 驱动和项目笛卡尔阻抗控制器。
+采集统一使用 `config/train/panda.yaml`，只需将 `robot.backend` 设为 `panda` 或 `ros2`；
+推理配置继承此选择。采集端 FCI 激活和自动回位默认在 Panda 后端开启、ROS 后端关闭，
+ROS 遥测默认随 ROS 后端开启。ROS 后端需要已加载 ROS 环境及单独启动的 ROS2 控制器。
+相机和麦克风默认跟随后端切换：Panda 使用本地设备，ROS 使用 topic 订阅；
+可分别通过 `camera.backend`、`audio.backend` 显式选 `direct` 或 `ros2`。
+ROS 输入的 topic 和音频格式见 [ROS 设备配置](docs/ros2.md#ros-输入设备)。
+
+公共接口为 `control.base_runner.BaseRunner`，由 `control.runners.create_runner()`
+按配置创建 `FrankaRunnerStable`（`control/direct/`）或 `FrankaRunner`（`control/ros2/`）。
+两种后端共用 `control/common/` 的命令调度和 `control/types.py` 的数据类型。
+
 项目使用 **Python 3.12、LeRobot 0.6.1（最新正式版）和 v3.0 数据格式**。
 依赖版本记录在 `uv.lock` 中。LeRobot 0.6 起的数据操作需要 `dataset` extra，项目已启用。
+默认环境已移除旧 IK 使用的 `dm-robotics-moma` 及其 JAX 依赖链；当前 ROS2 采集和推理不依赖它们。
+Docker 构建通过 `uv sync --locked` 使用同一份依赖，重新构建时也不会安装这条依赖链。
 
 ```bash
 uv sync --locked
-uv run vr_collect --config config/train/panda.yaml
-bash dev.sh
+bash scripts/deploy_page.sh
 ```
+
+部署入口集中在 `scripts/`：`deploy_docker.sh` 进入 Franka 容器，
+容器内运行 `deploy_ros2.sh` 自动通过 Desk 解锁、激活 FCI，并启动驱动、相机、VR 和订阅诊断，
+`deploy_runner.sh` 只启动监听已有 ROS2 话题的采集 runner。
+机械臂驱动、相机、VR 和诊断仍由你在另一个容器终端单独运行 `deploy_ros2.sh`。`deploy_page.sh` 在这套 runner 上再启动网页和 API，
+网页中的日志、运行状态和停止按钮对应同一个采集任务。两个入口二选一，不要同时运行。
+Ctrl+C 只结束 runner 并保存，独立启动的 ROS2 驱动继续运行。两个 runner 入口可从宿主机运行，需预先构建 ROS2 镜像；
+网页入口还需要 pnpm。原有数据处理、上传和下载脚本位于 `scripts/dataset/`。
+网页顶部的「ROS2 订阅监控」显示实际订阅的 warning 和恢复状态，
+可通过 `ros2.monitoring` 调整开关、启动宽限时间和频率阈值，详见 [ROS2 监控](docs/ros2.md#订阅监控与前端-warning)。
 
 Electron + Nuitka Linux 桌面版的构建、运行和产物测试见
 [replay/desktop/README.md](src/replay/desktop/README.md)。
@@ -21,6 +45,33 @@ uv run pytest
 
 `uv sync` 会按 `.python-version` 将项目 `.venv` 切换到 Python 3.12。
 
+## VR 手柄操作提示
+
+进入 VR / Passthrough 后，左右手柄下方各显示一张中文操作速查卡，抬手即可查看。
+说明由采集配置发送到头显，不改变现有按键行为。
+
+| 手柄 | 操作 | 功能 |
+| --- | --- | --- |
+| 左手 | Y | 保存当前片段并回位 |
+| 左手 | X | 丢弃当前片段并回位 |
+| 双手 | 食指扳机同时按住超过 `vr.long_press_s`（默认 0.5 秒） | 启用右手柄对机械臂末端的跟随 |
+| 双手 | 松开任一食指扳机 | 暂停跟随 |
+| 右手 | A / B | 闭合 / 张开夹爪 |
+| 右手 | 摇杆上推 / 下推 | 逐步闭合 / 张开，仅 DH5 夹爪支持并显示 |
+
+录制在首次有效机械臂或夹爪操作时自动开始，Y 用于保存当前片段。
+推理人工接管模式会改为显示接管说明，不显示无效的 X/Y 保存操作；松开扳机会交回策略控制。
+`vr.show_controller_hints: false` 可关闭提示。禁用录制或夹爪时，对应说明也会隐藏。
+关闭自动回位时（包括 ROS 后端默认设置），X/Y 操作后保持当前位置，手柄提示同步显示。
+
+根项目和桌面 Python 环境都通过 `[tool.uv.sources]` 固定依赖
+[csr fork 的修改提交](https://github.com/csrhandsome/teleop_xr/commit/3c572efddf98719c4a28de292d248e41b23a43a7)，
+版本为 `1.3.5+csr.2`。换机器后运行 `uv sync --locked` 即可安装同一份前端。
+从 Git 安装会自动构建 WebXR 页面，安装机器需具备 Node.js ≥ 20.19 和 npm，并能下载 npm 依赖。
+修改源码时，在相邻的 `../teleop_xr/webxr/src/xr/controller_hints_system.ts` 调整提示外观；
+按键文字来自本项目 `src/control/collection/controller_hints.py`。
+后续修改 fork 后，需要先提交并推送，再更新两个 `pyproject.toml` 的 commit 和各自的 `uv.lock`。
+
 ## 夹爪接口
 
 机械臂持有公共的 `GripperController`（`arm.gripper`），连接、关闭和异步命令调度由机械臂统一管理。
@@ -30,9 +81,9 @@ uv run pytest
 
 ```python
 from control.config import load_config
-from control.robotic_arm_controller import RoboticArmControler
+from control.runners import create_runner
 
-with RoboticArmControler(config=load_config("config/train/panda.yaml")) as arm:
+with create_runner(config=load_config("config/train/panda.yaml")) as arm:
     arm.gripper.open()
     arm.gripper.set_open_ratio(0.75, wait=False)
     arm.gripper.wait(timeout=5.0)
@@ -50,9 +101,35 @@ DH5 的触觉相机仍由 `tactile.enabled` 控制，图像通过 `arm.gripper.g
 
 ## 采集行为
 
+### VR 手柄操作
+
+推理模式需在 `config/inference/panda.yaml` 中设置 `inference.enable_vr_takeover: true`；
+开启后自动录制。更新代码后，需重启采集/推理进程；ROS2 模式还需重启 VR 节点。
+
+| 按键 / 操作 | 示教采集模式 | 策略推理模式 |
+| --- | --- | --- |
+| 同时按住左右食指扳机 | 启用机械臂跟随 | 接管机械臂，自动记录介入事件 |
+| 松开任一食指扳机 | 暂停跟随，保持当前位置 | 交回策略，自动记录交回事件并恢复推理 |
+| 移动 / 转动右手柄 | 按住双扳机时控制末端位置 / 姿态 | 人工接管时控制末端位置 / 姿态 |
+| **左摇杆按下** | 录制中进入关键阶段 | 进入关键阶段 |
+| **Y**（左手柄） | 结束并保存当前回合，可继续采集下一回合 | 结束并保存本次推理，退出执行 |
+| **X**（左手柄） | 丢弃当前回合，可继续采集下一回合 | 结束并丢弃本次推理，退出执行 |
+| **A**（右手柄） | 闭合夹爪 | 人工接管时闭合夹爪 |
+| **B**（右手柄） | 张开夹爪 | 人工接管时张开夹爪 |
+| 右摇杆 ↑ / ↓（仅 DH5） | 逐步闭合 / 张开夹爪 | 人工接管时逐步闭合 / 张开夹爪 |
+| 桌面「成功 / 失败」 | 保存后标注任务结果 | 保存后标注任务结果 |
+
+双扳机默认同时按住 **0.5 秒**后生效，可通过 `vr.long_press_s` 调整。
+进入关键阶段后，终端提示「已进入关键阶段」；重复按不会退出，新回合自动重置。
+录制开始前的关键阶段按键不会带入下一回合。Y 保存不代表成功，X 丢弃不代表失败。
+保存或丢弃后的回位行为遵循 `robot.move_to_start` 配置。
+
 采集运行参数集中在 `config/train/panda.yaml`；存储字段由 `config/dataset/panda.yaml` 定义。100 Hz 轨迹与音频 sidecar 保留原有约定。
 采集完仍按原来的 Y 键保存。保存只结束并保留当前 episode，`success` 默认为 `null`（未标注）；
 X 键仍用于丢弃当前录制，不会把片段标成失败。
+录制中按左摇杆进入关键阶段，终端提示「已进入关键阶段」；重复按不会退出，新回合自动清除。
+原始轨迹仍完整保存，阶段起点记录在 sidecar 的 `critical_phase_start_monotonic_ns`，
+动作 trace 逐步保存 `in_critical_phase`。录制开始前的阶段按键不带入下一回合。
 采集流程每次保存都会 `finalize()` 封口 LeRobot v3 数据和元数据，再发布 `.sync.json`；
 下一条开始时按最新元数据续采，因此采集任务无需退出，已保存的片段就能回放。
 每条封口会增加保存和下次续采的开销；直接使用 `EpisodeRecorder` 批量写入时，
@@ -131,6 +208,9 @@ LeRobot 自动生成的 `timestamp`、`frame_index`、`episode_index`、`index`�
 
 在 `config/inference/panda.yaml` 设置 `inference.enable_vr_takeover: true` 后，可在推理中进行
 VR 人工纠正；此时自动保存 episode，无需额外传 `--record`。松开接管后恢复策略推理。
+推理中左摇杆按下标记进入关键阶段，Y 结束并保存本次推理，X 结束并丢弃；
+结束后按现有配置回位或保持位置，成功/失败仍在桌面界面标注。
+双扳机接管和松开交回会自动记录 `takeover_start` / `takeover_end` 事件，无需额外标记键。
 动作 trace 逐步保存实际 `control_source`（`BASE/RL/HUMAN`）、`intervention_flag`、
 接受下发的 EE/夹爪目标，以及策略 step/actor 版本；人工接管期间不会把网络提案当成执行动作。
 EE 目标从控制器原子快照读取，包含夹爪暂停时的保持目标和恢复时的启动目标；
@@ -140,6 +220,8 @@ EE 目标从控制器原子快照读取，包含夹爪暂停时的保持目标�
 
 离线 RL 使用流程：录制 → 在桌面界面标注成功/失败 → 在 `openpi-force` 使用
 `python -m openpi.rlt.build_replay` 导入数据 → 运行 `rlt.stage: actor_critic`。
+构建 CLI 默认只导入已标成败且标记关键阶段的后缀；保留 BASE/RL/HUMAN 来源和真实终止。
+旧数据或完整回合训练须显式传 `--include-noncritical`，并使用独立 replay 输出目录。
 来源标记会保留到 replay，混合回合中的人工步用于 BC。未标注回合不参与训练。
 这是离线数据链路；本地保存和标注不会自动调用在线 RL 的 `begin_episode/observe/end_episode`。
 独立 Force 训练仍需要匹配其 JSONL 格式的实际关节执行记录；当前 EE 控制器不会把实测关节状态冒充关节命令，真机 Force 执行仍需要已校准的 TCP 安全投影。

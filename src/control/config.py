@@ -2,53 +2,99 @@
 
 from __future__ import annotations
 
-import copy
 import math
 import os
 from pathlib import Path
 
-import yaml
-
 from control.collection.schema import features
+from control.common.impedance import impedance_parameters
 from control.util.timing import positive_rate
+from control.yaml_config import DEFAULT_CONFIG, load_yaml_config
 
-DEFAULT_CONFIG = Path(
-    os.environ.get(
-        "DATA_COLLECT_CONFIG", Path(__file__).resolve().parents[2] / "config/train/panda.yaml"
-    )
-)
-INFERENCE_CONFIG = Path(__file__).resolve().parents[2] / "config/inference/panda.yaml"
+INFERENCE_CONFIG = Path(os.environ.get(
+    "DATA_COLLECT_INFERENCE_CONFIG",
+    Path(__file__).resolve().parents[2] / "config/inference/panda.yaml",
+))
 
 
 def load_config(path=DEFAULT_CONFIG, _seen=None):
-    path = Path(path).resolve()
-    seen = set() if _seen is None else set(_seen)
-    if path in seen:
-        raise ValueError("Cyclic YAML inheritance")
-    seen.add(path)
-    payload = yaml.safe_load(path.read_text())
-    if not isinstance(payload, dict):
-        raise ValueError("Configuration must be a YAML mapping")
-    parent = payload.pop("extends", None)
-    result = load_config(path.parent / parent, seen) if parent else {}
-    merge(result, payload)
+    result = load_yaml_config(path, _seen)
     # Validate the merged child: inherited field choices may depend on its
     # tactile/action-space settings rather than the defaults of a partial parent.
     if _seen is None:
+        # Resolve backend defaults only after inheritance, so changing backend in
+        # a child config also changes FCI ownership, reset and telemetry defaults.
+        robot = result.setdefault("robot", {})
+        backend = robot.setdefault("backend", "panda")
+        robot.setdefault("activate_fci", backend == "panda")
+        robot.setdefault("move_to_start", True)
+        result.setdefault("ros2", {}).setdefault("enabled", backend == "ros2")
+        for section in ("camera", "audio"):
+            result.setdefault(section, {}).setdefault(
+                "backend", "ros2" if backend == "ros2" else "direct"
+            )
         validate(result)
     return result
 
 
-def merge(target, source):
-    for key, value in source.items():
-        if isinstance(value, dict) and isinstance(target.get(key), dict):
-            merge(target[key], value)
-        else:
-            target[key] = copy.deepcopy(value)
-
-
 def validate(config):
+    robot = config.get("robot", {})
+    backend = robot.get("backend", "panda")
+    if backend not in ("panda", "ros2"):
+        raise ValueError("robot.backend must be panda or ros2")
+    for section in ("camera", "audio"):
+        cfg = config.get(section, {})
+        default = "ros2" if backend == "ros2" else "direct"
+        if cfg.get("backend", default) not in ("direct", "ros2"):
+            raise ValueError(f"{section}.backend must be direct or ros2")
+    if config.get("camera", {}).get("backend") == "ros2":
+        cfg = config["camera"]
+        for key, default in (("max_age_s", 0.2), ("startup_timeout_s", 10)):
+            positive_rate(cfg.get(key, default), f"camera.{key}")
+        ros = cfg.get("ros2", {})
+        positive_rate(ros.get("max_pair_skew_s", 0.1), "camera.ros2.max_pair_skew_s")
+        for key in ("external_image_topic", "wrist_image_topic"):
+            if key in ros and (not isinstance(ros[key], str) or not ros[key].strip()):
+                raise ValueError(f"camera.ros2.{key} must be a nonempty string")
+    if config.get("audio", {}).get("backend") == "ros2":
+        ros = config["audio"].get("ros2", {})
+        for key, default in (("max_age_s", 0.5), ("startup_timeout_s", 10)):
+            positive_rate(ros.get(key, default), f"audio.ros2.{key}")
+        if "topic" in ros and (not isinstance(ros["topic"], str) or not ros["topic"].strip()):
+            raise ValueError("audio.ros2.topic must be a nonempty string")
+        channels = config["audio"].get("channels", 1)
+        if isinstance(channels, bool) or not isinstance(channels, int) or channels <= 0:
+            raise ValueError("audio.channels must be a positive integer")
+    if backend == "ros2":
+        if robot.get("activate_fci", False):
+            raise ValueError("ROS backend leaves FCI ownership to franka_ros2; disable activate_fci")
+        from control.ros2.joint_motion import validate_joint_target
+        from control.util.robot import start_joint_position
+
+        validate_joint_target(start_joint_position(config))
+        for key, default in (("arrival_timeout_s", 5.0), ("joint_tolerance_rad", 0.02),
+                             ("max_reset_joint_error_rad", 0.2)):
+            positive_rate(robot.get(key, default), f"robot.{key}")
+        if float(robot.get("max_reset_joint_error_rad", 0.2)) > 0.2:
+            raise ValueError("robot.max_reset_joint_error_rad must not exceed 0.2")
+        if config.get("inference", {}).get("action_space", "ee") != "ee":
+            raise ValueError("ROS equilibrium control requires inference.action_space=ee")
+        cfg = config.get("ros2", {})
+        for key, default in (("state_timeout_s", 0.25), ("connect_timeout_s", 10),
+                             ("gripper_timeout_s", 10)):
+            positive_rate(cfg.get(key, default), f"ros2.{key}")
+        for key in ("base_frame", "arm_id"):
+            if not isinstance(cfg.get(key), str) or not cfg[key].strip():
+                raise ValueError(f"ros2.{key} must be a nonempty string")
     control = config.get("control", {})
+    impedance_parameters(control)
+    monitoring = config.get("ros2", {}).get("monitoring", {})
+    if not isinstance(monitoring, dict) or not isinstance(monitoring.get("enabled", False), bool):
+        raise ValueError("ros2.monitoring must be a mapping with a boolean enabled")
+    for key, default in (("startup_grace_s", 10), ("window_s", 5), ("min_rate_ratio", 0.8)):
+        positive_rate(monitoring.get(key, default), f"ros2.monitoring.{key}")
+    if float(monitoring.get("min_rate_ratio", 0.8)) > 1:
+        raise ValueError("ros2.monitoring.min_rate_ratio must be at most 1")
     if control.get("mode", "ee") != "ee":
         raise ValueError("control.mode must be ee; action fields select saved joint/ee labels")
     if config.get("dataset", {}).get("action_space", "joint") not in ("joint", "ee"):
@@ -64,6 +110,8 @@ def validate(config):
         config.get("observation"),
         config.get("action"),
     )
+    if (config.get("observation") or {}).get("ee_wrench", False) and backend != "ros2":
+        raise ValueError("observation.ee_wrench requires robot.backend=ros2")
     if "video_encoder" in config.get("dataset", {}):
         from lerobot.configs import RGBEncoderConfig
 

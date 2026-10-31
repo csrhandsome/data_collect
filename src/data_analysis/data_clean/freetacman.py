@@ -7,8 +7,12 @@ from pathlib import Path
 
 import numpy as np
 
-from data_analysis.data_clean.base import BaseAligner
-from data_analysis.data_clean.lerobot_v3 import GRIPPER_IMAGE_LEFT, GRIPPER_IMAGE_RIGHT, AlignedEpisode
+from data_analysis.data_clean.base import BaseAligner, SkipEpisode
+from data_analysis.data_clean.lerobot_v3 import (
+    GRIPPER_IMAGE_LEFT,
+    GRIPPER_IMAGE_RIGHT,
+    AlignedEpisode,
+)
 
 # camera1/camera2 are the two saturated visuo-tactile views. camera3 is the gray wrist RGB.
 _CAMERAS = {
@@ -37,7 +41,7 @@ class FreeTacManAligner(BaseAligner):
         for camera, feature in _CAMERAS.items():
             path = root / f"{stem}_{camera}.mp4"
             if not path.is_file():
-                raise FileNotFoundError(path)
+                raise SkipEpisode(f"missing {path.name}")
             videos[feature] = path
         with (root / f"{stem}_traj.csv").open(newline="") as handle:
             rows = list(csv.DictReader(handle))

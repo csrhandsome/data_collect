@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from control.collection.dataset import open_dataset
 from control.collection.schema import features
 from control.recording_writer import AsyncDatasetFrames, FreshCameraPair
 from control.util.lerobot_util import _discard_unsaved_episode
+
+logger = logging.getLogger(__name__)
 
 
 class JsonlSink:
@@ -42,6 +45,8 @@ class EpisodeRecorder:
         self.records = []
         self.trace_writer = self.trace_sink = None
         self._closed = False
+        self.critical_phase_start_ns = None
+        self.control_events = []
 
     def start(self):
         if self._closed:
@@ -55,6 +60,8 @@ class EpisodeRecorder:
             self.writer = AsyncDatasetFrames(self.dataset)
         self.index = int(self.dataset.meta.total_episodes)
         self.started_ns = time.monotonic_ns()
+        self.critical_phase_start_ns = None
+        self.control_events = []
         self.trace_count = self.unique_vr = 0
         self.last_vr_seq = None
         self.trace_path = self.root / f"episode_{self.index:06d}.actions.jsonl"
@@ -77,6 +84,23 @@ class EpisodeRecorder:
                 raise RuntimeError("Microphone refused episode start")
         self.active = True
 
+    def enter_critical_phase(self, timestamp_ns=None):
+        """Latch a phase boundary in this episode; idle presses are ignored."""
+        if not self.active or self.critical_phase_start_ns is not None:
+            return False
+        self.critical_phase_start_ns = (
+            time.monotonic_ns() if timestamp_ns is None else int(timestamp_ns)
+        )
+        logger.info("已进入关键阶段")
+        return True
+
+    def control_event(self, event_type, timestamp_ns=None):
+        if self.active:
+            self.control_events.append({
+                "type": event_type,
+                "host_monotonic_ns": time.monotonic_ns() if timestamp_ns is None else int(timestamp_ns),
+            })
+
     def trace(
         self, state, vr, position, quaternion, *, control_source=None,
         target_gripper_position=None, policy_step_id=None, actor_version=None,
@@ -97,9 +121,16 @@ class EpisodeRecorder:
         if vr.source_seq != self.last_vr_seq:
             self.unique_vr += 1
             self.last_vr_seq = vr.source_seq
+        sample_ns = time.monotonic_ns() if trace_sample_ns is None else trace_sample_ns
+        # Phase describes this sample's time interval. The command submission
+        # timestamp separately preserves the provenance of a held target.
         record = {
             "sample_index": self.trace_count,
-            "host_sample_monotonic_ns": time.monotonic_ns() if trace_sample_ns is None else trace_sample_ns,
+            "host_sample_monotonic_ns": sample_ns,
+            "in_critical_phase": (
+                self.critical_phase_start_ns is not None
+                and sample_ns >= self.critical_phase_start_ns
+            ),
             "state_sample_monotonic_ns": state.sampled_monotonic_ns,
             "joint_position": state.joint_positions.tolist(),
             "ee_position": state.ee_position.tolist(),
@@ -121,6 +152,8 @@ class EpisodeRecorder:
             "vr_orientation_xyzw": vr.quaternion_xyzw.tolist(),
             "vr_arm_enabled": vr.enabled,
         }
+        if "observation.ee_wrench" in self.feature_keys:
+            record["ee_wrench"] = self._wrench(state).tolist()
         self.trace_writer.submit(record)
         self.trace_count += 1
 
@@ -140,6 +173,8 @@ class EpisodeRecorder:
             ),
             "task": self.config["dataset"]["instruction"],
         }
+        if "observation.ee_wrench" in self.feature_keys:
+            frame["observation.ee_wrench"] = self._wrench(state).astype(np.float32)
         if "observation.exterior_image" in self.feature_keys:
             frame["observation.exterior_image"] = pair.front.copy()
         if "observation.wrist_image_left" in self.feature_keys:
@@ -175,6 +210,8 @@ class EpisodeRecorder:
             "ee_orientation_xyzw": state.ee_quaternion_xyzw.tolist(),
             "gripper_position": state.gripper.commanded_open_ratio,
         }
+        if "observation.ee_wrench" in self.feature_keys:
+            record["ee_wrench"] = self._wrench(state).tolist()
         self.records.append(record)
         self.pending = (
             {
@@ -184,6 +221,12 @@ class EpisodeRecorder:
             },
             record,
         )
+
+    @staticmethod
+    def _wrench(state):
+        if state.ee_wrench is None:
+            raise RuntimeError("observation.ee_wrench enabled but ROS 2 wrench feedback is unavailable")
+        return state.ee_wrench
 
     def _complete(self, state, terminal=False):
         if self.pending is None:
@@ -242,6 +285,9 @@ class EpisodeRecorder:
             "control_frequency": self.config["control"]["frequency_hz"],
             "camera_fps": self.config["camera"]["fps"],
             "episode_start_monotonic_ns": self.started_ns,
+            "critical_phase_annotation_version": 1,
+            "critical_phase_start_monotonic_ns": self.critical_phase_start_ns,
+            "control_events": self.control_events,
             "episode_stop_monotonic_ns": now,
             "video_frames": len(self.records),
             "action_records": self.trace_count,

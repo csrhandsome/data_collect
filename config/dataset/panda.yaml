@@ -10,6 +10,7 @@ observation:
   joint_position: true     # float32[7]，实测关节角，rad
   ee_pose: true            # float32[6]，xyz（m）+ roll/pitch/yaw（rad），ZYX 欧拉角约定
   ee_position: true        # float32[3]，实测末端 xyz，m
+  ee_wrench: false         # 可选，仅 ROS2：基坐标系外力估计 [Fx,Fy,Fz,Tx,Ty,Tz]，N / N·m
   gripper_position: true   # float32[1]，指令开合比例：0 闭合、1 全开
 
 # 动作标签使用下一帧观测时的实测状态，末帧使用 episode 结束时的实测状态。

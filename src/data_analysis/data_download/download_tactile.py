@@ -75,17 +75,29 @@ def log(msg: str) -> None:
     print(f"[{stamp}] {msg}", flush=True)
 
 
+def _retry_wait(exc: Exception, attempt: int) -> None:
+    wait = min(30, 4 * attempt)
+    if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+        retry_after = exc.headers.get("Retry-After") if exc.headers else None
+        if retry_after and str(retry_after).isdigit():
+            wait = max(int(retry_after), 30 * attempt)
+        else:
+            wait = 30 * attempt
+        wait = min(wait, 300)
+    log(f"请求失败 {attempt}，{wait} 秒后重试: {exc}")
+    time.sleep(wait)
+
+
 def fetch_json(url: str, timeout: int = 180):
     last: Exception | None = None
-    for attempt in range(1, 6):
+    for attempt in range(1, 9):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
             last = exc
-            log(f"列表请求失败 {attempt}/5: {exc}")
-            time.sleep(min(20, 3 * attempt))
+            _retry_wait(exc, attempt)
     assert last is not None
     raise last
 
@@ -252,16 +264,29 @@ def list_hf(cfg: Settings, repo: str) -> list[dict]:
     siblings = info.get("siblings") or []
     expected_bytes = int(info.get("usedStorage") or 0)
     url = f"{api}/api/datasets/{repo}/tree/main?recursive=1&expand=1&limit=100"
+    cache_path = cfg.stage / "lists" / f"{repo.replace('/', '__')}.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     files: list[dict] = []
     seen: set[str] = set()
     pages = 0
+    if cache_path.is_file():
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        if cached.get("done") and cached.get("files"):
+            log(f"{repo} 使用已保存的文件列表，{len(cached['files'])} 个")
+            return cached["files"]
+        files = list(cached.get("files") or [])
+        seen = {row["path"] for row in files}
+        pages = int(cached.get("pages") or 0)
+        url = cached.get("next") or url
+        if files:
+            log(f"{repo} 从已保存进度继续，{len(files)} 个文件，下一页 {pages + 1}")
     while url:
         pages += 1
-        if pages > 500:
+        if pages > 800:
             raise RuntimeError(f"{repo} 文件列表分页过多")
         items = None
         page_error: Exception | None = None
-        for attempt in range(1, 6):
+        for attempt in range(1, 9):
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
                 with urllib.request.urlopen(req, timeout=180) as response:
@@ -271,9 +296,13 @@ def list_hf(cfg: Settings, repo: str) -> list[dict]:
                 break
             except Exception as exc:  # noqa: BLE001
                 page_error = exc
-                log(f"{repo} 列表第 {pages} 页失败 {attempt}/5: {exc}")
-                time.sleep(min(30, 3 * attempt))
+                log(f"{repo} 列表第 {pages} 页失败 {attempt}/8")
+                _retry_wait(exc, attempt)
         if page_error is not None or items is None:
+            cache_path.write_text(
+                json.dumps({"files": files, "next": url, "done": False, "pages": pages - 1}, ensure_ascii=False),
+                encoding="utf-8",
+            )
             raise page_error or RuntimeError(f"{repo} 列表第 {pages} 页失败")
         if not isinstance(items, list):
             raise RuntimeError(f"意外的目录响应: {repo}")
@@ -295,6 +324,11 @@ def list_hf(cfg: Settings, repo: str) -> list[dict]:
             )
         if pages == 1 or pages % 5 == 0:
             log(f"{repo} 已读取 {len(files)} 个文件，第 {pages} 页")
+        cache_path.write_text(
+            json.dumps({"files": files, "next": url, "done": False, "pages": pages}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        time.sleep(0.4)
     listed = sum(row["size"] for row in files)
     if siblings and len(files) < len(siblings):
         raise RuntimeError(f"{repo} 列表不完整: {len(files)} / {len(siblings)} 个文件")
@@ -302,6 +336,10 @@ def list_hf(cfg: Settings, repo: str) -> list[dict]:
         raise RuntimeError(
             f"{repo} 体积不完整: {listed / 1e9:.2f} GB / 预期 {expected_bytes / 1e9:.2f} GB"
         )
+    cache_path.write_text(
+        json.dumps({"files": files, "next": None, "done": True, "pages": pages}, ensure_ascii=False),
+        encoding="utf-8",
+    )
     return files
 
 
@@ -697,7 +735,7 @@ def main() -> None:
         nonlocal pending
         while True:
             item = jobs.get()
-            if item is None:
+            if item is None or item[2] is None:
                 jobs.task_done()
                 return
             _, _, job = item
@@ -718,8 +756,8 @@ def main() -> None:
         thread.start()
     lister.join()
     jobs.join()
-    for _ in threads:
-        jobs.put(None)
+    for index, _ in enumerate(threads):
+        jobs.put((10**9, 10**12 + index, None))
     for thread in threads:
         thread.join()
     drive_thread.join()

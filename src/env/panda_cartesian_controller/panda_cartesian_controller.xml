@@ -1,0 +1,10 @@
+<library path="panda_cartesian_controller">
+  <class name="panda_cartesian_controller/CartesianPoseImpedanceController"
+         type="panda_cartesian_controller::CartesianPoseImpedanceController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Joint-torque Cartesian impedance for Panda. Holds the measured pose until
+      ~/equilibrium_pose arrives and never generates a demo trajectory.
+    </description>
+  </class>
+</library>

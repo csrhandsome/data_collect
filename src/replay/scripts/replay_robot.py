@@ -128,10 +128,18 @@ def replay_trajectory(arm, points, *, speed=1.0):
             pose = arm.pose_from_joints(point["joints"])
             point.update(position=pose.xyz_m, quaternion_xyzw=pose.quaternion_xyzw())
     first = points[0]
-    print("正在移动至 episode 起始姿态…", flush=True)
-    if "joints" in first:
-        arm.move_joints(first["joints"], speed_factor=0.1)
-    arm.move_ee(first["position"], first["quaternion_xyzw"], speed_factor=0.1)
+    if arm.get_capabilities().finite_motion:
+        print("正在移动至 episode 起始姿态…", flush=True)
+        if "joints" in first:
+            arm.move_joints(first["joints"], speed_factor=0.1)
+        arm.move_ee(first["position"], first["quaternion_xyzw"], speed_factor=0.1)
+    else:
+        from control.util.pose import quat_angle_xyzw
+
+        state = arm.get_state()
+        if (np.linalg.norm(state.ee_position - first["position"]) > 0.01
+                or quat_angle_xyzw(state.ee_quaternion_xyzw, first["quaternion_xyzw"]) > 0.05):
+            raise ValueError("ROS 回放前请先将机械臂移动到 episode 起始末端位姿（1 cm / 0.05 rad 内）")
     previous_ratio = None
     has_gripper = arm.get_capabilities().gripper
     times = np.asarray([point["time_s"] for point in points])
@@ -210,11 +218,11 @@ def main(argv=None):
         f"Episode {index:06d} · {len(points)} 个采样 · {'模拟' if args.dry_run else '真机'}",
         flush=True,
     )
-    from control._panda.fake import FakeBackend
-    from control.robotic_arm_controller import RoboticArmControler
+    from control.direct.fake import FakeBackend
+    from control.runners import create_runner
 
     try:
-        with RoboticArmControler(
+        with create_runner(
             config=config, backend=FakeBackend() if args.dry_run else None
         ) as arm:
             replay_trajectory(arm, points, speed=args.speed)

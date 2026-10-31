@@ -16,8 +16,9 @@ from control.collection.vr import EEMapper, ResampledVR, VRResampler
 from control.inference.fingers import FingerImages
 from control.inference.policy import PolicyWorker, build_observation, validate_metadata
 from control.recording_writer import FreshCameraPair
-from control.robot_state import EEPose
-from control.robotic_arm_controller import RoboticArmControler
+from control.ros2.bridge import Ros2Publisher
+from control.runners import create_runner
+from control.types import EEPose, EETargetLimitError
 from control.util.pose import quat_angle_xyzw
 from control.util.robot import finish_stream, handle_gripper
 from control.util.timing import FixedRate
@@ -36,7 +37,7 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=Fal
     Workflow failures stop the stream without commanding another finite move.
     A failed return-to-start propagates so the workspace cannot report success.
     """
-    from control._panda.fake import FakeBackend
+    from control.direct.fake import FakeBackend
     from control.inference.client import PolicyClient
 
     cfg = config["inference"]
@@ -47,6 +48,7 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=Fal
     try:
         with ExitStack() as stack:
             _check_stop(stop_event)
+            ros2 = stack.enter_context(Ros2Publisher(config))
             client = policy or PolicyClient(
                 host=cfg["host"],
                 port=int(cfg["port"]),
@@ -60,20 +62,20 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=Fal
             if force and not dry_run:
                 raise ValueError("Force RLT real execution needs a calibrated TCP safety projector")
             arm = stack.enter_context(
-                RoboticArmControler(config=config, backend=FakeBackend() if dry_run else None)
+                create_runner(config=config, backend=FakeBackend() if dry_run else None)
             )
             try:
                 try:
                     _execute_inference(
                         config, arm=arm, client=client, force=force, dry_run=dry_run,
-                        max_steps=max_steps, record=record, stop_event=stop_event, stats=stats,
+                        max_steps=max_steps, record=record, stop_event=stop_event, stats=stats, ros2=ros2,
                     )
                 except KeyboardInterrupt:
                     logger.info("Stopping inference")
             finally:
                 failed = sys.exc_info()[0] is not None
                 finish_stream(arm)
-                if not failed:
+                if not failed and config.get("robot", {}).get("move_to_start", True):
                     logger.info("Returning robot to start pose")
                     result = arm.move_to_start()
                     if result.status != "succeeded":
@@ -85,7 +87,7 @@ def run_inference(config, *, dry_run=False, max_steps=0, policy=None, record=Fal
 
 
 def _execute_inference(
-    config, *, arm, client, force, dry_run, max_steps, record, stop_event, stats,
+    config, *, arm, client, force, dry_run, max_steps, record, stop_event, stats, ros2,
 ):
     cfg = config["inference"]
     recorder = None
@@ -95,7 +97,7 @@ def _execute_inference(
         stack.callback(cameras.close)
         vr = make_vr(config, dry_run) if cfg.get("enable_vr_takeover", False) else None
         if vr is not None:
-            stack.callback(vr.stop)
+            stack.callback(vr.close)
         if cfg.get("move_to_start", False):
             arm.move_to_start()
         fingers = (
@@ -119,8 +121,8 @@ def _execute_inference(
         # Warmup: wait for five inference responses and discard them before execution.
         for i in range(5):
             _check_stop(stop_event)
-            state = arm.get_state()
-            pair = cameras.get_frames()
+            state = arm.read()
+            pair = cameras.read()
             if (
                 pair is None
                 or time.monotonic_ns() - min(pair.front_ns, pair.wrist_ns)
@@ -166,7 +168,8 @@ def _execute_inference(
         requests = 0
         last_axis_ns = 0
         failed = False
-        target_gripper = arm.get_state().gripper.commanded_open_ratio
+        discard_requested = False
+        target_gripper = arm.read().gripper.commanded_open_ratio
         control_source = "BASE"
         policy_step_id = actor_version = None
 
@@ -179,9 +182,9 @@ def _execute_inference(
         try:
             while not stop_event.is_set() and (limit <= 0 or steps < limit):
                 rate.tick()
-                state = arm.get_state()
-                pair = cameras.get_frames()
-                raw_sample = vr.latest if vr else None
+                state = arm.read()
+                pair = cameras.read()
+                raw_sample = vr.read() if vr else None
                 now = time.monotonic_ns()
                 if (
                     pair is None
@@ -194,25 +197,44 @@ def _execute_inference(
                     enabled=False, save=False, discard=False, close=False, open=False,
                     axis=0.0, source_ns=0, source_seq=0,
                 )
-                enabled = sample.enabled
+                if sample.save or sample.discard:
+                    discard_requested = sample.discard
+                    logger.info("Discarding inference episode" if sample.discard else "Saving inference episode")
+                    break
+                if recorder is not None and sample.enter_critical_phase:
+                    recorder.enter_critical_phase(now)
+                # A guarded takeover stays with the operator until a fresh release,
+                # including while VR is stale; do not silently resume the policy.
+                enabled = sample.enabled or mapper.waiting_for_release
                 position, quat = state.ee_position, state.ee_quaternion_xyzw
                 if enabled != takeover:
                     worker.invalidate()
                     plan = None
                     mapper.reset()
                     takeover = enabled
+                    if recorder is not None:
+                        recorder.control_event("takeover_start" if enabled else "takeover_end", now)
                 if enabled:
                     if arm.gripper_busy:
                         mapper.reset(state)
                     position, quat = mapper.map(sample, state, now)
                     if not arm.gripper_busy:
-                        arm.send_ee_target(position, quat)
+                        try:
+                            arm.send_ee_target(position, quat)
+                        except EETargetLimitError as exc:
+                            state = arm.hold()
+                            mapper.suspend_until_release(state)
+                            position, quat = mapper.map(sample, state, now)
+                            logger.warning(
+                                "%s；已保持当前位置，请松开双扳机后重新按住接管。", exc
+                            )
                         control_source = "HUMAN"
                         policy_step_id = actor_version = None
-                        _, last_axis_ns = handle_gripper(
-                            arm, sample, state, now, last_axis_ns, config,
-                            on_command=remember_gripper,
-                        )
+                        if not mapper.waiting_for_release:
+                            _, last_axis_ns = handle_gripper(
+                                arm, sample, state, now, last_axis_ns, config,
+                                on_command=remember_gripper,
+                            )
                 else:
                     result = worker.take()
                     if result is not None:
@@ -272,8 +294,11 @@ def _execute_inference(
                         if worker.submit(observation, state):
                             requests += 1
                             last_request_ns = now
+                target = arm.get_ee_target()
+                ros2.submit(state, vr=raw_sample,
+                            target=(target.ee_position, target.ee_quaternion_xyzw) if target else None,
+                            cameras=pair)
                 if recorder is not None:
-                    target = arm.get_ee_target()
                     recorder.trace(
                         state, sample, target.ee_position, target.ee_quaternion_xyzw,
                         control_source=control_source,
@@ -300,8 +325,11 @@ def _execute_inference(
             finish_stream(arm)
             if recorder is not None:
                 index = recorder.index
-                recorder.finish(arm.get_state(), save=not failed, publish=True, source="inference")
-                if not failed and recorder.dataset.meta.total_episodes > index:
+                recorder.finish(
+                    arm.read(), save=not failed and not discard_requested,
+                    publish=True, source="inference",
+                )
+                if not failed and not discard_requested and recorder.dataset.meta.total_episodes > index:
                     sidecar = (
                         recorder.root / "audio" if recorder.audio_path else recorder.root
                     ) / f"episode_{index:06d}.sync.json"

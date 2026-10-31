@@ -4,7 +4,7 @@
 extends: ../dataset/panda.yaml
 dataset:
   repo_id: openpi/franka_lerobot
-  date: test_100hz
+  date: "20261025"
   instruction: Place the object into the basket
   label: stop
   enable_logging: true
@@ -17,6 +17,7 @@ dataset:
     g: 2  # 短关键帧间隔，减少训练随机取帧的解码量。
     preset: fast
 robot:
+  backend: ros2  # panda / ros2；采集和推理共用此选择。
   start_joint_position:
   - 0.00388
   - -0.45916
@@ -28,12 +29,39 @@ robot:
   hostname: 192.168.1.100
   username: 'BionicDL-Franka'
   password: 'Design@2018'
-  activate_fci: true
-  move_to_start: true
+  # 两种后端默认在启动及保存/舍弃片段后回到 start_joint_position。
+  # move_to_start: false 可关闭自动回位；activate_fci 默认 panda=true、ros2=false。
+  joint_tolerance_rad: 0.02
+  arrival_timeout_s: 5.0
+  max_reset_joint_error_rad: 0.2
+  # ROS 部署脚本会单独登录 Desk 解锁及激活 FCI；采集端不重复操作。
+ros2:
+  namespace: ""
+  # 与 src/env/franka.config.yaml 中的 Panda base frame 一致。O_T_EE 在 panda_link0。
+  arm_id: panda
+  base_frame: panda_link0
+  equilibrium_pose_topic: cartesian_pose_impedance_controller/equilibrium_pose
+  robot_state_topic: franka_robot_state_broadcaster/robot_state
+  gripper_node: panda_gripper
+  state_timeout_s: 0.25
+  connect_timeout_s: 10.0
+  gripper_timeout_s: 10.0
+  # enabled 默认随 backend：ros2=true，panda=false；仅控制额外遥测。
+  node_name: data_collect_telemetry
+  telemetry_namespace: /data_collect
+  publish_hz: 30.0
+  publish_images: true
+  monitoring:
+    enabled: true           # warning-only；不改变控制保护或订阅队列
+    startup_grace_s: 10.0    # 启动宽限时间，避免驱动尚未就绪时误报
+    window_s: 5.0            # 接收频率统计窗口
+    min_rate_ratio: 0.8      # 低于预期频率的该比例时 warning
 control:
   mode: ee
   frequency_hz: 100.0
   ee_filter_coeff: 0.35
+  ee_translational_stiffness: 600.0
+  ee_rotational_stiffness: 30.0
   ee_nullspace_stiffness: 0.5
   max_target_translation_m: 0.15
   max_target_rotation_rad: 2.0
@@ -43,6 +71,7 @@ diagnostics:
   sample_hz: 0.0  # 0 records every control tick; use e.g. 10 to reduce log volume.
   max_pending: 1024  # Full queues drop diagnostic records rather than delay control.
 camera:
+  # backend 默认随 robot.backend；可显式设为 direct，继续使用本地 USB 相机。
   external_camera_serial: '825412070292'
   wrist_camera_serial: '825412070487'
   width: 640
@@ -53,6 +82,10 @@ camera:
   crop_scale: 0.9
   startup_timeout_s: 10
   max_age_s: 0.2
+  ros2:
+    external_image_topic: /camera/external/color/image_raw
+    wrist_image_topic: /camera/wrist/color/image_raw
+    max_pair_skew_s: 0.1
 gripper:
   type: franka  # franka / dh5 / none; exposed through arm.gripper.
   open_width_m: 0.05  # Franka full-open target width in metres.
@@ -66,17 +99,27 @@ gripper:
 tactile:
   enabled: false
 audio:
+  # backend 默认随 robot.backend；可显式设为 direct，继续使用本地声卡。
   enabled: false
   sample_rate: 16000
   channels: 1
   input_device: null
   vad_enabled: true
+  ros2:
+    topic: /microphone/audio  # std_msgs/Int16MultiArray，按 channels 交错的 PCM16。
+    startup_timeout_s: 10.0
+    max_age_s: 0.5
 vr:
+  show_controller_hints: true  # 在左右手柄旁显示当前采集模式的操作说明
   host: 0.0.0.0
   port: 4443
+  # backend 默认随 robot.backend。ros2 时采集只订阅，Teleop 由 scripts/deploy_ros2.sh 发布。
+  ros2:
+    topic: /vr/input
+    startup_timeout_s: 10
   long_press_s: 0.5
   position_alpha: 0.6
-  rotation_alpha: 0.35
+  rotation_alpha: 0.6  # 减少旋转输入的滤波拖尾；越大越跟手，也会保留更多手柄抖动。
   stale_after_s: 0.5
   translation_gain: 1.0
   rotation_gain: 0.4

@@ -1,0 +1,46 @@
+name: data-collect-ros2
+services:
+  ros2:
+    image: data-collect/franka-ros2-jazzy:dev
+    build:
+      context: ../..
+      dockerfile: src/env/Dockerfile
+      network: host
+      args:
+        FRANKA_ROS2_REF: ${FRANKA_ROS2_REF:-c0e1f8206211}
+        LIBFRANKA_REF: ${LIBFRANKA_REF:-55e4ab7654}
+    network_mode: host
+    ipc: host
+    init: true
+    stop_grace_period: 60s
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+      FRANKA_USERNAME: ${FRANKA_USERNAME:-}
+      FRANKA_PASSWORD: ${FRANKA_PASSWORD:-}
+      ROS2_DESK_AUTO_UNLOCK: ${ROS2_DESK_AUTO_UNLOCK:-1}
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      DATA_COLLECT_CONFIG: /workspace/config/train/panda.yaml
+      DATA_COLLECT_INFERENCE_CONFIG: /workspace/config/inference/panda.yaml
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+      ROS2_HEALTH_PATH: /workspace/data/runtime/ros2_health.json
+    volumes:
+      - ../..:/workspace
+      - /dev:/dev
+      - ${ROS2_DATA_DIR:-../../data}:/workspace/data
+    # USB cameras, VR input, serial DH5. No blanket privileged mode.
+    device_cgroup_rules:
+      - 'c 13:* rwm'
+      - 'c 81:* rwm'
+      - 'c 189:* rwm'
+      - 'c 188:* rwm'
+      - 'c 166:* rwm'
+      - 'c 116:* rwm'
+    cap_add: [SYS_NICE]
+    ulimits:
+      rtprio: 99
+      memlock: -1
+    command: [bash]

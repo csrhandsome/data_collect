@@ -9,7 +9,16 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from replay.backend.api import datasets, ee, episodes, health, operations, streams, video
+from replay.backend.api import (
+    datasets,
+    ee,
+    episodes,
+    health,
+    operations,
+    ros2_health,
+    streams,
+    video,
+)
 from replay.backend.config import configured_data_root
 from replay.backend.errors import ReplayError
 from replay.backend.operations import OperationManager
@@ -21,13 +30,18 @@ def create_app(
     operation_manager: OperationManager | None = None,
     frontend_root: Path | None = None,
     shutdown_timeout: float | None = 30,
+    start_collect: bool = False,
 ) -> FastAPI:
     manager = operation_manager or OperationManager()
 
     @asynccontextmanager
     async def lifespan(_application):
-        yield
-        await asyncio.to_thread(manager.close, timeout=shutdown_timeout)
+        try:
+            if start_collect:
+                manager.start("collect", manager.command("collect"))
+            yield
+        finally:
+            await asyncio.to_thread(manager.close, timeout=shutdown_timeout)
 
     application = FastAPI(title="Franka Replay", version="0.1.0", lifespan=lifespan)
     application.state.dataset_registry = DatasetRegistry(configured_data_root(data_root))
@@ -49,6 +63,7 @@ def create_app(
 
     for router in (
         health.router,
+        ros2_health.router,
         datasets.router,
         episodes.router,
         ee.router,

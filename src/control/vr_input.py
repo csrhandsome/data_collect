@@ -10,10 +10,11 @@ while the deadman switch is engaged. This smooths single-frame WebXR jitter
 before downstream IK / joint control consumes the pose stream.
 
 Deadman switch: both triggers (button 0) held for >long_press_s.
-X (left controller button 4): switch to the second prompt.
-Y (left controller button 5): start/stop recording.
+X (left controller button 4): discard the current episode and reset.
+Y (left controller button 5): save the current episode and reset.
+Left thumbstick click (button 3): enter the critical phase for this episode.
 A/B (right controller buttons 4/5): close/open gripper.
-Right thumbstick Y: gripper velocity axis (up=close, down=open).
+Right thumbstick Y: DH5 gripper step axis (up=close, down=open).
 """
 
 import multiprocessing as mp
@@ -25,9 +26,10 @@ from teleop_xr import Teleop
 from teleop_xr.config import TeleopSettings
 from teleop_xr.messages import XRState
 
+from control.base_node import BaseNode
 from control.util.pose import nlerp_quat_xyzw, normalize_quat_xyzw
 
-# Shared-memory layout (25 doubles, copied under one short lock):
+# Shared-memory layout (26 doubles, copied under one short lock):
 #  [0]  arm_enabled   (0.0 / 1.0)
 #  [1]  pos_x
 #  [2]  pos_y
@@ -48,7 +50,8 @@ from control.util.pose import nlerp_quat_xyzw, normalize_quat_xyzw
 #  [17] pose_seq
 #  [18:21] raw position before input filtering
 #  [21:25] raw quaternion xyzw before input filtering
-_SHM_SIZE = 25
+#  [25] critical_pressed (left thumbstick click, 0.0 / 1.0)
+_SHM_SIZE = 26
 
 
 def _normalize_quaternion(quaternion_xyzw):
@@ -95,6 +98,7 @@ class VRInput:
     pose_seq: int = 0
     raw_position: tuple[float, float, float] | None = None
     raw_quaternion_xyzw: tuple[float, float, float, float] | None = None
+    critical_pressed: bool = False
 
 
 class VRInputReader:
@@ -110,6 +114,7 @@ class VRInputReader:
         long_press_s: float = 0.5,
         position_alpha: float = 1.0,
         rotation_alpha: float = 1.0,
+        controller_hints: dict | None = None,
     ) -> None:
         if not 0.0 < position_alpha <= 1.0:
             raise ValueError("position_alpha must be in (0, 1]")
@@ -128,7 +133,10 @@ class VRInputReader:
         self._filtered_pos: tuple[float, float, float] | None = None
         self._filtered_quat: tuple[float, float, float, float] | None = None
 
-        settings = TeleopSettings(host=host, port=port)
+        settings = TeleopSettings(
+            host=host, port=port, controller_hints=controller_hints or {},
+            motion_activation_hold_s=self._long_press_s,
+        )
         self._teleop = Teleop(settings=settings)
         self._teleop.subscribe(self._on_xr_update)
 
@@ -263,14 +271,17 @@ class VRInputReader:
         # --- Buttons ---
         x_pressed = False
         y_pressed = False
+        critical_pressed = False
         gripper_close = False
         gripper_open = False
         right_stick_x = 0.0
         right_stick_y = 0.0
 
-        # Left controller: X (btn 4) -> second prompt, Y (btn 5) -> start/stop
+        # Left controller: X (btn 4) -> discard/reset, Y (btn 5) -> save/reset
         if left_dev and left_dev.gamepad:
             btns = left_dev.gamepad.buttons
+            if len(btns) > 3 and btns[3].pressed:
+                critical_pressed = True
             if len(btns) > 4 and btns[4].pressed:
                 x_pressed = True
             if len(btns) > 5 and btns[5].pressed:
@@ -326,10 +337,11 @@ class VRInputReader:
             pose_seq=self._latest.pose_seq + 1,
             raw_position=(pos_x, pos_y, pos_z),
             raw_quaternion_xyzw=(quat_x, quat_y, quat_z, quat_w),
+            critical_pressed=critical_pressed,
         )
 
 
-class VRInputProcess:
+class VRInputProcess(BaseNode[VRInput]):
     """Out-of-process VR reader.  Immune to main-process GIL contention.
 
     Usage::
@@ -348,6 +360,7 @@ class VRInputProcess:
         long_press_s: float = 0.5,
         position_alpha: float = 1.0,
         rotation_alpha: float = 1.0,
+        controller_hints: dict | None = None,
     ) -> None:
         self._shm: mp.Array = mp.Array("d", _SHM_SIZE, lock=True)
         self._shm[7] = 1.0  # quat_w default
@@ -361,12 +374,22 @@ class VRInputProcess:
                 long_press_s,
                 position_alpha,
                 rotation_alpha,
+                controller_hints,
             ),
             daemon=True,
         )
 
     def start(self) -> None:
-        self._proc.start()
+        if self._proc.pid is None:
+            self._proc.start()
+        elif not self._proc.is_alive():
+            raise RuntimeError("VR worker has stopped; create a new VRInputProcess to restart")
+
+    def read(self) -> VRInput:
+        return self.latest
+
+    def close(self) -> None:
+        self.stop()
 
     def stop(self) -> None:
         if self._proc.is_alive():
@@ -381,6 +404,7 @@ class VRInputProcess:
         long_press_s: float,
         position_alpha: float,
         rotation_alpha: float,
+        controller_hints: dict | None,
     ) -> None:
         """Child-process entry point.  Has its own GIL — teleop_xr runs free."""
         reader = VRInputReader(
@@ -389,6 +413,7 @@ class VRInputProcess:
             long_press_s=long_press_s,
             position_alpha=position_alpha,
             rotation_alpha=rotation_alpha,
+            controller_hints=controller_hints,
         )
         t = threading.Thread(target=reader.run, daemon=True)
         t.start()
@@ -416,6 +441,7 @@ class VRInputProcess:
                     v.pose_seq,
                     *(v.raw_position or (v.pos_x, v.pos_y, v.pos_z)),
                     *(v.raw_quaternion_xyzw or (v.quat_x, v.quat_y, v.quat_z, v.quat_w)),
+                    float(v.critical_pressed),
                 )
             time.sleep(0.001)  # 1 kHz — <1 ms latency, negligible CPU
 
@@ -445,6 +471,7 @@ class VRInputProcess:
             raw_quaternion_xyzw=tuple(s[21:25]) if s[17] > 0 else None,
             gripper_velocity_axis=s[14],
             timestamp=s[15],
+            critical_pressed=s[25] > 0.5,
         )
 
 
