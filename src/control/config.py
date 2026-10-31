@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-import copy
 import math
 import os
 from pathlib import Path
 
-import yaml
-
 from control.collection.schema import features
+from control.common.impedance import impedance_parameters
 from control.util.timing import positive_rate
+from control.yaml_config import DEFAULT_CONFIG, load_yaml_config
 
-DEFAULT_CONFIG = Path(
-    os.environ.get(
-        "DATA_COLLECT_CONFIG", Path(__file__).resolve().parents[2] / "config/train/panda.yaml"
-    )
-)
 INFERENCE_CONFIG = Path(os.environ.get(
     "DATA_COLLECT_INFERENCE_CONFIG",
     Path(__file__).resolve().parents[2] / "config/inference/panda.yaml",
@@ -24,17 +18,7 @@ INFERENCE_CONFIG = Path(os.environ.get(
 
 
 def load_config(path=DEFAULT_CONFIG, _seen=None):
-    path = Path(path).resolve()
-    seen = set() if _seen is None else set(_seen)
-    if path in seen:
-        raise ValueError("Cyclic YAML inheritance")
-    seen.add(path)
-    payload = yaml.safe_load(path.read_text())
-    if not isinstance(payload, dict):
-        raise ValueError("Configuration must be a YAML mapping")
-    parent = payload.pop("extends", None)
-    result = load_config(path.parent / parent, seen) if parent else {}
-    merge(result, payload)
+    result = load_yaml_config(path, _seen)
     # Validate the merged child: inherited field choices may depend on its
     # tactile/action-space settings rather than the defaults of a partial parent.
     if _seen is None:
@@ -51,14 +35,6 @@ def load_config(path=DEFAULT_CONFIG, _seen=None):
             )
         validate(result)
     return result
-
-
-def merge(target, source):
-    for key, value in source.items():
-        if isinstance(value, dict) and isinstance(target.get(key), dict):
-            merge(target[key], value)
-        else:
-            target[key] = copy.deepcopy(value)
 
 
 def validate(config):
@@ -106,6 +82,7 @@ def validate(config):
             if not isinstance(cfg.get(key), str) or not cfg[key].strip():
                 raise ValueError(f"ros2.{key} must be a nonempty string")
     control = config.get("control", {})
+    impedance_parameters(control)
     monitoring = config.get("ros2", {}).get("monitoring", {})
     if not isinstance(monitoring, dict) or not isinstance(monitoring.get("enabled", False), bool):
         raise ValueError("ros2.monitoring must be a mapping with a boolean enabled")

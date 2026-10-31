@@ -8,6 +8,7 @@ import time
 import numpy as np
 
 from control.base_runner import BaseRunner
+from control.common.impedance import impedance_parameters
 from control.direct.grippers import create_gripper_backend
 from control.types import RobotState
 from control.util.pose import matrix_to_quat_xyzw
@@ -76,10 +77,13 @@ class PandaBackend:
     def start(self, state):
         from panda_py import controllers
 
-        tuning = self.config.get("control", {})
+        tuning = impedance_parameters(self.config.get("control", {}))
         controller = controllers.CartesianImpedance(
-            filter_coeff=float(tuning.get("ee_filter_coeff", 0.35)),
-            nullspace_stiffness=float(tuning.get("ee_nullspace_stiffness", 0.5)),
+            impedance=np.diag(
+                [tuning["translational_stiffness"]] * 3 + [tuning["rotational_stiffness"]] * 3
+            ),
+            filter_coeff=tuning["filter_coefficient"],
+            nullspace_stiffness=tuning["nullspace_stiffness"],
         )
         controller.set_control(state.ee_position, state.ee_quaternion_xyzw, state.joint_positions)
         self.panda.start_controller(controller)

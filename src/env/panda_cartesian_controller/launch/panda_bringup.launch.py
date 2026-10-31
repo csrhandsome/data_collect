@@ -23,6 +23,9 @@ def load_robot_config(path):
 
 
 def spawn(context):
+    from control.ros2.controller_config import write_controller_config
+    from control.yaml_config import load_yaml_config
+
     config_path = LaunchConfiguration("robot_config_file").perform(context)
     robot = load_robot_config(config_path)
     if robot.get("robot_type") != "panda":
@@ -32,7 +35,7 @@ def spawn(context):
     if robot.get("use_fake_hardware", "false").lower() == "true":
         raise RuntimeError("This Panda launch does not start fake hardware")
     share = Path(get_package_share_directory("panda_cartesian_controller"))
-    controllers = str(share / "config" / "controllers.yaml")
+    controllers = write_controller_config(share / "config" / "controllers.yaml", load_yaml_config())
     xacro_file = str(
         Path(get_package_share_directory("franka_description")) / "robots" / "panda_arm.urdf.xacro"
     )

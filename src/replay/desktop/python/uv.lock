@@ -1490,7 +1490,7 @@ requires-dist = [
     { name = "silero-vad", specifier = "==6.2.1" },
     { name = "sounddevice", specifier = "==0.5.5" },
     { name = "spatialmath-python", specifier = "==1.1.15" },
-    { name = "teleop-xr", git = "https://github.com/csrhandsome/teleop_xr.git?rev=3c572efddf98719c4a28de292d248e41b23a43a7" },
+    { name = "teleop-xr", git = "https://github.com/csrhandsome/teleop_xr.git?rev=7afc820eb09e74ae1c5650d6f1b3b8d559a3db3a" },
     { name = "torch", specifier = "==2.10.0+cpu", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchaudio", specifier = "==2.10.0+cpu", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchvision", specifier = "==0.25.0+cpu", index = "https://download.pytorch.org/whl/cpu" },
@@ -2126,8 +2126,8 @@ wheels = [
 
 [[package]]
 name = "teleop-xr"
-version = "1.3.5+csr.2"
-source = { git = "https://github.com/csrhandsome/teleop_xr.git?rev=3c572efddf98719c4a28de292d248e41b23a43a7#3c572efddf98719c4a28de292d248e41b23a43a7" }
+version = "1.3.5+csr.3"
+source = { git = "https://github.com/csrhandsome/teleop_xr.git?rev=7afc820eb09e74ae1c5650d6f1b3b8d559a3db3a#7afc820eb09e74ae1c5650d6f1b3b8d559a3db3a" }
 dependencies = [
     { name = "aiortc" },
     { name = "av" },

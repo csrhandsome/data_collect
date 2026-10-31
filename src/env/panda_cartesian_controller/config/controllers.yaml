@@ -14,9 +14,10 @@ controller_manager:
 cartesian_pose_impedance_controller:
   ros__parameters:
     arm_id: panda
-    translational_stiffness: 150.0
-    rotational_stiffness: 10.0
-    nullspace_stiffness: 20.0
+    filter_coefficient: 0.35
+    translational_stiffness: 600.0
+    rotational_stiffness: 30.0
+    nullspace_stiffness: 0.5
 
 franka_robot_state_broadcaster:
   ros__parameters:

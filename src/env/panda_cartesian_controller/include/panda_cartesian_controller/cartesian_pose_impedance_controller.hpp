@@ -64,10 +64,10 @@ class CartesianPoseImpedanceController : public controller_interface::Controller
   std::string arm_id_{"panda"};
   Eigen::Matrix<double, num_joints, 1> q_{Eigen::Matrix<double, num_joints, 1>::Zero()};
   Eigen::Matrix<double, num_joints, 1> dq_{Eigen::Matrix<double, num_joints, 1>::Zero()};
-  double filter_params_{0.005};
+  double filter_params_{0.35};
   Eigen::Matrix<double, num_cartesian_dof, num_cartesian_dof> cartesian_stiffness_;
   Eigen::Matrix<double, num_cartesian_dof, num_cartesian_dof> cartesian_damping_;
-  double nullspace_stiffness_{20.0};
+  double nullspace_stiffness_{0.5};
   Eigen::Vector3d position_d_;
   Eigen::Quaterniond orientation_d_;
   Eigen::Matrix<double, num_joints, 1> q_d_nullspace_;

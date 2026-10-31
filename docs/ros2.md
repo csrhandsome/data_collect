@@ -23,6 +23,20 @@ Desk 解锁/FCI、机械臂驱动、相机、VR Server 和诊断，之后保持�
 Ctrl+C 结束 runner 时会保存采集，单独启动的 `deploy_ros2.sh` 继续运行。
 `bash scripts/deploy_runner.sh --max-steps 500` 可限制 runner 的循环步数。
 
+VR 目标超过与实测末端的距离或角度保护时，runner 会拒绝该目标并发送当前实测位姿作为
+hold，保持采集进程运行。日志会打印目标 XYZ、实测 XYZ、偏差和阈值。
+松开双扳机后重新按住即可重新建立 VR 锚点；等待期间的手柄位移不会补发。
+VR 数据过期不算松开扳机，恢复连接后仍需收到有效的释放状态。
+通信故障、反馈过期和其他后端错误仍会终止 runner。
+
+两种后端共用 `control.ee_filter_coeff`、`ee_translational_stiffness`、
+`ee_rotational_stiffness`、`ee_nullspace_stiffness`，默认分别为 0.35、600、30、0.5。
+ROS launch 从 `DATA_COLLECT_CONFIG` 读取这些值，生成不含设备凭据的临时 controller YAML；
+这些参数在驱动启动时应用。控制器以 1 kHz 先过滤目标再计算力矩，目标订阅队列深度为 1。
+旧版固定 0.005 滤波、150/10 任务刚度、20 零空间刚度，容易让移动目标与实测末端拉开距离。
+升级 C++ 控制器需要更新镜像并重新进入容器，再由用户启动 `deploy_ros2.sh`；
+仅重启 runner 不会替换已加载的 C++ 插件，preflight 会拒绝启动旧版插件。
+
 在仓库根目录下运行，`config/train/panda.yaml` 设置 `robot.backend: ros2`。
 机器人 IP 以 `src/env/franka.config.yaml` 的 `robot_ip` 为准，Desk 与 ROS 连接同一地址。
 构建后，第一个终端进入容器并启动：

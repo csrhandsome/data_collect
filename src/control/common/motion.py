@@ -5,7 +5,7 @@ import time
 import numpy as np
 
 from control.common.lifecycle import require_connected
-from control.types import CommandReceipt, EEStreamTarget, MotionResult
+from control.types import CommandReceipt, EEStreamTarget, EETargetLimitError, MotionResult
 from control.util.pose import as_vector, normalize_quat_xyzw, quat_angle_xyzw
 
 
@@ -26,14 +26,18 @@ def send_ee(arm, position, quaternion):
             raise RuntimeError("Gripper command owns the stream")
         limits = arm._config.get("control", {})
         state = arm.get_state()
-        if np.linalg.norm(position - state.ee_position) > float(
-            limits.get("max_target_translation_m", 0.15)
-        ):
-            raise ValueError("EE target exceeds measured translation guard")
-        if quat_angle_xyzw(quaternion, state.ee_quaternion_xyzw) > float(
-            limits.get("max_target_rotation_rad", 0.5)
-        ):
-            raise ValueError("EE target exceeds measured rotation guard")
+        translation_error = np.linalg.norm(position - state.ee_position)
+        translation_limit = float(limits.get("max_target_translation_m", 0.15))
+        rotation_error = quat_angle_xyzw(quaternion, state.ee_quaternion_xyzw)
+        rotation_limit = float(limits.get("max_target_rotation_rad", 0.5))
+        if translation_error > translation_limit:
+            raise EETargetLimitError(
+                "translation", translation_error, translation_limit, position, state.ee_position
+            )
+        if rotation_error > rotation_limit:
+            raise EETargetLimitError(
+                "rotation", rotation_error, rotation_limit, position, state.ee_position
+            )
         arm._backend.target(position, quaternion, arm._nullspace)
         remember_ee_target(arm, position, quaternion, "command")
         return CommandReceipt("ee", arm._ee_target.submitted_monotonic_ns)

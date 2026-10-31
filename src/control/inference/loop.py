@@ -18,7 +18,7 @@ from control.inference.policy import PolicyWorker, build_observation, validate_m
 from control.recording_writer import FreshCameraPair
 from control.ros2.bridge import Ros2Publisher
 from control.runners import create_runner
-from control.types import EEPose
+from control.types import EEPose, EETargetLimitError
 from control.util.pose import quat_angle_xyzw
 from control.util.robot import finish_stream, handle_gripper
 from control.util.timing import FixedRate
@@ -203,7 +203,9 @@ def _execute_inference(
                     break
                 if recorder is not None and sample.enter_critical_phase:
                     recorder.enter_critical_phase(now)
-                enabled = sample.enabled
+                # A guarded takeover stays with the operator until a fresh release,
+                # including while VR is stale; do not silently resume the policy.
+                enabled = sample.enabled or mapper.waiting_for_release
                 position, quat = state.ee_position, state.ee_quaternion_xyzw
                 if enabled != takeover:
                     worker.invalidate()
@@ -217,13 +219,22 @@ def _execute_inference(
                         mapper.reset(state)
                     position, quat = mapper.map(sample, state, now)
                     if not arm.gripper_busy:
-                        arm.send_ee_target(position, quat)
+                        try:
+                            arm.send_ee_target(position, quat)
+                        except EETargetLimitError as exc:
+                            state = arm.hold()
+                            mapper.suspend_until_release(state)
+                            position, quat = mapper.map(sample, state, now)
+                            logger.warning(
+                                "%s；已保持当前位置，请松开双扳机后重新按住接管。", exc
+                            )
                         control_source = "HUMAN"
                         policy_step_id = actor_version = None
-                        _, last_axis_ns = handle_gripper(
-                            arm, sample, state, now, last_axis_ns, config,
-                            on_command=remember_gripper,
-                        )
+                        if not mapper.waiting_for_release:
+                            _, last_axis_ns = handle_gripper(
+                                arm, sample, state, now, last_axis_ns, config,
+                                on_command=remember_gripper,
+                            )
                 else:
                     result = worker.take()
                     if result is not None:

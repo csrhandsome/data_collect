@@ -133,7 +133,10 @@ class VRInputReader:
         self._filtered_pos: tuple[float, float, float] | None = None
         self._filtered_quat: tuple[float, float, float, float] | None = None
 
-        settings = TeleopSettings(host=host, port=port, controller_hints=controller_hints or {})
+        settings = TeleopSettings(
+            host=host, port=port, controller_hints=controller_hints or {},
+            motion_activation_hold_s=self._long_press_s,
+        )
         self._teleop = Teleop(settings=settings)
         self._teleop.subscribe(self._on_xr_update)
 

@@ -27,6 +27,11 @@ def check_installed(library):
         raise RuntimeError(
             f"Panda Cartesian controller library is not installed: {path}. Rebuild the image."
         )
+    if b"filter_coefficient" not in path.read_bytes():
+        raise RuntimeError(
+            "Installed controller predates configurable target filtering. "
+            "Rebuild the image and recreate this container before starting ROS."
+        )
 
 
 if __name__ == "__main__":

@@ -19,6 +19,26 @@ from control.util.pose import (
 )
 
 
+class EETargetLimitError(ValueError):
+    """A valid stream target was rejected by the measured-pose guard."""
+
+    def __init__(self, quantity, error, limit, target_position, measured_position):
+        self.details = {
+            "quantity": quantity,
+            "error": float(error),
+            "limit": float(limit),
+            "target_position": np.asarray(target_position).tolist(),
+            "measured_position": np.asarray(measured_position).tolist(),
+        }
+        unit = "m" if quantity == "translation" else "rad"
+        super().__init__(
+            f"EE target exceeds measured {quantity} guard: "
+            f"error={error:.6f} {unit}, limit={limit:.6f} {unit}, "
+            f"target_xyz={self.details['target_position']}, "
+            f"measured_xyz={self.details['measured_position']}"
+        )
+
+
 def _with_gripper(arm_values: np.ndarray, gripper_open: float) -> np.ndarray:
     if not np.isfinite(gripper_open) or not 0.0 <= gripper_open <= 1.0:
         raise ValueError("Logical gripper state must be in 0..1")

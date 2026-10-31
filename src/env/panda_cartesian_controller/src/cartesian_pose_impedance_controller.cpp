@@ -22,9 +22,10 @@ CartesianPoseImpedanceController::CartesianGains CartesianPoseImpedanceControlle
 CartesianPoseImpedanceController::CallbackReturn CartesianPoseImpedanceController::on_init() {
   try {
     auto_declare<std::string>("arm_id", "panda");
-    auto_declare<double>("nullspace_stiffness", 20.0);
-    auto_declare<double>("translational_stiffness", 150.0);
-    auto_declare<double>("rotational_stiffness", 10.0);
+    auto_declare<double>("filter_coefficient", 0.35);
+    auto_declare<double>("nullspace_stiffness", 0.5);
+    auto_declare<double>("translational_stiffness", 600.0);
+    auto_declare<double>("rotational_stiffness", 30.0);
   } catch (const std::exception& exc) {
     fprintf(stderr, "Exception thrown during init stage with message: %s \n", exc.what());
     return CallbackReturn::ERROR;
@@ -70,6 +71,13 @@ CartesianPoseImpedanceController::CallbackReturn CartesianPoseImpedanceControlle
   const double t_k = get_node()->get_parameter("translational_stiffness").as_double();
   const double r_k = get_node()->get_parameter("rotational_stiffness").as_double();
   const double n_k = get_node()->get_parameter("nullspace_stiffness").as_double();
+  filter_params_ = get_node()->get_parameter("filter_coefficient").as_double();
+  if (!std::isfinite(filter_params_) || filter_params_ <= 0.0 || filter_params_ > 1.0 ||
+      !std::isfinite(t_k) || t_k < 0.0 || !std::isfinite(r_k) || r_k < 0.0 ||
+      !std::isfinite(n_k) || n_k < 0.0) {
+    RCLCPP_ERROR(get_node()->get_logger(), "Invalid Cartesian impedance tuning parameters");
+    return CallbackReturn::ERROR;
+  }
   CartesianGains gains = buildGains({t_k, t_k, t_k, r_k, r_k, r_k});
   cartesian_stiffness_ = gains.stiffness;
   cartesian_damping_ = gains.damping;
@@ -79,7 +87,7 @@ CartesianPoseImpedanceController::CallbackReturn CartesianPoseImpedanceControlle
   target_pose_buffer_.initRT(TargetPose{});
 
   sub_equilibrium_pose_ = get_node()->create_subscription<geometry_msgs::msg::PoseStamped>(
-      "~/equilibrium_pose", rclcpp::SystemDefaultsQoS(),
+      "~/equilibrium_pose", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
       std::bind(&CartesianPoseImpedanceController::equilibriumPoseCallback, this,
                 std::placeholders::_1));
   param_cb_handle_ = get_node()->add_on_set_parameters_callback(std::bind(
@@ -152,43 +160,9 @@ controller_interface::return_type CartesianPoseImpedanceController::update(
   transform.rotate(orientation.toRotationMatrix());
 
   const TargetPose target = *target_pose_buffer_.readFromRT();
-  RCLCPP_INFO_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 500,
-                       "ee z measured %.4f desired %.4f target %.4f", position.z(), position_d_.z(),
-                       target.position.z());
   const CartesianGains target_gains = *cartesian_gains_buffer_.readFromRT();
   const double target_nullspace_stiffness = *nullspace_stiffness_buffer_.readFromRT();
-  const auto error = computeError(position, orientation, transform);
-
-  Eigen::MatrixXd jacobian_transpose_pinv;
-  constexpr double lambda = 0.2;
-  Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian.transpose(),
-                                        Eigen::ComputeFullU | Eigen::ComputeFullV);
-  Eigen::JacobiSVD<Eigen::MatrixXd>::SingularValuesType sing_vals = svd.singularValues();
-  Eigen::MatrixXd singular = jacobian.transpose();
-  singular.setZero();
-  for (int i = 0; i < sing_vals.size(); i++) {
-    singular(i, i) = sing_vals(i) / (sing_vals(i) * sing_vals(i) + lambda * lambda);
-  }
-  jacobian_transpose_pinv = svd.matrixV() * singular.transpose() * svd.matrixU().transpose();
-
-  Eigen::Matrix<double, num_joints, 1> tau_task, tau_nullspace, tau_d;
-  tau_task << jacobian.transpose() *
-                  (-cartesian_stiffness_ * error - cartesian_damping_ * (jacobian * dq_));
-  tau_nullspace << (Eigen::Matrix<double, num_joints, num_joints>::Identity() -
-                    jacobian.transpose() * jacobian_transpose_pinv) *
-                       (nullspace_stiffness_ * (q_d_nullspace_ - q_) -
-                        2.0 * std::sqrt(nullspace_stiffness_) * dq_);
-  tau_d << tau_task + tau_nullspace + coriolis;
-  RCLCPP_INFO_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 500,
-                       "error z %.4f stiffness zz %.1f tau %.3f", error(2), cartesian_stiffness_(2, 2),
-                       tau_d.norm());
-
-  for (int i = 0; i < num_joints; i++) {
-    if (!command_interfaces_[i].set_value(tau_d[i])) {
-      return controller_interface::return_type::ERROR;
-    }
-  }
-
+  // Match panda-py: consume the filtered target in this torque computation.
   cartesian_stiffness_ =
       filter_params_ * target_gains.stiffness + (1.0 - filter_params_) * cartesian_stiffness_;
   cartesian_damping_ =
@@ -201,6 +175,43 @@ controller_interface::return_type CartesianPoseImpedanceController::update(
   }
   orientation_d_ = orientation_d_.slerp(filter_params_, target.orientation);
   orientation_d_.normalize();
+  RCLCPP_DEBUG_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 500,
+                       "ee z measured %.4f desired %.4f target %.4f", position.z(), position_d_.z(),
+                       target.position.z());
+  const auto error = computeError(position, orientation, transform);
+
+  constexpr double lambda = 0.2;
+  // Fixed-size workspaces avoid allocating these matrices on every 1 kHz tick.
+  using JacobianTranspose = Eigen::Matrix<double, num_joints, num_cartesian_dof>;
+  using JacobianInverse = Eigen::Matrix<double, num_cartesian_dof, num_joints>;
+  Eigen::JacobiSVD<JacobianTranspose> svd(jacobian.transpose(),
+                                       Eigen::ComputeFullU | Eigen::ComputeFullV);
+  const auto sing_vals = svd.singularValues();
+  JacobianInverse singular = JacobianInverse::Zero();
+  for (int i = 0; i < sing_vals.size(); i++) {
+    singular(i, i) = sing_vals(i) / (sing_vals(i) * sing_vals(i) + lambda * lambda);
+  }
+  const JacobianInverse jacobian_transpose_pinv =
+      svd.matrixV() * singular * svd.matrixU().transpose();
+
+  Eigen::Matrix<double, num_joints, 1> tau_task, tau_nullspace, tau_d;
+  tau_task << jacobian.transpose() *
+                  (-cartesian_stiffness_ * error - cartesian_damping_ * (jacobian * dq_));
+  tau_nullspace << (Eigen::Matrix<double, num_joints, num_joints>::Identity() -
+                    jacobian.transpose() * jacobian_transpose_pinv) *
+                       (nullspace_stiffness_ * (q_d_nullspace_ - q_) -
+                        2.0 * std::sqrt(nullspace_stiffness_) * dq_);
+  tau_d << tau_task + tau_nullspace + coriolis;
+  RCLCPP_DEBUG_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 500,
+                       "error z %.4f stiffness zz %.1f tau %.3f", error(2), cartesian_stiffness_(2, 2),
+                       tau_d.norm());
+
+  for (int i = 0; i < num_joints; i++) {
+    if (!command_interfaces_[i].set_value(tau_d[i])) {
+      return controller_interface::return_type::ERROR;
+    }
+  }
+
   return controller_interface::return_type::OK;
 }
 
@@ -225,7 +236,8 @@ void CartesianPoseImpedanceController::equilibriumPoseCallback(
   target.position << msg->pose.position.x, msg->pose.position.y, msg->pose.position.z;
   target.orientation = Eigen::Quaterniond(msg->pose.orientation.w, msg->pose.orientation.x,
                                           msg->pose.orientation.y, msg->pose.orientation.z);
-  if (target.orientation.coeffs().norm() < 1e-6) {
+  if (!target.position.allFinite() || !target.orientation.coeffs().allFinite() ||
+      target.orientation.coeffs().norm() < 1e-6) {
     RCLCPP_WARN(get_node()->get_logger(), "Discarding equilibrium pose with degenerate quaternion.");
     return;
   }

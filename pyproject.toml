@@ -35,7 +35,7 @@ dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.11,<1"]
 packaging = ["nuitka==4.2.2", "ordered-set==4.1.0", "zstandard>=0.25,<1"]
 
 [tool.uv.sources]
-teleop-xr = { git = "https://github.com/csrhandsome/teleop_xr.git", rev = "3c572efddf98719c4a28de292d248e41b23a43a7" }
+teleop-xr = { git = "https://github.com/csrhandsome/teleop_xr.git", rev = "7afc820eb09e74ae1c5650d6f1b3b8d559a3db3a" }
 
 [tool.pytest.ini_options]
 testpaths = ["src/tests", "src/replay/tests"]

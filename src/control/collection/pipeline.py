@@ -16,6 +16,7 @@ from control.control_diagnostics import ControlDiagnostics
 from control.reactive_desk_client import ScenePublisher
 from control.ros2.bridge import Ros2Publisher
 from control.runners import create_runner
+from control.types import EETargetLimitError
 from control.util.pose import quat_angle_xyzw
 from control.util.robot import finish_stream, handle_gripper, reset_robot
 from control.util.timing import FixedRate
@@ -85,17 +86,29 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 scene.publish(state.ee_position, now, config["dataset"]["instruction"])
                 diagnostics.mark("scene_publish")
                 # Idle pose corrections are not operator actions that start an episode.
-                changed = sample.enabled and (
+                changed = sample.enabled and not mapper.waiting_for_release and (
                     np.linalg.norm(position - state.ee_position) > 1e-6
                     or quat_angle_xyzw(quaternion, state.ee_quaternion_xyzw) > 1e-6
                 )
                 if not arm.gripper_busy:
-                    arm.send_ee_target(position, quaternion)
+                    try:
+                        arm.send_ee_target(position, quaternion)
+                    except EETargetLimitError as exc:
+                        # Keep the runner alive without accepting or clipping the rejected target.
+                        state = arm.hold()
+                        mapper.suspend_until_release(state)
+                        position, quaternion = mapper.map(sample, state, now)
+                        changed = False
+                        diagnostics.event("vr_target_guard", **exc.details)
+                        logger.warning(
+                            "%s；已保持当前位置，请松开双扳机后重新按住接管。", exc
+                        )
                     command_sent = True
-                    gripper_changed, last_axis_ns = handle_gripper(
-                        arm, sample, state, now, last_axis_ns, config
-                    )
-                    changed = changed or gripper_changed
+                    if not mapper.waiting_for_release:
+                        gripper_changed, last_axis_ns = handle_gripper(
+                            arm, sample, state, now, last_axis_ns, config
+                        )
+                        changed = changed or gripper_changed
                 diagnostics.mark("command_and_gripper")
                 pair = cameras.read() if recorder is not None or ros2.enabled else None
                 ros2.submit(state, vr=raw_sample,

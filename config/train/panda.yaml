@@ -57,6 +57,8 @@ control:
   mode: ee
   frequency_hz: 100.0
   ee_filter_coeff: 0.35
+  ee_translational_stiffness: 600.0
+  ee_rotational_stiffness: 30.0
   ee_nullspace_stiffness: 0.5
   max_target_translation_m: 0.15
   max_target_rotation_rad: 2.0

@@ -7,5 +7,6 @@ if ! command -v ros2 >/dev/null 2>&1; then
   exit 1
 fi
 python src/env/check_controller.py
+/usr/bin/python3 src/env/check_launch.py --robot-config-file "$root/src/env/franka.config.yaml"
 exec python src/env/desk_bringup.py \
   robot_config_file:="$root/src/env/franka.config.yaml" "$@"
