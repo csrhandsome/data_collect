@@ -50,10 +50,12 @@ elif sys.argv[1] == 'web':
         time.sleep(0.02)
 elif sys.argv[1] == '-':
     sys.stdin.read()
+    (root / 'preflight-args').write_text(' '.join(sys.argv[2:]))
     event('preflight')
     if os.environ.get('MOCK_PREFLIGHT_FAIL'):
         raise SystemExit(9)
 elif sys.argv[1:3] in (['-m', 'vr_collect'], ['-m', 'replay.backend.cli']):
+    (root / 'collector-args').write_text(' '.join(sys.argv[1:]))
     def stop(*_):
         event('collector_saved')
         time.sleep(0.1)
@@ -77,9 +79,9 @@ elif sys.argv[1:3] in (['-m', 'vr_collect'], ['-m', 'replay.backend.cli']):
         f'#!/bin/bash\nexec "{sys.executable}" "{program}" driver\n'
     )
 
-    def start(with_api=False, **extra):
+    def start(with_api=False, ur=False, **extra):
         return subprocess.Popen(
-            ["/bin/bash", str(script), "--inside", *(["--with-api"] if with_api else []), "--max-steps", "5"],
+            ["/bin/bash", str(script), "--inside", *(["--with-api"] if with_api else []), "--max-steps", "5", *(["--ur"] if ur else [])],
             env={**os.environ, "PATH": f'{tmp_path / "bin"}:/usr/bin:/bin',
                  "MOCK_ROOT": str(tmp_path), **extra},
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -127,6 +129,20 @@ def test_config_failure_never_starts_collection(launch):
     output, _ = process.communicate(timeout=5)
     assert process.returncode == 9, output
     assert "collector_start" not in events.read_text()
+
+
+@pytest.mark.parametrize("with_api", [False, True])
+def test_ur_runner_selects_config_and_does_not_start_driver(launch, with_api):
+    start, events = launch
+    process = start(with_api=with_api, ur=True, MOCK_COLLECT_EXIT="7")
+    output, _ = process.communicate(timeout=5)
+    assert process.returncode == 7, output
+    assert (events.parent / 'preflight-args').read_text() == 'config/train/ur.yaml ur_ros2'
+    args = (events.parent / 'collector-args').read_text()
+    assert '--config config/train/ur.yaml' in args
+    assert 'driver_stop' not in events.read_text()
+    assert events.read_text().count('driver_start') == 1
+    assert start.driver.poll() is None
 
 
 @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])

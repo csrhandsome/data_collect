@@ -37,6 +37,30 @@ Ctrl+C 只结束 runner 并保存，独立启动的 ROS2 驱动继续运行。�
 Electron + Nuitka Linux 桌面版的构建、运行和产物测试见
 [replay/desktop/README.md](src/replay/desktop/README.md)。
 
+UR5 / UR5e 的实验接入使用同一个 `data-collect/franka-ros2-jazzy:dev` 镜像，
+Dockerfile 额外源码编译官方 UR Jazzy 驱动。原有命令仍默认 Franka；只有显式加 `--ur`
+才读取 `config/train/ur.yaml` 并选择 `URRunner`，前端保持不变。
+
+```bash
+docker compose -f src/env/compose.yaml build
+# 先修改 config/train/ur.yaml 的 robot.hostname、robot.type（ur5 / ur5e）。
+# 终端一：用户单独启动 UR 驱动、相机和 VR；不调用 Franka Desk / FCI。
+bash scripts/deploy_ros2.sh --ur
+# 终端二：只连接已有 ROS2 话题。
+bash scripts/deploy_runner.sh --ur
+```
+
+UR runner 从驱动发布的校准 URDF 和六轴 JointState 计算末端状态及局部 IK，
+向 `scaled_joint_trajectory_controller/joint_trajectory` 发布有界短轨迹，
+沿用公共末端偏差保护，并限制关节偏差、速度及轨迹时长。数据集记录真实六轴字段。
+默认禁用夹爪和自动回位；这是采集控制接口尝试，尚未进行 UR 真机验证，
+也没有为 UR 增加策略推理或网页入口。真实机器人须先安装并启动 External Control URCap，
+并在 `ros2.kinematics_params_file` 配置该台机器的校准文件，见
+[官方启动说明](https://docs.universal-robots.com/Universal_Robots_ROS_Documentation/jazzy/doc/ur_robot_driver/ur_robot_driver/doc/usage/startup.html)。
+`--ur use_mock_hardware:=true` 可将驱动切为官方 mock hardware；该部署命令仍会启动现有相机和 VR。
+纯无设备验证使用 `DATA_COLLECT_TEST_UR=1 python -m pytest -q src/tests/ros2/test_ur_live.py`，
+测试自行启动、清理 mock 驱动，建议在无设备且 `--network none` 的容器内运行。
+
 无需硬件的采集验证（请使用单独的 `dataset.root` / `dataset.date` 配置）：
 
 ```bash

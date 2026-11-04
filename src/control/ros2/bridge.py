@@ -73,6 +73,7 @@ class Ros2Publisher:
             "wrist": cfg.get("wrist_camera_frame", "wrist_camera_optical_frame"),
         }
         self._arm_id = cfg.get("arm_id", "panda")
+        self._joint_names = cfg.get("joint_names")
         try:
             self._initialize(cfg)
             self._enabled = True
@@ -317,7 +318,9 @@ class Ros2Publisher:
         }
         joints = self._types["joints"]()
         self._header(joints, robot["base_frame"], robot_stamp)
-        joints.name = [f"{self._arm_id}_joint{i}" for i in range(1, 8)]
+        joints.name = self._joint_names or [
+            f"{self._arm_id}_joint{i}" for i in range(1, len(robot["joint_positions"]) + 1)
+        ]
         joints.position = list(robot["joint_positions"])
         joints.velocity = list(robot["joint_velocities"])
         self._publishers["robot/joint_states"].publish(joints)

@@ -17,13 +17,17 @@ def expected_topics(config):
         return "/" + "/".join(part for part in (namespace, topic.strip("/")) if part)
 
     topics = []
-    if config.get("robot", {}).get("backend") == "ros2":
+    backend = config.get("robot", {}).get("backend")
+    if backend == "ros2":
         topics.append(relative(ros.get("robot_state_topic", "franka_robot_state_broadcaster/robot_state")))
         if config.get("gripper", {}).get("type", "franka") == "franka":
             topics.append(relative(ros.get("gripper_node", "panda_gripper") + "/joint_states"))
+    elif backend == "ur_ros2":
+        topics.append(relative(ros.get("joint_state_topic", "joint_states")))
+        topics.append(relative(ros.get("robot_description_topic", "robot_description")))
     for section in ("camera", "vr", "audio"):
         cfg = config.get(section, {})
-        if cfg.get("backend", config.get("robot", {}).get("backend")) != "ros2":
+        if cfg.get("backend", "ros2" if backend in ("ros2", "ur_ros2") else "direct") != "ros2":
             continue
         device = cfg.get("ros2", {})
         if section == "camera":

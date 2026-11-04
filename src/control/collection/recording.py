@@ -13,6 +13,7 @@ from control.collection.dataset import open_dataset
 from control.collection.schema import features
 from control.recording_writer import AsyncDatasetFrames, FreshCameraPair
 from control.util.lerobot_util import _discard_unsaved_episode
+from control.util.robot import joint_count
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class EpisodeRecorder:
                 config.get("tactile", {}).get("enabled", False),
                 config.get("observation"),
                 config.get("action"),
+                joint_count=joint_count(config),
             )
         )
         self.writer = AsyncDatasetFrames(dataset)

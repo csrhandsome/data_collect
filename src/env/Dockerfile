@@ -1,12 +1,11 @@
-# Single Franka image for this Panda: ROS 2 Jazzy, the FER libfranka fork,
-# and panda_cartesian_controller. Do not layer a second image on top.
+# Shared ROS 2 Jazzy image: Franka by default, optional experimental UR runner.
 FROM ros:jazzy-ros-base-noble
 SHELL ["/bin/bash", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
 ARG FRANKA_ROS2_REF=c0e1f8206211
 ARG LIBFRANKA_REF=55e4ab7654
 ENV FRANKA_ROS2_REF=${FRANKA_ROS2_REF} LIBFRANKA_REF=${LIBFRANKA_REF}
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=2 install -y --no-install-recommends \
     build-essential cmake git ca-certificates curl pkg-config \
     python3-venv python3-dev python3-pip python3-colcon-common-extensions python3-rosdep \
     libeigen3-dev libpoco-dev libfmt-dev libspdlog-dev \
@@ -17,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 # Explicit dependencies of the pinned official single-arm packages. Keep this
 # layer separate from source builds; no mutable rosdep index is required.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=2 install -y --no-install-recommends \
     ros-jazzy-moveit-core ros-jazzy-moveit-msgs ros-jazzy-pinocchio \
     ros-jazzy-realtime-tools ros-jazzy-backward-ros \
     ros-jazzy-generate-parameter-library ros-jazzy-joint-state-publisher-gui \
@@ -26,6 +25,18 @@ COPY src/env/panda_cartesian_controller /tmp/panda_cartesian_controller
 COPY src/env/build_franka.sh /usr/local/bin/build_franka
 RUN bash /usr/local/bin/build_franka \
     && bash -lc 'source /opt/ros/jazzy/setup.bash && source /opt/franka_ws/install/setup.bash && python3 -c "from franka_msgs.msg import FrankaRobotState; assert len(FrankaRobotState().o_t_ee)==16"'
+# Official Universal Robots Jazzy driver, isolated from the FER workspace.
+ARG UR_ROS2_REF=67578e0e8fe3f8366e046f5c96b8ce6675c4e00d
+ENV UR_ROS2_REF=${UR_ROS2_REF}
+RUN apt-get update && apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=2 install -y --no-install-recommends \
+    ros-jazzy-ur-client-library ros-jazzy-ur-description ros-jazzy-ur-msgs \
+    ros-jazzy-joint-trajectory-controller ros-jazzy-position-controllers \
+    ros-jazzy-velocity-controllers ros-jazzy-effort-controllers \
+    ros-jazzy-force-torque-sensor-broadcaster ros-jazzy-pose-broadcaster \
+    ros-jazzy-tf2-geometry-msgs ros-jazzy-ros2controlcli socat \
+    && rm -rf /var/lib/apt/lists/*
+COPY src/env/build_ur.sh /usr/local/bin/build_ur
+RUN bash /usr/local/bin/build_ur
 # The locked Teleop XR Git fork builds its WebXR assets during installation.
 COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
@@ -41,6 +52,7 @@ COPY vr_collect.py inference.py /opt/data_collect_project/
 RUN --mount=type=cache,target=/root/.cache/uv \
     source /opt/ros/jazzy/setup.bash \
     && source /opt/franka_ws/install/setup.bash \
+    && source /opt/ur_ws/install/setup.bash \
     && cd /opt/data_collect_project \
     && UV_HTTP_TIMEOUT=300 UV_PROJECT_ENVIRONMENT=/opt/data_collect_venv uv sync \
        --locked --python /usr/bin/python3 --no-managed-python \
@@ -48,7 +60,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY src/env/entrypoint.sh /usr/local/bin/data_collect_entrypoint
 RUN chmod +x /usr/local/bin/data_collect_entrypoint
 # Color streams for the two D435s. Kept after the Franka build so that layer stays cached.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=2 install -y --no-install-recommends \
     ros-jazzy-realsense2-camera \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace

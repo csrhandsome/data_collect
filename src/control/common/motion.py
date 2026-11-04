@@ -68,7 +68,9 @@ def begin(arm):
 
 
 def move(arm, target, quaternion=None, *, speed_factor=0.2):
-    target = as_vector(target, 7 if quaternion is None else 3, "motion target")
+    from control.util.robot import joint_count
+
+    target = as_vector(target, joint_count(arm._config) if quaternion is None else 3, "motion target")
     quaternion = normalize_quat_xyzw(quaternion) if quaternion is not None else None
     if not np.isfinite(speed_factor) or not 0 < speed_factor <= 1:
         raise ValueError("speed_factor must be in (0, 1]")

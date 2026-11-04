@@ -15,4 +15,8 @@ def create_runner(*, config: dict | None = None, backend=None) -> BaseRunner:
         from control.ros2.franka_runner import FrankaRunner
 
         return FrankaRunner(config=config, backend=backend)
-    raise ValueError("robot.backend must be panda or ros2")
+    if name == "ur_ros2":
+        from control.ros2.ur_runner import URRunner
+
+        return URRunner(config=config, backend=backend)
+    raise ValueError("robot.backend must be panda, ros2 or ur_ros2")

@@ -10,9 +10,16 @@ from control.util.pose import as_vector
 DEFAULT_START = [0, -np.pi / 4, 0, -3 * np.pi / 4, 0, np.pi / 2, np.pi / 4]
 
 
+def joint_count(config):
+    return 6 if config.get("robot", {}).get("backend") == "ur_ros2" else 7
+
+
 def start_joint_position(config):
+    target = config.get("robot", {}).get("start_joint_position")
+    if target is None and joint_count(config) == 6:
+        raise ValueError("UR requires six configured start_joint_position values")
     return as_vector(
-        config.get("robot", {}).get("start_joint_position") or DEFAULT_START, 7, "start joints"
+        target if target is not None else DEFAULT_START, joint_count(config), "start joints"
     )
 
 

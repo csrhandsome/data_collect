@@ -6,6 +6,7 @@ from pathlib import Path
 from control.collection.schema import features
 from control.collection.video_writer import configure_recording_writer
 from control.util.lerobot_util import _resume_existing_dataset_for_recording
+from control.util.robot import joint_count
 
 
 def open_dataset(config):
@@ -25,6 +26,7 @@ def open_dataset(config):
         config.get("tactile", {}).get("enabled", False),
         config.get("observation"),
         config.get("action"),
+        joint_count=joint_count(config),
     )
     from lerobot.configs import RGBEncoderConfig
 
@@ -63,7 +65,8 @@ def open_dataset(config):
             repo_id=repo,
             root=root,
             fps=fps,
-            robot_type="panda",
+            robot_type=(config.get("robot", {}).get("type", "ur5")
+                        if joint_count(config) == 6 else "panda"),
             features=schema,
             image_writer_threads=0,
             image_writer_processes=0,

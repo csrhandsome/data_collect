@@ -28,11 +28,13 @@ def load_config(path=DEFAULT_CONFIG, _seen=None):
         robot = result.setdefault("robot", {})
         backend = robot.setdefault("backend", "panda")
         robot.setdefault("activate_fci", backend == "panda")
-        robot.setdefault("move_to_start", True)
-        result.setdefault("ros2", {}).setdefault("enabled", backend == "ros2")
+        robot.setdefault("move_to_start", backend != "ur_ros2")
+        if backend == "ur_ros2":
+            result.setdefault("gripper", {}).setdefault("type", "none")
+        result.setdefault("ros2", {}).setdefault("enabled", backend in ("ros2", "ur_ros2"))
         for section in ("camera", "audio"):
             result.setdefault(section, {}).setdefault(
-                "backend", "ros2" if backend == "ros2" else "direct"
+                "backend", "ros2" if backend in ("ros2", "ur_ros2") else "direct"
             )
         _resolve_dataset_date(result)
         validate(result)
@@ -48,11 +50,11 @@ def _resolve_dataset_date(config):
 def validate(config):
     robot = config.get("robot", {})
     backend = robot.get("backend", "panda")
-    if backend not in ("panda", "ros2"):
-        raise ValueError("robot.backend must be panda or ros2")
+    if backend not in ("panda", "ros2", "ur_ros2"):
+        raise ValueError("robot.backend must be panda, ros2 or ur_ros2")
     for section in ("camera", "audio"):
         cfg = config.get(section, {})
-        default = "ros2" if backend == "ros2" else "direct"
+        default = "ros2" if backend in ("ros2", "ur_ros2") else "direct"
         if cfg.get("backend", default) not in ("direct", "ros2"):
             raise ValueError(f"{section}.backend must be direct or ros2")
     if config.get("camera", {}).get("backend") == "ros2":
@@ -94,6 +96,10 @@ def validate(config):
         for key in ("base_frame", "arm_id"):
             if not isinstance(cfg.get(key), str) or not cfg[key].strip():
                 raise ValueError(f"ros2.{key} must be a nonempty string")
+    if backend == "ur_ros2":
+        from control.ros2.ur_config import validate_ur_config
+
+        validate_ur_config(config)
     control = config.get("control", {})
     impedance_parameters(control)
     monitoring = config.get("ros2", {}).get("monitoring", {})
@@ -119,6 +125,7 @@ def validate(config):
         config.get("tactile", {}).get("enabled", False),
         config.get("observation"),
         config.get("action"),
+        joint_count=6 if backend == "ur_ros2" else 7,
     )
     if (config.get("observation") or {}).get("ee_wrench", False) and backend != "ros2":
         raise ValueError("observation.ee_wrench requires robot.backend=ros2")

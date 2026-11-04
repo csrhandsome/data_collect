@@ -19,7 +19,7 @@ from control.ros2.bridge import Ros2Publisher
 from control.runners import create_runner
 from control.types import EETargetLimitError
 from control.util.pose import quat_angle_xyzw
-from control.util.robot import finish_stream, handle_gripper, reset_robot
+from control.util.robot import finish_stream, handle_gripper, joint_count, reset_robot
 from control.util.timing import FixedRate
 
 logger = logging.getLogger(__name__)
@@ -30,11 +30,12 @@ def run_collection(config, *, dry_run=False, max_steps=0):
 
     recorder = None
     initial_episodes = 0
+    backend = (FakeBackend(6) if joint_count(config) == 6 else FakeBackend()) if dry_run else None
     with ExitStack() as stack:
         ros2 = stack.enter_context(Ros2Publisher(config))
         diagnostics = stack.enter_context(ControlDiagnostics(config))
         arm = stack.enter_context(
-            create_runner(config=config, backend=FakeBackend() if dry_run else None)
+            create_runner(config=config, backend=backend)
         )
         cameras = make_cameras(config, dry_run)
         stack.callback(cameras.close)

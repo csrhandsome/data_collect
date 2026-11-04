@@ -127,8 +127,11 @@ class BaseRunner(BaseNode[RobotState], ABC):
 
     def pose_from_joints(self, joints: Sequence[float]) -> EEPose:
         from control.util.pose import as_vector
+        from control.util.robot import joint_count
 
-        return EEPose.from_matrix(self._backend.pose_from_joints(as_vector(joints, 7, "joints")))
+        return EEPose.from_matrix(self._backend.pose_from_joints(
+            as_vector(joints, joint_count(self._config), "joints")
+        ))
 
     def execute_ee_trajectory(
         self, points: Sequence[dict], *, on_sample: Callable[[RobotState], None] | None = None

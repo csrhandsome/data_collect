@@ -2,6 +2,7 @@
 set -e
 source /opt/ros/jazzy/setup.bash
 source /opt/franka_ws/install/setup.bash
+source /opt/ur_ws/install/setup.bash
 export UV_PROJECT_ENVIRONMENT=/opt/data_collect_venv
 export UV_NO_SYNC=1
 export PATH="/opt/data_collect_venv/bin:$PATH"

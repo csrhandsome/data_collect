@@ -9,9 +9,9 @@ from control.util.pose import position_quat_to_matrix
 
 
 class FakeBackend:
-    def __init__(self):
-        self.q = np.zeros(7)
-        self.dq = np.zeros(7)
+    def __init__(self, joint_count=7):
+        self.q = np.zeros(joint_count)
+        self.dq = np.zeros(joint_count)
         self.position = np.array([0.4, 0.0, 0.4])
         self.quaternion = np.array([0.0, 0.0, 0.0, 1.0])
         self.ratio = 1.0
@@ -35,6 +35,7 @@ class FakeBackend:
             position_quat_to_matrix(self.position, self.quaternion),
             GripperState("fake", self.ratio, 0.05 * self.ratio, busy),
             time.monotonic_ns(),
+            base_frame="base_link" if len(self.q) == 6 else "panda_link0",
         )
 
     def start(self, state):

@@ -86,12 +86,15 @@ class EEPose:
 
 @dataclass(frozen=True)
 class JointPose:
-    """Seven measured or commanded Franka joint angles in radians."""
+    """Six UR or seven Franka joint angles in radians."""
 
     angles_rad: np.ndarray
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "angles_rad", as_vector(self.angles_rad, 7, "Joint angles"))
+        size = np.asarray(self.angles_rad).size
+        if size not in (6, 7):
+            raise ValueError("Joint angles must contain 6 or 7 values")
+        object.__setattr__(self, "angles_rad", as_vector(self.angles_rad, size, "Joint angles"))
         self.angles_rad.setflags(write=False)
 
     @property
@@ -128,9 +131,12 @@ class RobotState:
     ee_wrench: np.ndarray | None = None
 
     def __post_init__(self):
+        joint_count = np.asarray(self.joint_positions).size
+        if joint_count not in (6, 7):
+            raise ValueError("joint_positions must contain 6 or 7 values")
         for name, shape in (
-            ("joint_positions", (7,)),
-            ("joint_velocities", (7,)),
+            ("joint_positions", (joint_count,)),
+            ("joint_velocities", (joint_count,)),
             ("ee_position", (3,)),
             ("ee_quaternion_xyzw", (4,)),
             ("end_effector_pose", (4, 4)),

@@ -9,6 +9,7 @@ services:
       args:
         FRANKA_ROS2_REF: ${FRANKA_ROS2_REF:-c0e1f8206211}
         LIBFRANKA_REF: ${LIBFRANKA_REF:-55e4ab7654}
+        UR_ROS2_REF: ${UR_ROS2_REF:-67578e0e8fe3f8366e046f5c96b8ce6675c4e00d}
     network_mode: host
     ipc: host
     init: true

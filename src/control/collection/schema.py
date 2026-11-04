@@ -34,7 +34,9 @@ def validate_fields(fields, group):
             raise ValueError(f"{group}.{key} must be true or false")
 
 
-def features(image_hw, action_space, tactile, observation=None, action=None):
+def features(image_hw, action_space, tactile, observation=None, action=None, *, joint_count=7):
+    if joint_count not in (6, 7):
+        raise ValueError("joint_count must be 6 or 7")
     if action_space not in ("joint", "ee"):
         raise ValueError("dataset.action_space must be joint or ee")
     result = {}
@@ -44,6 +46,8 @@ def features(image_hw, action_space, tactile, observation=None, action=None):
     ):
         validate_fields(selection, group)
         for key, names in fields.items():
+            if key == "joint_position":
+                names = [f"joint_{i}" for i in range(joint_count)]
             # Wrench capture is opt-in; old/partial configs keep their schema.
             if key == "ee_wrench" and not (selection or {}).get(key, False):
                 continue

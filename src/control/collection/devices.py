@@ -97,7 +97,7 @@ def make_cameras(config, dry_run=False):
 
 
 def device_backend(config, section):
-    default = "ros2" if config.get("robot", {}).get("backend", "panda") == "ros2" else "direct"
+    default = "ros2" if config.get("robot", {}).get("backend", "panda") in ("ros2", "ur_ros2") else "direct"
     name = config.get(section, {}).get("backend", default)
     if name not in ("direct", "ros2"):
         raise ValueError(f"{section}.backend must be direct or ros2")
