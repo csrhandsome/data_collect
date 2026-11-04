@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -71,7 +72,12 @@ def test_complete_multirate_recording(tmp_path, space, tactile, audio):
     info = read_dataset(root)
     assert stats["ticks"] == 50
     assert info["fps"] == 30 and info["total_episodes"] == 1
-    assert 10 <= info["total_frames"] <= 17
+    sync = next(root.rglob("*.sync.json"))
+    payload = json.loads(sync.read_text())
+    duration_s = (payload["episode_stop_monotonic_ns"] - payload["episode_start_monotonic_ns"]) / 1e9
+    # Fifty ticks can take longer than 0.5 s under scheduler/encoder contention.
+    # Bound camera rows by the actual capture interval and number of servo ticks.
+    assert 10 <= info["total_frames"] <= min(50, math.ceil(duration_s * info["fps"]) + 1)
     shapes = {f["key"]: f["shape"] for f in info["features"]}
     assert shapes["action.joint_position"] == [7]
     assert shapes["action.ee_pose"] == [6]
@@ -82,8 +88,6 @@ def test_complete_multirate_recording(tmp_path, space, tactile, audio):
     if audio:
         assert read_audio(root, 0)["sample_rate"] == 16000
     assert ("observation.gripper_image_left" in {f["key"] for f in info["features"]}) == tactile
-    sync = next(root.rglob("*.sync.json"))
-    payload = json.loads(sync.read_text())
     assert payload["control_mode"] == "ee" and payload["action_space"] == space
     assert all(
         r["action_sample_monotonic_ns"] > r["host_frame_monotonic_ns"]

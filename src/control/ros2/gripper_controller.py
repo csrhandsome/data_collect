@@ -1,10 +1,13 @@
 """Franka ROS action clients and gripper state subscription; DH5 stays local."""
 
+import logging
 import threading
 
 import numpy as np
 
 from control.types import GripperState
+
+logger = logging.getLogger(__name__)
 
 
 class Ros2GripperController:
@@ -16,12 +19,34 @@ class Ros2GripperController:
         self._ratio, self._width = 1.0, None
         self._local_gripper = None
         self._clients = []
+        self._reported_missing = False
 
     def get_state(self, *, busy=False):
         if self._local_gripper is not None:
             return self._local_gripper.get_state(busy=busy)
-        return GripperState(self.config.get("gripper", {}).get("type", "franka"),
-                            self._ratio, self._width, busy)
+        kind = self.config.get("gripper", {}).get("type", "franka")
+        if self._franka_without_publisher():
+            self._note_missing()
+            return GripperState(kind, 0.0, 0.0, busy)
+        return GripperState(kind, self._ratio, self._width, busy)
+
+    def _franka_without_publisher(self):
+        if self._local_gripper is not None:
+            return False
+        if self.config.get("gripper", {}).get("type", "franka") != "franka":
+            return False
+        subscription = getattr(self, "_gripper_sub", None)
+        if subscription is None:
+            return False
+        return subscription.get_publisher_count() == 0
+
+    def _note_missing(self):
+        if self._reported_missing:
+            return
+        self._reported_missing = True
+        logger.warning(
+            "Franka gripper joint state is not subscribed; reporting closed (0) and skipping commands"
+        )
 
     def connect(self):
         kind = self.config.get("gripper", {}).get("type", "franka")
@@ -70,6 +95,9 @@ class Ros2GripperController:
             return self._local_gripper.command(ratio, speed=speed, force=force)
         if self.config.get("gripper", {}).get("type", "franka") != "franka":
             raise RuntimeError("Gripper is disabled")
+        if self._franka_without_publisher():
+            self._note_missing()
+            return True
         name = "move" if ratio >= 0.5 else "grasp"
         client = self._actions[name]
         if not client.wait_for_server(timeout_sec=float(self.cfg.get("connect_timeout_s", 10))):
@@ -104,6 +132,9 @@ class Ros2GripperController:
             return
         if self._local_gripper is not None:
             return self._local_gripper.stop()
+        if self._franka_without_publisher():
+            self._note_missing()
+            return
         if not self._stop_client.wait_for_service(timeout_sec=2):
             raise TimeoutError("Franka gripper stop service unavailable")
         result = self._wait_future(self._stop_client.call_async(self._trigger_type.Request()))

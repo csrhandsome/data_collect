@@ -229,6 +229,8 @@ def test_delete_without_audio_and_reject_bad_inputs_before_writes(copy_dataset):
 
 def test_delete_rejects_symlink_and_path_escape(copy_dataset, tmp_path):
     root = copy_dataset()
+    data_path = root / "data/chunk-000/file-000.parquet"
+    original_data = data_path.read_bytes()
     (root / "unsafe").symlink_to(tmp_path)
     with pytest.raises(ValueError, match="符号链接"):
         EpisodeDeleter(root).delete_episode(1)
@@ -239,7 +241,7 @@ def test_delete_rejects_symlink_and_path_escape(copy_dataset, tmp_path):
     info_path.write_text(json.dumps(info))
     with pytest.raises(ValueError, match="unsafe"):
         EpisodeDeleter(root).delete_episode(1)
-    assert (root / "data/chunk-000/episode_000001.parquet").exists()
+    assert data_path.read_bytes() == original_data
 
 
 def test_replay_loads_v3_and_preserves_pose(demo_root):

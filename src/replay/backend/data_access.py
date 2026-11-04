@@ -9,13 +9,15 @@ from pydantic import BaseModel, ValidationError
 from replay.backend.errors import ReplayError
 from replay.backend.registry import DatasetRegistry
 from replay.scripts._common import MissingDatasetFile
+from replay.scripts.dataset_lock import dataset_access
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 
 
 def parse_dataset(parser: Callable[..., dict], root: Path, *args: Any) -> dict:
     try:
-        return parser(root, *args)
+        with dataset_access(root):
+            return parser(root, *args)
     except ReplayError:
         raise
     except KeyError as exc:

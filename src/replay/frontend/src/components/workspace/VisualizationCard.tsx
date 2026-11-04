@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { useApiResource } from '../../hooks/useApiResource'
 import { episodeUrl } from '../../lib/api'
 import type { AudioData, DataFeature, EEData, VideoData } from '../../types/dataset'
@@ -35,18 +36,27 @@ function VideoContent({
   const resource = useApiResource<VideoData>(
     `${episodeUrl(datasetId, episodeIndex)}/video?feature=${encodeURIComponent(feature.key)}`,
   )
+  const retriedUrl = useRef<string | null>(null)
   return resource.loading ? (
     <LoadingState label="正在准备相机视频，首次打开需稍等…" />
   ) : resource.error ? (
     <ErrorState message={resource.error} onRetry={resource.retry} />
   ) : resource.data ? (
     <VideoPlayer
+      key={resource.data.url}
       video={resource.data}
       time={time}
       playing={playing}
       rate={rate}
       seekVersion={seekVersion}
       onToggle={onToggle}
+      onReload={() => {
+        // A range request can straddle compaction in another terminal. Refresh
+        // offsets and the versioned URL once; real codec errors stay visible.
+        if (!resource.data || retriedUrl.current === resource.data.url) return
+        retriedUrl.current = resource.data.url
+        resource.retry()
+      }}
     />
   ) : null
 }
@@ -114,10 +124,7 @@ export function VisualizationCard(props: VisualizationCardProps) {
     >
       <header className="flex items-center gap-3 border-b border-foreground px-4 py-3 [&>div]:min-w-0 [&>div]:flex-1 [&_h3]:text-base [&_h3]:font-semibold [&_code]:block [&_code]:truncate [&_code]:text-[10px] [&_code]:text-muted-foreground">
         <span className="flex size-8 shrink-0 items-center justify-center border border-current">
-          <Icon
-            name={feature.kind === 'video' ? 'video' : 'trajectory'}
-            size={17}
-          />
+          <Icon name={feature.kind === 'video' ? 'video' : 'trajectory'} size={17} />
         </span>
         <div>
           <h3>{feature.label}</h3>

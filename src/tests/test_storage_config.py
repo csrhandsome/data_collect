@@ -1,5 +1,6 @@
 import copy
 import json
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,21 @@ from control.collection.pipeline import run_collection
 from control.collection.schema import FIELD_NAMES, features
 from control.config import load_config, validate
 from data_analysis.dataset_io import episode_dataframe, episode_paths
+
+
+def test_today_dataset_date_resolves_to_local_day(tmp_path, monkeypatch):
+    class Fixed(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 31)
+
+    monkeypatch.setattr("control.config.date", Fixed)
+    path = tmp_path / "today.yaml"
+    parent = Path(__file__).resolve().parents[2] / "config/train/panda.yaml"
+    path.write_text(f"extends: {parent}\ndataset:\n  date: today\n")
+    assert load_config(path)["dataset"]["date"] == "20261031"
+    path.write_text(f"extends: {parent}\ndataset:\n  date: '20260101'\n")
+    assert load_config(path)["dataset"]["date"] == "20260101"
 
 
 def test_storage_inheritance_and_partial_override(tmp_path, monkeypatch):
@@ -90,6 +106,14 @@ def test_legacy_field_selection_is_rejected():
     config = load_config()
     config["dataset"]["fields"] = {"actions": True}
     with pytest.raises(ValueError, match="dataset.fields"):
+        validate(config)
+
+
+def test_compaction_defaults_on_and_requires_a_boolean():
+    config = load_config()
+    assert config["dataset"]["compact_on_stop"] is True
+    config["dataset"]["compact_on_stop"] = "false"
+    with pytest.raises(ValueError, match="compact_on_stop"):
         validate(config)
 
 

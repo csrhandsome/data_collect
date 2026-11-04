@@ -171,6 +171,17 @@ def _load_metadata(root: Path) -> tuple[dict, dict[int, dict]]:
     if info.get("storage_format") not in (None, "lerobot"):
         raise ValueError("Only the Parquet/MP4 LeRobot storage format is supported")
 
+    # Validate storage templates before handing a dataset to mutation tools.
+    # In particular, reject traversal even if a legacy episode field would
+    # otherwise make the upstream formatter fail after rewriting videos.
+    templates = [info.get("data_path", _V3_DATA)]
+    if any(feature["dtype"] == "video" for feature in info["features"].values()):
+        templates.append(info.get("video_path", _V3_VIDEO))
+    for storage_template in templates:
+        if isinstance(storage_template, str):
+            _safe_path(root, storage_template, require_file=False)
+        _template_parts(storage_template)
+
     template = info.get("episodes_path", _V3_EPISODES)
     parts = _template_parts(template)
     if any(
@@ -227,6 +238,12 @@ def _load_metadata(root: Path) -> tuple[dict, dict[int, dict]]:
     return info, dict(sorted(episodes.items()))
 
 
+def storage_revision(root: Path) -> str:
+    """A cheap revision token changes whenever the canonical layout is replaced."""
+    stat = (Path(root) / "meta/info.json").stat()
+    return f"{stat.st_ino:x}-{stat.st_mtime_ns:x}"
+
+
 def _get_episode(episodes: dict[int, dict], episode_index: int) -> dict:
     _integer(episode_index, "episode_index")
     if episode_index not in episodes:
@@ -257,7 +274,8 @@ def _episode_table(root: Path, info: dict, episode: dict, feature: str) -> pa.Ta
     index = episode["episode_index"]
     path = _episode_data_path(root, info, episode)
     try:
-        schema = pq.ParquetFile(path).schema_arrow.names
+        parquet = pq.ParquetFile(path)
+        schema = parquet.schema_arrow.names
     except (OSError, pa.ArrowException) as exc:
         raise ValueError("Malformed dataset parquet file") from exc
     if feature not in schema or "episode_index" not in schema:
@@ -267,7 +285,20 @@ def _episode_table(root: Path, info: dict, episode: dict, feature: str) -> pa.Ta
         for key in [feature, "timestamp", "episode_index", "frame_index", "index"]
         if key in schema
     ]
-    table = _read_parquet(path, columns=columns)
+    # Compaction emits one row group per episode. Read only matching groups,
+    # rather than scanning a whole 100 MB shard for each curve request. Files
+    # without statistics remain supported by the final row-level filter.
+    try:
+        episode_column = parquet.schema.names.index("episode_index")
+        groups = []
+        for group_index in range(parquet.num_row_groups):
+            group = parquet.metadata.row_group(group_index)
+            stats = group.column(episode_column).statistics
+            if stats is None or not stats.has_min_max or stats.min <= index <= stats.max:
+                groups.append(group_index)
+        table = parquet.read_row_groups(groups, columns=columns)
+    except (OSError, pa.ArrowException, ValueError) as exc:
+        raise ValueError("Malformed dataset parquet file") from exc
     try:
         table = table.filter(pc.equal(table["episode_index"], index))
     except pa.ArrowException as exc:

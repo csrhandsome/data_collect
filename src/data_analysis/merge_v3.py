@@ -5,6 +5,27 @@ import tempfile
 from pathlib import Path
 
 
+def repair_metadata_shard_indices(root: Path) -> None:
+    """Upstream aggregation can retain the source metadata shard references."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    for path in (root / "meta/episodes").glob("chunk-*/file-*.parquet"):
+        table = pq.ParquetFile(path).read()
+        for key, value in {
+            "meta/episodes/chunk_index": int(path.parent.name.split("-")[-1]),
+            "meta/episodes/file_index": int(path.stem.split("-")[-1]),
+        }.items():
+            if key not in table.column_names:
+                continue
+            field = table.schema.field(key)
+            table = table.set_column(
+                table.schema.get_field_index(key), field,
+                pa.array([value] * table.num_rows, type=field.type),
+            )
+        pq.write_table(table, path)
+
+
 def merge_v3(sources: list[Path], output: Path, overwrite: bool) -> Path:
     from lerobot.datasets import LeRobotDataset
     from lerobot.datasets.dataset_tools import merge_datasets
@@ -35,24 +56,7 @@ def merge_v3(sources: list[Path], output: Path, overwrite: bool) -> Path:
         staged = Path(temporary) / "dataset"
         merged = merge_datasets(datasets, output.name, output_dir=staged)
         merged.finalize()
-        # Upstream aggregation retains source metadata shard indices in copied rows.
-        # Rebind these references to the actual destination shard before local validation.
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-
-        for path in (staged / "meta/episodes").glob("chunk-*/file-*.parquet"):
-            table = pq.ParquetFile(path).read()
-            for key, value in {
-                "meta/episodes/chunk_index": int(path.parent.name.split("-")[-1]),
-                "meta/episodes/file_index": int(path.stem.split("-")[-1]),
-            }.items():
-                field = table.schema.field(key)
-                table = table.set_column(
-                    table.schema.get_field_index(key),
-                    field,
-                    pa.array([value] * table.num_rows, type=field.type),
-                )
-            pq.write_table(table, path)
+        repair_metadata_shard_indices(staged)
         new_index = 0
         for source in sources:
             for row in episode_rows(source):

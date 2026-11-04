@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+from datetime import date
 from pathlib import Path
 
 from control.collection.schema import features
@@ -33,8 +34,15 @@ def load_config(path=DEFAULT_CONFIG, _seen=None):
             result.setdefault(section, {}).setdefault(
                 "backend", "ros2" if backend == "ros2" else "direct"
             )
+        _resolve_dataset_date(result)
         validate(result)
     return result
+
+
+def _resolve_dataset_date(config):
+    dataset = config.get("dataset")
+    if isinstance(dataset, dict) and dataset.get("date") == "today":
+        dataset["date"] = date.today().strftime("%Y%m%d")
 
 
 def validate(config):
@@ -101,6 +109,8 @@ def validate(config):
         raise ValueError("dataset.action_space must be joint or ee")
     if "image_storage" in config.get("dataset", {}):
         raise ValueError("dataset.image_storage was removed; camera features always use MP4")
+    if not isinstance(config.get("dataset", {}).get("compact_on_stop", True), bool):
+        raise ValueError("dataset.compact_on_stop must be a boolean")
     if "fields" in config.get("dataset", {}):
         raise ValueError("dataset.fields was replaced by observation/action mappings")
     features(

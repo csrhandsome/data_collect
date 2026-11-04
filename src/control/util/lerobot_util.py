@@ -65,9 +65,10 @@ def _resume_existing_dataset_for_recording(
         repo_id=repo_id,
         root=path,
         image_writer_processes=0,
-        image_writer_threads=4,
+        image_writer_threads=0,
         rgb_encoder=rgb_encoder,
         encoder_threads=2,
+        streaming_encoding=True,
     )
     try:
         _cleanup_orphan_next_episode_images(dataset.meta)

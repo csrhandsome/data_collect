@@ -1,22 +1,40 @@
 #!/usr/bin/env bash
-# Inside the Docker shell: controllers, cameras, VR and warning-only diagnostics.
+# On the host or inside Docker: controllers, cameras, VR and diagnostics.
 # Bringup unlocks the brakes and activates FCI through the standalone Desk client.
 #
-#   bash scripts/deploy_docker.sh
 #   bash scripts/deploy_ros2.sh
 #
 # Second terminal, unchanged:
-#   bash scripts/deploy_docker.sh
-#   python -m vr_collect --config config/train/panda.yaml
+#   bash scripts/deploy_runner.sh
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+inside=false
+if [[ "${1:-}" == --inside ]]; then
+  inside=true
+  shift
+fi
+if [[ -f /.dockerenv || -f /run/.containerenv ]] || \
+    grep -Eq '(docker|containerd|kubepods|libpod)' /proc/1/cgroup 2>/dev/null; then
+  inside=true
+fi
+
+if [[ "$inside" == false ]]; then
+  if ! command -v docker >/dev/null 2>&1; then
+    echo 'Docker is missing; deploy_ros2.sh uses deploy_docker.sh to start the ROS 2 container. Install and start Docker first.' >&2
+    exit 1
+  fi
+  printf 'Host environment detected; starting ROS 2 inside Docker.\n'
+  exec bash "$root/scripts/deploy_docker.sh" scripts/deploy_ros2.sh --inside "$@"
+fi
+
 if ! command -v ros2 >/dev/null 2>&1; then
-  echo 'ROS 2 environment missing. Run bash scripts/deploy_docker.sh first, then bash scripts/deploy_ros2.sh inside the container.' >&2
+  echo 'ROS 2 environment missing inside the container. Use the project image via bash scripts/deploy_docker.sh, or load its ROS 2 environment first.' >&2
   exit 1
 fi
+printf 'Container environment detected; starting ROS 2 directly.\n'
 
 cam_pid=""
 vr_pid=""

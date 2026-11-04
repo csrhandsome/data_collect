@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useOperations } from '../../hooks/useOperations'
 import { isOperationActive, type Operation, type OperationKind } from '../../types/operation'
 import type { DatasetDetail } from '../../types/dataset'
@@ -18,19 +18,32 @@ const states = {
   cancelled: '已停止',
 }
 
+export type WorkspaceMode = 'collect' | 'inference' | 'replay'
+
+const modes = [
+  ['collect', '采集'],
+  ['inference', '推理'],
+  ['replay', '回放'],
+] as const
+
 export function OperationPanel({
   dataset,
   episodeIndex,
   onFinished,
   onChanged,
+  mode,
+  onModeChange,
+  children,
 }: {
   dataset: DatasetDetail | null
   episodeIndex: number
   onFinished: (operation: Operation) => void
   onChanged?: (operation: Operation | null) => void
+  mode: WorkspaceMode
+  onModeChange: (mode: WorkspaceMode) => void
+  children: ReactNode
 }) {
   const tasks = useOperations(onFinished, onChanged)
-  const [selectedMode, setSelectedMode] = useState<'collect' | 'inference' | null>(null)
   const more = useRef<HTMLDetailsElement>(null)
   const [confirmation, setConfirmation] = useState<{
     kind: OperationKind
@@ -44,10 +57,6 @@ export function OperationPanel({
   const operation = tasks.operation
   const active = isOperationActive(operation)
   const disabled = !tasks.ready || tasks.busy
-  const mode =
-    active && (operation?.kind === 'collect' || operation?.kind === 'inference')
-      ? operation.kind
-      : (selectedMode ?? (operation?.kind === 'inference' ? 'inference' : 'collect'))
   const canStop = active && operation?.kind !== 'delete'
   const stopLabel =
     operation?.kind === 'inference'
@@ -67,39 +76,57 @@ export function OperationPanel({
       setConfirmation(null)
   }
 
+  function navigateModes(event: KeyboardEvent<HTMLDivElement>) {
+    const index = modes.findIndex(([value]) => value === mode)
+    const next =
+      event.key === 'ArrowRight'
+        ? (index + 1) % modes.length
+        : event.key === 'ArrowLeft'
+          ? (index + modes.length - 1) % modes.length
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? modes.length - 1
+              : null
+    if (next === null) return
+    event.preventDefault()
+    onModeChange(modes[next][0])
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
+  }
+
   return (
     <section
-      aria-label="采集推理与数据操作"
-      className="mb-3 shrink-0 border border-foreground bg-background [&_button]:px-3 [&_summary]:px-3"
+      aria-label="采集推理回放与数据操作"
+      className="flex min-w-0 flex-col border border-foreground bg-background md:min-h-0 md:flex-1"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
-        <div>
-          <h2 className="font-display text-lg">采集与推理</h2>
-          <p className="mt-1 text-xs text-muted-foreground md:hidden xl:block">
-            {mode === 'inference'
-              ? '结束推理后保存本次片段并回到起始姿态，再查看结果并标注。'
-              : '手柄保存片段后，在下方查看回放并标注成功或失败。'}
-          </p>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-foreground px-3 py-2 [&_button]:px-3 [&_summary]:px-3">
+        <div className="flex" role="tablist" aria-label="工作区模式" onKeyDown={navigateModes}>
+          {modes.map(([value, label]) => (
+            <Button
+              key={value}
+              variant={mode === value ? 'primary' : 'secondary'}
+              role="tab"
+              id={`${value}-tab`}
+              aria-selected={mode === value}
+              aria-controls={`${value}-workspace`}
+              tabIndex={mode === value ? 0 : -1}
+              onClick={() => onModeChange(value)}
+            >
+              {label}
+            </Button>
+          ))}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex" role="group" aria-label="选择操作模式">
-            {(
-              [
-                ['collect', '采集'],
-                ['inference', '推理'],
-              ] as const
-            ).map(([value, label]) => (
-              <Button
-                key={value}
-                variant={mode === value ? 'primary' : 'secondary'}
-                aria-pressed={mode === value}
-                disabled={tasks.busy}
-                onClick={() => setSelectedMode(value)}
-              >
-                {label}
-              </Button>
-            ))}
-          </div>
+          {operation && mode === 'replay' ? (
+            <button
+              type="button"
+              data-testid="operation-status"
+              className="min-h-11 text-left text-xs underline underline-offset-4"
+              onClick={() => onModeChange(operation.kind === 'inference' ? 'inference' : 'collect')}
+            >
+              {labels[operation.kind]} · {states[operation.state]}
+            </button>
+          ) : null}
           {canStop ? (
             <Button
               disabled={tasks.pending || operation?.state === 'stopping'}
@@ -108,12 +135,12 @@ export function OperationPanel({
               <Icon name="close" size={14} />
               {operation?.state === 'stopping' ? '正在结束…' : stopLabel}
             </Button>
-          ) : (
+          ) : mode !== 'replay' ? (
             <Button disabled={disabled} onClick={() => requestConfirmation({ kind: mode })}>
               <Icon name={mode === 'inference' ? 'play' : 'plus'} size={14} />
               {mode === 'inference' ? '开始推理' : '开启采集'}
             </Button>
-          )}
+          ) : null}
           <details ref={more} className="relative">
             <summary
               className={`${buttonClasses('secondary')} cursor-pointer list-none [&::-webkit-details-marker]:hidden`}
@@ -169,48 +196,78 @@ export function OperationPanel({
           <WaitingState label="正在提交操作…" compact />
         </div>
       ) : null}
-      {operation ? (
-        <div
-          className="border-t border-foreground bg-muted px-4 py-3"
-          data-testid="operation-status"
-        >
-          {active ? (
-            <WaitingState
-              compact
-              startedAt={operation.started_at}
-              label={`${labels[operation.kind]} · ${states[operation.state]}`}
-              description={
-                operation.state === 'stopping'
-                  ? operation.kind === 'inference'
-                    ? '正在停止推理、保存片段并返回起始姿态，请等待完成。'
-                    : '等待设备停止及文件保存，请保持服务运行。'
-                  : operation.kind === 'delete'
-                    ? '正在删除文件并重排编号，请等待完成。'
-                    : '任务运行中，可继续查看数据。'
-              }
-            />
-          ) : (
-            <p className="flex items-center gap-2 text-sm" role="status">
-              <Icon name={operation.state === 'failed' ? 'warning' : 'check'} size={16} />
-              {labels[operation.kind]} · {states[operation.state]}
-              {operation.state === 'failed' ? `（退出码 ${operation.return_code}）` : ''}
+      {modes
+        .filter(([value]) => value !== 'replay')
+        .map(([value]) => (
+          <div
+            key={value}
+            id={`${value}-workspace`}
+            role="tabpanel"
+            aria-labelledby={`${value}-tab`}
+            tabIndex={0}
+            className={mode === value ? 'min-h-80 flex-1 overflow-y-auto p-4 md:min-h-0' : 'hidden'}
+          >
+            <h2 className="font-display text-2xl">
+              {value === 'collect' ? 'VR 采集' : '策略推理'}
+            </h2>
+            <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+              {value === 'collect'
+                ? '开启采集后，使用 VR 手柄操作并保存片段。新片段保存后可自动切到回放，查看相机、轨迹并标注结果。'
+                : '开始推理后，策略控制机械臂与夹爪。结束推理会保存片段并返回起始姿态，再切到回放查看和标注本次结果。'}
             </p>
-          )}
-          {operation.dataset_id ? (
-            <p className="mt-2 font-mono text-[10px] text-muted-foreground [overflow-wrap:anywhere]">
-              {operation.dataset_id} / {episodeLabel(operation.episode_index ?? 0)}
-            </p>
-          ) : null}
-          <details className="mt-2" open={operation.state === 'failed' ? true : undefined}>
-            <summary className="font-mono text-[11px] text-muted-foreground">
-              运行日志 · 最近 {operation.logs.length} 行
-            </summary>
-            <pre className="mt-2 max-h-40 overflow-auto border-l-2 border-foreground bg-background p-3 font-mono text-[11px] leading-5 whitespace-pre-wrap [overflow-wrap:anywhere]">
-              {operation.logs.join('\n') || '等待进程输出…'}
-            </pre>
-          </details>
-        </div>
-      ) : null}
+            {mode === value && operation ? (
+              <div
+                className="mt-5 border border-foreground bg-muted px-4 py-3"
+                data-testid="operation-status"
+              >
+                {active ? (
+                  <WaitingState
+                    compact
+                    startedAt={operation.started_at}
+                    label={`${labels[operation.kind]} · ${states[operation.state]}`}
+                    description={
+                      operation.state === 'stopping'
+                        ? operation.kind === 'inference'
+                          ? '正在停止推理、保存片段并返回起始姿态，请等待完成。'
+                          : '等待设备停止及文件保存，请保持服务运行。'
+                        : operation.kind === 'delete'
+                          ? '正在删除文件并重排编号，请等待完成。'
+                          : '任务运行中，可继续查看数据。'
+                    }
+                  />
+                ) : (
+                  <p className="flex items-center gap-2 text-sm" role="status">
+                    <Icon name={operation.state === 'failed' ? 'warning' : 'check'} size={16} />
+                    {labels[operation.kind]} · {states[operation.state]}
+                    {operation.state === 'failed' ? `（退出码 ${operation.return_code}）` : ''}
+                  </p>
+                )}
+                {operation.dataset_id ? (
+                  <p className="mt-2 font-mono text-[10px] text-muted-foreground [overflow-wrap:anywhere]">
+                    {operation.dataset_id} / {episodeLabel(operation.episode_index ?? 0)}
+                  </p>
+                ) : null}
+                <details className="mt-2" open={operation.state === 'failed' ? true : undefined}>
+                  <summary className="font-mono text-[11px] text-muted-foreground">
+                    运行日志 · 最近 {operation.logs.length} 行
+                  </summary>
+                  <pre className="mt-2 max-h-40 overflow-auto border-l-2 border-foreground bg-background p-3 font-mono text-[11px] leading-5 whitespace-pre-wrap [overflow-wrap:anywhere]">
+                    {operation.logs.join('\n') || '等待进程输出…'}
+                  </pre>
+                </details>
+              </div>
+            ) : null}
+          </div>
+        ))}
+      <div
+        id="replay-workspace"
+        role="tabpanel"
+        aria-labelledby="replay-tab"
+        tabIndex={0}
+        className={mode === 'replay' ? 'flex min-w-0 flex-col p-3 md:min-h-0 md:flex-1' : 'hidden'}
+      >
+        {children}
+      </div>
       {confirmation ? (
         <ConfirmDialog
           title={

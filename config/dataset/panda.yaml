@@ -1,4 +1,7 @@
 # Panda 采集、训练读取和服务请求的统一字段，由 config/train/panda.yaml 继承。
+dataset:
+  compact_on_stop: true  # 本轮采集结束后合并 v3 分片；逐段保存后仍可立即回放。
+
 # true 表示保存，false 表示不保存；存储与请求 key 由分组.字段名拼成（LeRobot 不允许斜线）。
 # RGB 图像尺寸为 [H,H,3]，H = camera.image_hw（当前 224）。
 observation:

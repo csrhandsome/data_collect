@@ -24,9 +24,10 @@ bash scripts/deploy_page.sh
 ```
 
 部署入口集中在 `scripts/`：`deploy_docker.sh` 进入 Franka 容器，
-容器内运行 `deploy_ros2.sh` 自动通过 Desk 解锁、激活 FCI，并启动驱动、相机、VR 和订阅诊断，
+`deploy_ros2.sh` 自动识别宿主机或容器：宿主机上先进入 Docker，容器内直接启动；
+随后自动通过 Desk 解锁、激活 FCI，并启动驱动、相机、VR 和订阅诊断，
 `deploy_runner.sh` 只启动监听已有 ROS2 话题的采集 runner。
-机械臂驱动、相机、VR 和诊断仍由你在另一个容器终端单独运行 `deploy_ros2.sh`。`deploy_page.sh` 在这套 runner 上再启动网页和 API，
+机械臂驱动、相机、VR 和诊断仍由你在另一个终端单独运行 `deploy_ros2.sh`。`deploy_page.sh` 在这套 runner 上再启动网页和 API，
 网页中的日志、运行状态和停止按钮对应同一个采集任务。两个入口二选一，不要同时运行。
 Ctrl+C 只结束 runner 并保存，独立启动的 ROS2 驱动继续运行。两个 runner 入口可从宿主机运行，需预先构建 ROS2 镜像；
 网页入口还需要 pnpm。原有数据处理、上传和下载脚本位于 `scripts/dataset/`。
@@ -63,6 +64,29 @@ uv run pytest
 推理人工接管模式会改为显示接管说明，不显示无效的 X/Y 保存操作；松开扳机会交回策略控制。
 `vr.show_controller_hints: false` 可关闭提示。禁用录制或夹爪时，对应说明也会隐藏。
 关闭自动回位时（包括 ROS 后端默认设置），X/Y 操作后保持当前位置，手柄提示同步显示。
+
+单独检查右摇杆数值时，在已加载 ROS2 环境的终端运行（VR 发布节点需已启动）：
+
+```bash
+bash scripts/record_vr_stick.sh
+# 录制 30 秒，将相邻新采样差值 > 0.1 标记为可能的跳变：
+bash scripts/record_vr_stick.sh --duration 30 --jump-threshold 0.1
+```
+
+脚本通过 `ros2 topic echo /vr/input std_msgs/msg/String --field data --full-length` 纯订阅，
+不启动驱动、VR 服务或 runner，也不发送机械臂和夹爪命令。ROS domain 默认 42，可用
+`ROS_DOMAIN_ID` 覆盖；`--topic` 可指定其他同格式话题。Ctrl+C 结束后，记录保存在
+`data/vr_stick/<时间戳>/`（可用 `--output-dir` 修改父目录）：
+`echo.log` 是完整 CLI 输出，`samples.csv` 记录每条有效消息的时间、来源序号、右摇杆 X/Y、
+`gripper_velocity_axis`、相邻差值及超阈值标记，`summary.json` 汇总实测最小/最大值、
+最大绝对差值、超阈值次数、重复状态数及最大来源采样间隔；CLI 错误另存 `ros2.stderr.log`。
+终端每秒刷新约 5 次，CSV 保留收到的全部有效消息。来源未初始化的状态不参与统计；
+重复发布的同一来源采样不参与差值统计，来源序号或时间倒退时重新建立比较起点。
+
+`right_stick_y` 为话题中的摇杆值，`gripper_velocity_axis = -right_stick_y`（上推为正，表示闭合方向）。
+建议缓慢推满各方向、停留、缓慢回中，再单独测试松手回弹。差值超过阈值只是候选跳变，
+需结合 CSV 的 `source_dt_s` 和实际操作判断；松手回中本身也可能产生较大差值。
+这些统计描述已收到的采样，不能证明采样之间连续；最小/最大值是本次实测范围。
 
 根项目和桌面 Python 环境都通过 `[tool.uv.sources]` 固定依赖
 [csr fork 的修改提交](https://github.com/csrhandsome/teleop_xr/commit/3c572efddf98719c4a28de292d248e41b23a43a7)，

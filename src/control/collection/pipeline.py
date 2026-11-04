@@ -8,6 +8,7 @@ from contextlib import ExitStack
 
 import numpy as np
 
+from control.collection.async_recording import AsyncEpisodeRecorder
 from control.collection.dataset import open_dataset
 from control.collection.devices import make_cameras, make_microphone, make_vr
 from control.collection.recording import EpisodeRecorder
@@ -28,6 +29,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
     from control.direct.fake import FakeBackend
 
     recorder = None
+    initial_episodes = 0
     with ExitStack() as stack:
         ros2 = stack.enter_context(Ros2Publisher(config))
         diagnostics = stack.enter_context(ControlDiagnostics(config))
@@ -49,7 +51,15 @@ def run_collection(config, *, dry_run=False, max_steps=0):
         stack.callback(scene.close)
         if config["dataset"].get("enable_logging", True):
             dataset, root = open_dataset(config)
+            initial_episodes = dataset.meta.total_episodes
             recorder = EpisodeRecorder(dataset, root, config, microphone)
+            if microphone is None:
+                recorder = AsyncEpisodeRecorder(recorder)
+            else:
+                # Audio APIs start/stop a live stream and cannot reconstruct a
+                # boundary delayed behind a previous save. Preserve alignment
+                # until audio capture can hand off immutable episode buffers.
+                logger.info("Audio enabled: preserving synchronous capture boundaries")
             stack.callback(recorder.close)
         if config.get("robot", {}).get("move_to_start", True):
             arm.move_to_start()
@@ -70,6 +80,8 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 diagnostics.begin_tick(steps, tick_ns, rate.overruns)
                 reset_requested = False
                 command_sent = False
+                if recorder is not None:
+                    recorder.check()
                 state = arm.read()
                 diagnostics.mark("state_read")
                 raw_sample = vr.read()
@@ -181,6 +193,14 @@ def run_collection(config, *, dry_run=False, max_steps=0):
             if recorder is not None:
                 recorder.finish(arm.read(), save=not failed, publish=True)
         logger.info("Acquisition finished: %s ticks, %s overruns", steps, rate.overruns)
+    if (recorder is not None
+            and recorder.dataset.meta.total_episodes > initial_episodes
+            and config["dataset"].get("compact_on_stop", True)):
+        # All hardware and recording writers have closed. Keep per-save
+        # publication fast; pack sealed shards only when this session ends.
+        from data_analysis.compact_v3 import compact_dataset
+
+        compact_dataset(recorder.root)
     if recorder is not None and config.get("audio", {}).get("vad_enabled", False) and not dry_run:
         audio_files = (recorder.root / "audio").glob("episode_*.wav")
         if recorder.dataset.meta.total_episodes > 0 and any(path.is_file() for path in audio_files):

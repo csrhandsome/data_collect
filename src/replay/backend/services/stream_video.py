@@ -10,6 +10,7 @@ from starlette.responses import Response, StreamingResponse
 from replay.backend.data_access import video_source
 from replay.backend.errors import ReplayError
 from replay.backend.registry import DatasetRegistry
+from replay.scripts.dataset_lock import dataset_access
 
 _RANGE = re.compile(r"bytes=(\d*)-(\d*)")
 _CHUNK_SIZE = 1024 * 256
@@ -54,8 +55,19 @@ def stream_video(
     feature: str,
     range_header: str | None = None,
     head: bool = False,
+    version: str | None = None,
 ) -> Response:
+    # Open the descriptor under the same gate as metadata lookup. Once open,
+    # Unix keeps this exact file readable even after a directory exchange.
+    with dataset_access(registry.get(dataset_id)):
+        return _stream_video(registry, dataset_id, episode_index, feature,
+                             range_header, head, version)
+
+
+def _stream_video(registry, dataset_id, episode_index, feature, range_header, head, version):
     source = video_source(registry, dataset_id, episode_index, feature)
+    if version is not None and source.get("version") != version:
+        raise ReplayError(409, "视频文件已更新，请重新读取片段视频信息。")
     try:
         size = source["path"].stat().st_size
     except FileNotFoundError as exc:

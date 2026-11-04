@@ -8,7 +8,7 @@ import { ErrorState } from '../components/ui/ResourceState'
 import { ReferencePanel } from '../components/workspace/ReferencePanel'
 import { Timeline } from '../components/workspace/Timeline'
 import { VisualizationCard } from '../components/workspace/VisualizationCard'
-import { OperationPanel } from '../components/workspace/OperationPanel'
+import { OperationPanel, type WorkspaceMode } from '../components/workspace/OperationPanel'
 import { EpisodeAnnotation } from '../components/workspace/EpisodeAnnotation'
 import { Ros2HealthPanel } from '../components/workspace/Ros2HealthPanel'
 import { useApiResource } from '../hooks/useApiResource'
@@ -36,6 +36,13 @@ export function ReplayPage() {
   const [followLatest, setFollowLatest] = useState(true)
   const [pendingLatest, setPendingLatest] = useState<LatestEpisode | null>(null)
   const [operation, setOperation] = useState<Operation | null>(null)
+  const [selectedMode, setSelectedMode] = useState<WorkspaceMode | null>(null)
+  const mode =
+    selectedMode ??
+    (isOperationActive(operation) &&
+    (operation?.kind === 'collect' || operation?.kind === 'inference')
+      ? operation.kind
+      : 'replay')
   const inferenceActive = operation?.kind === 'inference' && isOperationActive(operation)
   const list = useApiResource<{ datasets: DatasetSummary[] }>('/api/datasets')
   const health = useApiResource<{ status: string }>('/api/health')
@@ -72,6 +79,7 @@ export function ReplayPage() {
   const loading = list.loading || dataset.loading || episode.loading
   function openPublishedEpisode(latest: LatestEpisode) {
     playback.pause()
+    setSelectedMode('replay')
     setPendingLatest(latest)
     setParams({ dataset: latest.dataset_id, episode: latest.episode_index.toString() })
     list.retry()
@@ -114,9 +122,7 @@ export function ReplayPage() {
       list.data?.datasets.some((item) => item.id === datasetId)
     ) {
       const blocks = episode.data.blocks
-      const cameras = blocks.filter(
-        (feature) => feature.kind === 'video',
-      )
+      const cameras = blocks.filter((feature) => feature.kind === 'video')
       const ee = blocks.find((feature) => feature.kind === 'ee')
       setWorkspace({ selectionKey, features: [...cameras, ...(ee ? [ee] : [])] })
       setPendingLatest(null)
@@ -152,6 +158,7 @@ export function ReplayPage() {
   const addFeature = useCallback(
     (feature: DataFeature) => {
       if (!ready || feature.kind === 'unsupported') return
+      setSelectedMode('replay')
       setWorkspace((previous) => {
         const current = previous.selectionKey === selectionKey ? previous.features : []
         return current.some((item) => item.key === feature.key)
@@ -191,6 +198,11 @@ export function ReplayPage() {
   function clearWorkspace() {
     playback.pause()
     setWorkspace({ selectionKey, features: [] })
+  }
+
+  function changeMode(next: WorkspaceMode) {
+    playback.pause()
+    setSelectedMode(next)
   }
 
   const retry = useCallback(() => {
@@ -275,38 +287,13 @@ export function ReplayPage() {
           tabIndex={-1}
           className="flex min-w-0 flex-col px-5 py-4 md:min-h-0 md:px-6 xl:px-8"
         >
-          <div className="flex flex-col md:min-h-0 md:flex-1 md:overflow-y-auto">
-            <div className="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-3 border-b-2 border-foreground pb-3">
-              <div>
-                <div className="mb-1 flex items-center gap-3 font-mono text-[10px] tracking-widest text-muted-foreground [&>code]:text-foreground">
-                  <span>01 / 数据回放</span>
-                  <span>/</span>
-                  <code>{datasetId ? episodeLabel(episodeIndex) : 'SELECT DATASET'}</code>
-                </div>
-                <h1 className="font-display text-2xl leading-tight font-normal">
-                  遥操回放和控制平台
-                </h1>
-              </div>
-              <div className="flex items-center gap-4">
-                <span className="hidden items-center gap-2 font-mono text-[11px] text-muted-foreground xl:flex">
-                  <Icon name="layers" size={13} />
-                  本地工作台
-                </span>
-                <Button
-                  variant="secondary"
-                  disabled={!features.length}
-                  onClick={clearWorkspace}
-                  aria-label="清空参考栏"
-                  data-testid="clear-workspace"
-                >
-                  <Icon name="reset" size={14} />
-                  清空画布
-                </Button>
-              </div>
-            </div>
+          <div className="flex flex-col md:min-h-0 md:flex-1">
+            <h1 className="sr-only">遥操回放和控制平台</h1>
             <OperationPanel
               dataset={dataset.data}
               episodeIndex={episodeIndex}
+              mode={mode}
+              onModeChange={changeMode}
               onChanged={setOperation}
               onFinished={(operation) => {
                 if (operation.kind === 'inference' && operation.result_episode) {
@@ -316,95 +303,107 @@ export function ReplayPage() {
                 if (operation.kind === 'replay' || operation.kind === 'delete') clearWorkspace()
                 retry()
               }}
-            />
-            {latestError ? (
-              <p role="alert" className="mb-4 text-sm">
-                新片段检测暂不可用：{latestError}，正在重试。
-              </p>
-            ) : null}
-            {episode.data ? (
-              <EpisodeAnnotation
-                key={selectionKey}
-                episode={episode.data}
-                onSaved={episode.update}
-                disabled={inferenceActive}
-                inferenceResult={isInferenceResult}
-              />
-            ) : null}
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 pb-3 [&>div]:flex [&>div]:flex-wrap [&>div]:items-center [&>div]:gap-2 [&_h2]:font-display [&_h2]:text-lg">
-              <div>
-                <span aria-hidden="true" className="size-3 border-2 border-foreground" />
-                <h2>参考栏</h2>
-                <span className="ml-2 border-l border-foreground pl-3 font-mono text-[11px]">
-                  {features.length} 个视图
-                </span>
-              </div>
-              <div>
-                <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={followLatest}
-                    onChange={(event) => setFollowLatest(event.target.checked)}
-                    className="size-4 accent-foreground"
-                  />
-                  自动打开新保存片段
-                </label>
-                <span className="font-mono text-[10px] text-muted-foreground sm:ml-3">
-                  {loading
-                    ? '正在读取片段…'
-                    : episode.data
-                      ? `${episode.data.length} 帧 · ${duration.toFixed(2)} 秒`
-                      : '等待数据'}
-                </span>
-              </div>
-            </div>
-            {error ? (
-              <div className="mb-5 shrink-0 border-l-4 border-foreground bg-muted">
-                <ErrorState message={error} onRetry={retry} />
-              </div>
-            ) : list.data && !datasets.length ? (
-              <div className="mb-5 shrink-0 border-l-4 border-foreground bg-muted">
-                <ErrorState
-                  message="尚未发现数据集。将 LeRobot 数据集放入数据目录，再点击「重新扫描」。"
-                  onRetry={retry}
-                />
-              </div>
-            ) : null}
-            <ReferencePanel
-              count={features.length}
-              disabled={!ready}
-              onDropFeature={dropFeature}
-              onAddDefaults={addDefaults}
             >
-              {features.map((feature) => (
-                <VisualizationCard
-                  key={`${selectionKey}:${feature.key}`}
-                  feature={feature}
-                  datasetId={datasetId}
-                  episodeIndex={episodeIndex}
-                  time={playback.time}
-                  duration={duration}
-                  playing={playback.playing}
-                  rate={playback.rate}
-                  seekVersion={playback.seekVersion}
-                  onSeek={playback.seek}
-                  onToggle={playback.toggle}
-                  onRemove={() => removeFeature(feature.key)}
+              {latestError ? (
+                <p role="alert" className="mb-4 text-sm">
+                  新片段检测暂不可用：{latestError}，正在重试。
+                </p>
+              ) : null}
+              {episode.data ? (
+                <EpisodeAnnotation
+                  key={selectionKey}
+                  episode={episode.data}
+                  onSaved={episode.update}
+                  disabled={inferenceActive}
+                  inferenceResult={isInferenceResult}
                 />
-              ))}
-            </ReferencePanel>
+              ) : null}
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 pb-3 [&>div]:flex [&>div]:flex-wrap [&>div]:items-center [&>div]:gap-2 [&_h2]:font-display [&_h2]:text-lg">
+                <div>
+                  <span aria-hidden="true" className="size-3 border-2 border-foreground" />
+                  <h2>参考栏</h2>
+                  <span className="ml-2 border-l border-foreground pl-3 font-mono text-[11px]">
+                    {features.length} 个视图
+                  </span>
+                </div>
+                <div>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={followLatest}
+                      onChange={(event) => setFollowLatest(event.target.checked)}
+                      className="size-4 accent-foreground"
+                    />
+                    自动打开新保存片段
+                  </label>
+                  <span className="hidden font-mono text-[10px] text-muted-foreground lg:inline">
+                    {loading
+                      ? '正在读取片段…'
+                      : episode.data
+                        ? `${episodeLabel(episodeIndex)} · ${episode.data.length} 帧 · ${duration.toFixed(2)} 秒`
+                        : '等待数据'}
+                  </span>
+                  <Button
+                    variant="secondary"
+                    className="px-3!"
+                    disabled={!features.length}
+                    onClick={clearWorkspace}
+                    aria-label="清空参考栏"
+                    data-testid="clear-workspace"
+                  >
+                    <Icon name="reset" size={14} />
+                    清空画布
+                  </Button>
+                </div>
+              </div>
+              {error ? (
+                <div className="mb-5 shrink-0 border-l-4 border-foreground bg-muted">
+                  <ErrorState message={error} onRetry={retry} />
+                </div>
+              ) : list.data && !datasets.length ? (
+                <div className="mb-5 shrink-0 border-l-4 border-foreground bg-muted">
+                  <ErrorState
+                    message="尚未发现数据集。将 LeRobot 数据集放入数据目录，再点击「重新扫描」。"
+                    onRetry={retry}
+                  />
+                </div>
+              ) : null}
+              <ReferencePanel
+                count={features.length}
+                disabled={!ready}
+                onDropFeature={dropFeature}
+                onAddDefaults={addDefaults}
+              >
+                {features.map((feature) => (
+                  <VisualizationCard
+                    key={`${selectionKey}:${feature.key}:${dataset.data?.storage_revision || ''}`}
+                    feature={feature}
+                    datasetId={datasetId}
+                    episodeIndex={episodeIndex}
+                    time={playback.time}
+                    duration={duration}
+                    playing={playback.playing}
+                    rate={playback.rate}
+                    seekVersion={playback.seekVersion}
+                    onSeek={playback.seek}
+                    onToggle={playback.toggle}
+                    onRemove={() => removeFeature(feature.key)}
+                  />
+                ))}
+              </ReferencePanel>
+              <Timeline
+                time={playback.time}
+                duration={duration}
+                playing={playback.playing}
+                rate={playback.rate}
+                fps={dataset.data?.fps || 30}
+                disabled={!ready || !features.length}
+                onToggle={playback.toggle}
+                onSeek={playback.seek}
+                onRateChange={playback.setRate}
+              />
+            </OperationPanel>
           </div>
-          <Timeline
-            time={playback.time}
-            duration={duration}
-            playing={playback.playing}
-            rate={playback.rate}
-            fps={dataset.data?.fps || 30}
-            disabled={!ready || !features.length}
-            onToggle={playback.toggle}
-            onSeek={playback.seek}
-            onRateChange={playback.setRate}
-          />
         </main>
       </div>
       <footer className="relative grid shrink-0 grid-cols-1 border-t border-foreground bg-background font-mono text-[10px] text-muted-foreground md:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)]">

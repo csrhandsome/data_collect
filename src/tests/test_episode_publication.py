@@ -16,6 +16,7 @@ from control.config import load_config
 from control.direct.fake import FakeBackend
 from replay.backend.main import create_app
 from replay.scripts.read_dataset import read_dataset
+from replay.scripts.resolve_video import resolve_video
 
 
 @pytest.mark.parametrize("audio", [False, True])
@@ -73,7 +74,8 @@ def test_publish_then_annotate_and_continue_recording(tmp_path, audio):
     assert len(list((root / "data").rglob("*.parquet"))) == 2
 
 
-def test_y_button_only_saves_and_publishes_unannotated_episode(tmp_path, monkeypatch):
+@pytest.mark.parametrize("compact", [False, True])
+def test_y_button_only_saves_and_publishes_unannotated_episode(tmp_path, monkeypatch, compact):
     class SaveVR(FakeVR):
         reads = 0
 
@@ -82,11 +84,14 @@ def test_y_button_only_saves_and_publishes_unannotated_episode(tmp_path, monkeyp
             sample = super().latest
             self.reads += 1
             sample.y_pressed = self.reads == 25
+            # Saving returns to start and requires a fresh deadman release.
+            sample.arm_enabled = self.reads != 26
             return sample
 
     monkeypatch.setattr("control.collection.pipeline.make_vr", lambda *_: SaveVR())
     config = copy.deepcopy(load_config())
-    config["dataset"].update(root=str(tmp_path), date="button_publish")
+    config["dataset"].update(root=str(tmp_path), date="button_publish", compact_on_stop=compact)
+    config["camera"]["image_hw"] = 32
     config["audio"].update(enabled=False, vad_enabled=False)
     observed = []
     finish = EpisodeRecorder.finish
@@ -104,3 +109,7 @@ def test_y_button_only_saves_and_publishes_unannotated_episode(tmp_path, monkeyp
     monkeypatch.setattr(EpisodeRecorder, "finish", check_finish)
     run_collection(config, dry_run=True, max_steps=40)
     assert observed == [0, 1]
+    root = tmp_path / "franka_lerobot_button_publish"
+    assert len(list((root / "data").rglob("*.parquet"))) == (1 if compact else 2)
+    assert len(list((root / "videos").rglob("*.mp4"))) == (2 if compact else 4)
+    assert (resolve_video(root, 1, "observation.exterior_image")["start_time_s"] > 0) is compact

@@ -32,6 +32,7 @@ def video_content(
     episode_index: EpisodeIndex,
     registry: Registry,
     feature: VideoFeature = "exterior_image_1_left",
+    version: Annotated[str | None, Query(max_length=128)] = None,
 ) -> Response:
     return stream_video(
         registry,
@@ -40,4 +41,5 @@ def video_content(
         feature,
         range_header=request.headers.get("range"),
         head=request.method == "HEAD",
+        version=version,
     )

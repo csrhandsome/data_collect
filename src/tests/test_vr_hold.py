@@ -151,7 +151,10 @@ def test_collection_sends_fixed_idle_target_without_starting_recording(tmp_path,
         lambda **kwargs: arm_factory(config=kwargs["config"], backend=backend),
     )
     monkeypatch.setattr(pipeline, "make_vr", lambda config, dry_run: IdleVR())
-    monkeypatch.setattr(pipeline, "open_dataset", lambda config: (Mock(), tmp_path))
+    dataset = Mock()
+    dataset.meta.total_episodes = 0
+    recorder.dataset = dataset
+    monkeypatch.setattr(pipeline, "open_dataset", lambda config: (dataset, tmp_path))
     monkeypatch.setattr(pipeline, "EpisodeRecorder", lambda *args: recorder)
     config = load_config()
     config["robot"]["move_to_start"] = False

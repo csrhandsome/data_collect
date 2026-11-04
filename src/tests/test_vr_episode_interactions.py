@@ -139,24 +139,26 @@ def test_collection_save_and_discard_both_return_to_start_before_rearming(
     backend = FakeBackend()
     monkeypatch.setattr("control.direct.fake.FakeBackend", lambda: backend)
     moves = []
-    instances = []
-    original_init = EpisodeRecorder.__init__
     original_move = backend.move_joints
     original_start = EpisodeRecorder.start
     starts = []
+    boundaries = []
+    finish = pipeline.AsyncEpisodeRecorder.finish
 
-    def init_recorder(recorder, *args, **kwargs):
-        original_init(recorder, *args, **kwargs)
-        instances.append(recorder)
+    def finish_episode(recorder, state, **kwargs):
+        finish(recorder, state, **kwargs)
+        boundaries.append(not recorder.active)
 
     def move(target, speed):
-        assert not instances[0].active  # Reset motion is outside the episode.
+        # The capture boundary ends immediately; disk publication may still run.
+        if moves:
+            assert boundaries[-1]
         moves.append(np.array(target))
         return original_move(target, speed)
 
-    def start(recorder):
+    def start(recorder, **kwargs):
         starts.append(True)
-        original_start(recorder)
+        original_start(recorder, **kwargs)
 
     tick = 0
 
@@ -169,8 +171,8 @@ def test_collection_save_and_discard_both_return_to_start_before_rearming(
             close=False, open=False, axis=0, source_ns=now, source_seq=tick, released=tick == 6,
         )
 
-    monkeypatch.setattr(pipeline.EpisodeRecorder, "__init__", init_recorder)
     monkeypatch.setattr(pipeline.EpisodeRecorder, "start", start)
+    monkeypatch.setattr(pipeline.AsyncEpisodeRecorder, "finish", finish_episode)
     monkeypatch.setattr(backend, "move_joints", move)
     monkeypatch.setattr(VRResampler, "sample", sample)
     run_collection(config, dry_run=True, max_steps=6)

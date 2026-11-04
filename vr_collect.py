@@ -15,7 +15,9 @@ def main(argv=None):
     )
     parser.add_argument("--max-steps", type=int, default=0)
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s.%(msecs)03d %(levelname)s:%(name)s:%(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S")
     config = load_config(args.config)
     from control.collection.pipeline import run_collection
 

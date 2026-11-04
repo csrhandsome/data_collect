@@ -234,6 +234,37 @@ def test_disconnected_and_disabled_public_gripper_reject_commands():
         assert arm._gripper_executor is None and arm._backend.streaming
 
 
+def test_unsubscribed_franka_gripper_stays_closed_and_skips_actions():
+    from control.ros2.gripper_controller import Ros2GripperController
+
+    calls = []
+
+    class Client:
+        def wait_for_server(self, timeout_sec):
+            calls.append(timeout_sec)
+            return False
+
+    controller = Ros2GripperController({"gripper": {"type": "franka"}, "ros2": {}}, node=None)
+    controller._gripper_sub = SimpleNamespace(get_publisher_count=lambda: 0)
+    controller._actions = {"move": Client(), "grasp": Client()}
+    state = controller.get_state()
+    assert state.commanded_open_ratio == 0.0
+    assert state.measured_width_m == 0.0
+    assert controller.command(1.0, speed=0.2, force=60) is True
+    assert controller.get_state().commanded_open_ratio == 0.0
+    controller.stop()
+    assert calls == []
+
+    controller._gripper_sub = SimpleNamespace(get_publisher_count=lambda: 1)
+    controller._ratio, controller._width = 0.4, 0.02
+    state = controller.get_state()
+    assert state.commanded_open_ratio == 0.4
+    assert state.measured_width_m == 0.02
+    with pytest.raises(TimeoutError, match="move action unavailable"):
+        controller.command(1.0, speed=0.2, force=60)
+    assert calls == [10.0]
+
+
 def test_unknown_type_rejected_before_sdk_connection(sdk):
     with pytest.raises(ValueError, match="Unknown gripper"):
         create_runner(config={"gripper": {"type": "unknown"}})

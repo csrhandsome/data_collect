@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from control.collection.schema import features
+from control.collection.video_writer import configure_recording_writer
 from control.util.lerobot_util import _resume_existing_dataset_for_recording
 
 
@@ -64,11 +65,12 @@ def open_dataset(config):
             fps=fps,
             robot_type="panda",
             features=schema,
-            image_writer_threads=4,
+            image_writer_threads=0,
             image_writer_processes=0,
             metadata_buffer_size=1,
             use_videos=any(ft["dtype"] == "video" for ft in schema.values()),
             rgb_encoder=encoder,
             encoder_threads=2,
+            streaming_encoding=True,
         )
-    return dataset, root
+    return configure_recording_writer(dataset), root

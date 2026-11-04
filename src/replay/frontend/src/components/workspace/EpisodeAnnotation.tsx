@@ -66,11 +66,11 @@ export function EpisodeAnnotation({
       aria-busy={pending}
     >
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
-        <div>
-          <h2 className="font-display text-lg">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h2 className="font-display text-base">
             {inferenceResult ? '本次推理结果' : '片段结果'} · {episodeLabel(episode.episode_index)}
           </h2>
-          <p role="status" className="mt-1 font-mono text-[11px] text-muted-foreground">
+          <p role="status" className="font-mono text-[11px] text-muted-foreground">
             {pending ? '正在保存标注…' : `当前结果：${status}${saved ? ' · 已保存' : ''}`}
           </p>
           {disabled ? (
