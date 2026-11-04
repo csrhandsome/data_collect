@@ -63,19 +63,35 @@ export const DataSidebar = memo(function DataSidebar({
         </span>
       </div>
       <div className="shrink-0 border-b-2 border-foreground px-5 py-3 md:px-6">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <label className="block font-mono text-xs tracking-widest" htmlFor="dataset-select">
+        <div className="mb-2 flex min-w-0 items-center gap-2">
+          <label className="shrink-0 font-mono text-xs tracking-widest" htmlFor="dataset-select">
             数据集
           </label>
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[10px]">
+            {dataset ? (
+              <>
+                <span className="shrink-0 bg-foreground px-1.5 py-0.5 text-background">
+                  LeRobot {dataset.version}
+                </span>
+                <span
+                  className="truncate text-muted-foreground"
+                  title={dataset.robot_type || '未标注机器人'}
+                >
+                  {dataset.robot_type || '未标注机器人'}
+                </span>
+              </>
+            ) : null}
+          </div>
           <Button
             variant="secondary"
-            className="px-3! text-[11px]!"
+            className="size-7 min-h-0! shrink-0 p-0!"
             onClick={onScan}
             disabled={scanning}
             data-testid="scan-datasets"
+            aria-label={scanning ? '正在扫描数据集目录' : '重新扫描'}
+            title={scanning ? '正在扫描数据集目录' : '重新扫描'}
           >
-            <Icon name="reset" size={12} />
-            {scanning ? '扫描中…' : '重新扫描'}
+            <Icon name="reset" size={12} className={scanning ? 'motion-safe:animate-spin' : ''} />
           </Button>
         </div>
         <div className="relative [&>svg]:pointer-events-none [&>svg]:absolute [&>svg]:top-1/2 [&>svg]:right-3 [&>svg]:-translate-y-1/2">
@@ -101,19 +117,8 @@ export const DataSidebar = memo(function DataSidebar({
           </select>
           <Icon name="chevron" size={14} />
         </div>
-        <p className="mt-3 font-mono text-[11px] text-muted-foreground" role="status">
-          {scanning ? '正在扫描数据集目录…' : `发现 ${datasets.length} 个数据集`}
-        </p>
         {dataset ? (
           <>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <span className="border border-foreground bg-foreground px-2 py-1 font-mono text-[10px] text-background">
-                LeRobot {dataset.version}
-              </span>
-              <span className="max-w-full border border-border-light px-2 py-1 font-mono text-[10px] text-muted-foreground [overflow-wrap:anywhere]">
-                {dataset.robot_type || '未标注机器人'}
-              </span>
-            </div>
             <label
               className="mt-3 mb-2 flex justify-between font-mono text-xs tracking-widest [&>span]:text-muted-foreground"
               htmlFor="episode-select"
@@ -180,7 +185,7 @@ export const DataSidebar = memo(function DataSidebar({
               <span>{supportedCount} 个可视化字段</span>
               <span>拖动或点击 +</span>
             </p>
-            <div className="flex min-h-0 max-h-[360px] flex-col gap-3 overflow-y-auto px-1 py-1 md:max-h-none md:flex-1">
+            <div className="flex min-h-0 max-h-[360px] flex-col gap-2 overflow-y-auto px-1 py-1 md:max-h-none md:flex-1">
               {filtered.map((feature) => (
                 <DataBlock
                   key={feature.key}

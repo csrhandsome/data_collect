@@ -41,7 +41,15 @@ JOBS = (
         "name": "feelsight",
         "source": NAS / "FeelSight",
         "output": NAS / "FeelSight" / "lerobot_v3",
-        "keep": {"lerobot_v3"},
+        "keep": {
+            "lerobot_v3",
+            "feelsight.tar.gz",
+            "feelsight_occlusion.tar.gz",
+            "assets.tar.gz",
+            "README.md",
+            ".gitattributes",
+        },
+        "delete_paths": [NAS / "FeelSight" / ".feelsight-work"],
     },
     {
         "name": "vitamin",

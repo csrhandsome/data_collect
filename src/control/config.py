@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+from datetime import date
 from pathlib import Path
 
 from control.collection.schema import features
@@ -33,8 +34,15 @@ def load_config(path=DEFAULT_CONFIG, _seen=None):
             result.setdefault(section, {}).setdefault(
                 "backend", "ros2" if backend == "ros2" else "direct"
             )
+        _resolve_dataset_date(result)
         validate(result)
     return result
+
+
+def _resolve_dataset_date(config):
+    dataset = config.get("dataset")
+    if isinstance(dataset, dict) and dataset.get("date") == "today":
+        dataset["date"] = date.today().strftime("%Y%m%d")
 
 
 def validate(config):

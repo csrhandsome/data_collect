@@ -4,7 +4,7 @@
 extends: ../dataset/panda.yaml
 dataset:
   repo_id: openpi/franka_lerobot
-  date: "20261025"
+  date: "today"  # 加载时写成当天本地日期，例如 20261031。
   instruction: Place the object into the basket
   label: stop
   enable_logging: true

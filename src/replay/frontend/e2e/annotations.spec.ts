@@ -39,6 +39,7 @@ test('a save opens the new dataset and both cameras, then labels persist after r
     const baseline = page.waitForResponse('**/api/datasets/latest-episode')
     await page.goto('/replay?dataset=demo_v30&episode=0')
     await baseline
+    await page.getByRole('tab', { name: '回放', exact: true }).click()
     await expect(page.getByTestId('episode-annotation')).toContainText('当前结果：未标注')
     await cp(join(demoRoot, 'demo_v30'), root, { recursive: true })
     const sync = join(root, 'episode_000002.sync.json')
@@ -67,6 +68,7 @@ test('a save opens the new dataset and both cameras, then labels persist after r
     await expect(annotation).toContainText('当前结果：失败 · 已保存')
     expect(JSON.parse(await readFile(sync, 'utf8')).success).toBe(false)
     await page.reload()
+    await page.getByRole('tab', { name: '回放', exact: true }).click()
     await expect(annotation.getByRole('button', { name: '失败', exact: true })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -103,6 +105,7 @@ test('automatic opening can be disabled and failed annotation requests can be re
     const baseline = page.waitForResponse('**/api/datasets/latest-episode')
     await page.goto(`/replay?dataset=${name}&episode=0`)
     await baseline
+    await page.getByRole('tab', { name: '回放', exact: true }).click()
     await expect(page.getByTestId('episode-annotation')).toBeVisible()
     await page.getByRole('checkbox', { name: '自动打开新保存片段' }).uncheck()
     await mkdir(join(root, 'audio'), { recursive: true })

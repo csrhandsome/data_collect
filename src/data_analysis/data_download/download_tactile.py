@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Download tactile datasets onto mirnagroup local disk, then copy them to the NAS.
 
-Skipped on purpose: Hoi! full and Daimon-Infinity full.
-WireFishing-M does not fit on the local disk, so each finished file is copied
-to the NAS and removed locally before the next batch is allowed to grow.
+Skipped on purpose: Hoi! full, Daimon-Infinity full, and WireFishing-M.
 """
 
 from __future__ import annotations
@@ -32,10 +30,7 @@ HF_DATASETS = (
 EXTRA_HF = (
     ("tactile-video-pretrain-nc", "yxma/tactile-video-pretrain-nc", 0),
 )
-DATAVERSE = (
-    ("WireFishing-M", "doi:10.7910/DVN/MUOJXI", "part1", 4),
-    ("WireFishing-M", "doi:10.7910/DVN/XOPUXY", "part2", 4),
-)
+DATAVERSE = ()
 DRIVE_FOLDER = "1NDasyshDCL9aaQzxjn_-Q5MBURRT360B"
 PROBE_URLS = {
     "hf-mirror": "https://hf-mirror.com/datasets/suddhu/Feelsight/resolve/main/feelsight_real.tar.gz",

@@ -62,28 +62,36 @@ class FeelSightAligner(BaseAligner):
         archive = self._archive(source)
         frames_root = work / "frames"
         frames_root.mkdir(parents=True, exist_ok=True)
-        print(f"[feelsight] reading {archive.name}", flush=True)
-        with tarfile.open(archive, "r|gz") as handle:
-            for member in handle:
-                match = _MEMBER.search(member.name or "")
-                if match is None or not member.isfile():
-                    continue
-                episode_id = f"{match.group(1)}/{match.group(2)}"
-                if episode_id in finished:
-                    continue
-                key = (match.group(3), match.group(4))
-                feature = _VIEWS.get(key)
-                if feature is None:
-                    continue
-                extracted = handle.extractfile(member)
-                if extracted is None:
-                    continue
-                destination = frames_root / episode_id / feature.replace(".", "_") / f"{int(match.group(5)):06d}.jpg"
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(extracted.read())
+        marker = frames_root / ".extract_complete"
+        if marker.is_file():
+            print(f"[feelsight] using extracted frames in {frames_root}", flush=True)
+        else:
+            print(f"[feelsight] reading {archive.name}", flush=True)
+            with tarfile.open(archive, "r|gz") as handle:
+                for member in handle:
+                    match = _MEMBER.search(member.name or "")
+                    if match is None or not member.isfile():
+                        continue
+                    episode_id = f"{match.group(1)}/{match.group(2)}"
+                    if episode_id in finished:
+                        continue
+                    key = (match.group(3), match.group(4))
+                    feature = _VIEWS.get(key)
+                    if feature is None:
+                        continue
+                    extracted = handle.extractfile(member)
+                    if extracted is None:
+                        continue
+                    destination = frames_root / episode_id / feature.replace(".", "_") / f"{int(match.group(5)):06d}.jpg"
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(extracted.read())
+            marker.write_text("ok\n")
         episode_dirs = sorted({path.parent.parent for path in frames_root.rglob("*.jpg")})
         for episode_dir in episode_dirs:
             episode_id = str(episode_dir.relative_to(frames_root))
+            if episode_id in finished:
+                shutil.rmtree(episode_dir, ignore_errors=True)
+                continue
             episode = self._encode_dir(episode_id, episode_dir, work / "encoded")
             if episode is None:
                 continue
@@ -95,16 +103,19 @@ class FeelSightAligner(BaseAligner):
             shutil.rmtree(work)
         work.mkdir(parents=True)
         videos = {}
-        counts = []
+        selected = []
         for _key, feature in _VIEWS.items():
             frames = sorted((episode_dir / feature.replace(".", "_")).glob("*.jpg"))
             if len(frames) < 2:
                 print(f"[feelsight] skip {episode_id}: missing {feature}", flush=True)
                 shutil.rmtree(work, ignore_errors=True)
                 return None
+            selected.append((feature, frames))
+        length = min(len(frames) for _, frames in selected)
+        for feature, frames in selected:
             sequence = work / feature.replace(".", "_")
             sequence.mkdir()
-            for index, source in enumerate(frames):
+            for index, source in enumerate(frames[:length]):
                 destination = sequence / f"{index:06d}.jpg"
                 try:
                     os.link(source, destination)
@@ -113,8 +124,6 @@ class FeelSightAligner(BaseAligner):
             video = work / f"{feature.replace('.', '_')}.mp4"
             _jpg_to_mp4(sequence, video, fps=10)
             videos[feature] = video
-            counts.append(len(frames))
-        length = min(counts)
         zeros = np.zeros((length, 1), dtype=np.float32)
         return AlignedEpisode(
             key=episode_id,
@@ -174,22 +183,35 @@ class FeelSightAligner(BaseAligner):
 def _jpg_to_mp4(folder: Path, output: Path, fps: int) -> None:
     import subprocess
 
-    subprocess.run(
+    frames = sorted(path for path in folder.glob("*.jpg") if path.stem.isdigit())
+    if len(frames) < 2:
+        raise RuntimeError(f"no jpg sequence in {folder}")
+    width = len(frames[0].stem)
+    expected = [f"{index:0{width}d}" for index in range(len(frames))]
+    if [path.stem for path in frames] != expected:
+        raise RuntimeError(f"jpg sequence in {folder} is not contiguous from 0")
+    result = subprocess.run(
         [
             "ffmpeg",
             "-y",
             "-framerate",
             str(fps),
+            "-start_number",
+            "0",
             "-i",
-            str(folder / "%04d.jpg"),
+            str(folder / f"%0{width}d.jpg"),
             "-frames:v",
-            str(len(list(folder.glob("*.jpg")))),
+            str(len(frames)),
             "-c:v",
             "libx264",
             "-pix_fmt",
             "yuv420p",
             str(output),
         ],
-        check=True,
         capture_output=True,
+        text=True,
+        check=False,
     )
+    if result.returncode != 0 or not output.is_file():
+        detail = (result.stderr or result.stdout or "").strip()[-400:]
+        raise RuntimeError(f"ffmpeg failed for {output}: {detail}")
