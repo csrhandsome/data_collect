@@ -26,8 +26,9 @@ class JsonlSink:
 
 
 class EpisodeRecorder:
-    def __init__(self, dataset, root, config, microphone=None):
+    def __init__(self, dataset, root, config, microphone=None, *, source="collection"):
         self.dataset, self.root, self.config = dataset, Path(root), config
+        self.source = source
         self.microphone = microphone
         self.feature_keys = set(
             features(
@@ -62,7 +63,7 @@ class EpisodeRecorder:
         if self.writer is None:
             # A read/edit boundary ended the previous session. Reopen only when
             # recording starts again, using fresh metadata after any deletion.
-            self.dataset, _ = open_dataset(self.config)
+            self.dataset, _ = open_dataset(self.config, source=self.source)
             self.writer = AsyncDatasetFrames(self.dataset)
         self.index = int(self.dataset.meta.total_episodes)
         self.started_ns = time.monotonic_ns() if started_ns is None else started_ns

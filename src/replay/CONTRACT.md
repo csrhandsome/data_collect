@@ -2,7 +2,7 @@
 
 All commands run from repository root. Python: `uv run ...`; Node: `pnpm --dir src/replay/frontend ...`. No ROS or Docker dependency.
 
-Dataset root defaults to data/dataset for both collection and replay; each direct child with meta/info.json is a dataset; child basename is dataset_id. Hub repo namespaces do not add local directory levels. REPLAY_DATA_ROOT can configure a directory of datasets or a single dataset. The frontend scans on load and has a rescan button to refresh datasets and episode metadata. Never expose arbitrary paths via HTTP.
+Dataset root defaults to data/dataset for both recording and replay. Recording writes separate complete datasets under collection/<basename> and inference/<basename>, with independent episode sequences; it never resumes legacy flat datasets. Hub repo namespaces do not add local directory levels. Replay scans direct children plus one level inside collection/ and inference/; dataset_id is the relative POSIX path (e.g. collection/franka_lerobot_20261106), so identical basenames remain distinct. Grouped display names include the source prefix. REPLAY_DATA_ROOT can configure a directory of datasets, a single source directory, or a single dataset (whose ID remains its basename). API dataset path parameters accept slashes, including URL-encoded slashes; register episode routes before the catch-all dataset detail route. Registry lookups only resolve scanned, confined datasets. The frontend scans on load and has a rescan button to refresh datasets and episode metadata. Never expose arbitrary paths via HTTP.
 
 ## Python parsing interface (src/replay/scripts)
 

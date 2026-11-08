@@ -8,13 +8,17 @@ from control.collection.video_writer import configure_recording_writer
 from control.util.lerobot_util import _resume_existing_dataset_for_recording
 
 
-def open_dataset(config):
+def open_dataset(config, *, source="collection"):
+    if source not in {"collection", "inference"}:
+        raise ValueError("Dataset source must be collection or inference")
+
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     cfg = config["dataset"]
     repo = f"{cfg['repo_id']}_{cfg['date']}"
-    # Keep the Hub repo ID independent of the local, flat dataset directory.
-    root = Path(cfg.get("root", "data/dataset")) / repo.rsplit("/", 1)[-1]
+    # Each workflow owns a complete dataset and an independent episode sequence.
+    # Never resume a legacy flat dataset, which may contain mixed sources.
+    root = Path(cfg.get("root", "data/dataset")) / source / repo.rsplit("/", 1)[-1]
     fps = float(config["camera"].get("fps", 30))
     if not fps.is_integer():
         raise ValueError("Video recording requires an integer camera.fps with this LeRobot version")

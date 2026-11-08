@@ -28,7 +28,7 @@ def local_collection_config(tmp_path, monkeypatch):
 
 def test_resume_before_first_saved_episode(local_collection_config, tmp_path):
     dataset, root = open_dataset(local_collection_config)
-    assert root == tmp_path / "franka_lerobot_startup"
+    assert root == tmp_path / "collection" / "franka_lerobot_startup"
     assert dataset.repo_id == "openpi/franka_lerobot_startup"
     dataset.finalize()
     info_before = (root / "meta/info.json").read_bytes()

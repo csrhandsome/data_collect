@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from .dataset_lock import dataset_access
+from .dataset_lock import dataset_access, dataset_lock_path
 
 
 def confined(root, relative):
@@ -40,7 +40,7 @@ def update_sync(root, episode_index, changes, *, audio=False):
 
 def _update_sync(root, episode_index, changes, *, audio=False):
     root = Path(root).resolve()
-    lock_path = root / ".episode-sync.lock"
+    lock_path = dataset_lock_path(root, kind="sync")
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     temporary = None
     try:

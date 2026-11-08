@@ -9,7 +9,7 @@ dataset:
   label: stop
   enable_logging: true
   max_duration_s: 3600.0
-  root: data/dataset
+  root: data/dataset  # 下分 collection/<数据集名>/ 和 inference/<数据集名>/，独立编号。
   action_space: ee
   video_encoder:
     vcodec: h264

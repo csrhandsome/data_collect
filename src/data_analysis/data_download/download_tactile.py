@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Download tactile datasets onto mirnagroup local disk, then copy them to the NAS.
+"""Shared download transport: stage a file locally, check it, then copy it to the NAS.
 
-Skipped on purpose: Hoi! full, Daimon-Infinity full, and WireFishing-M.
+The dataset list and the command line live in catalog.py and scripts/dataset/download.py.
 """
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -229,9 +228,10 @@ def hf_api(cfg: Settings) -> str:
     return "https://hf-mirror.com"
 
 
-def hf_resolve(cfg: Settings, repo: str, path: str) -> str:
+def hf_resolve(cfg: Settings, repo: str, path: str, revision: str = "main") -> str:
     quoted = urllib.parse.quote(path, safe="/")
-    return f"{hf_api(cfg)}/datasets/{repo}/resolve/main/{quoted}"
+    rev = urllib.parse.quote(revision, safe="")
+    return f"{hf_api(cfg)}/datasets/{repo}/resolve/{rev}/{quoted}"
 
 
 def _next_link(link: str | None, api: str) -> str | None:
@@ -252,14 +252,16 @@ def _next_link(link: str | None, api: str) -> str | None:
     return None
 
 
-def list_hf(cfg: Settings, repo: str) -> list[dict]:
+def list_hf(cfg: Settings, repo: str, revision: str = "main") -> list[dict]:
     """List every file. The tree API pages results, and a single page is not the dataset."""
     api = hf_api(cfg)
     info = fetch_json(f"{api}/api/datasets/{repo}")
     siblings = info.get("siblings") or []
     expected_bytes = int(info.get("usedStorage") or 0)
-    url = f"{api}/api/datasets/{repo}/tree/main?recursive=1&expand=1&limit=100"
-    cache_path = cfg.stage / "lists" / f"{repo.replace('/', '__')}.json"
+    rev = urllib.parse.quote(revision, safe="")
+    url = f"{api}/api/datasets/{repo}/tree/{rev}?recursive=1&expand=1&limit=100"
+    cache_name = f"{repo.replace('/', '__')}__{revision.replace('/', '_')}.json"
+    cache_path = cfg.stage / "lists" / cache_name
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     files: list[dict] = []
     seen: set[str] = set()
@@ -523,21 +525,25 @@ def ship(cfg: Settings, local: Path, job: Job) -> None:
     local.unlink()
 
 
+def nas_ready(path: Path, size: int) -> bool:
+    """A previous done record is only valid when this NAS file is still present."""
+    try:
+        return path.is_file() and (size <= 0 or path.stat().st_size == size)
+    except OSError:
+        return False
+
+
 def run_job(cfg: Settings, job: Job, done_path: Path, done: set[str], lock: threading.Lock) -> None:
     key = f"{job.dataset}/{job.rel}"
     local = cfg.stage / "files" / job.dataset / job.rel
-    if key in done:
+    target = cfg.nas / job.dataset / job.rel
+    if nas_ready(target, job.size):
+        if key not in done:
+            append_done(done_path, job.dataset, job.rel, target.stat().st_size, lock)
+            with lock:
+                done.add(key)
         local.unlink(missing_ok=True)
         return
-    target = cfg.nas / job.dataset / job.rel
-    try:
-        if target.is_file() and (not job.size or target.stat().st_size == job.size):
-            append_done(done_path, job.dataset, job.rel, target.stat().st_size, lock)
-            done.add(key)
-            local.unlink(missing_ok=True)
-            return
-    except OSError:
-        pass
     needed = job.size or 256 * 1024**2
     wait_for_disk(cfg.stage, needed)
     last_error = ""
@@ -662,104 +668,62 @@ def download_touch_and_go(cfg: Settings, done_path: Path, done: set[str], lock: 
         log(f"完成 {key}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="先下载到 mirnagroup 本机，再传到 NAS")
-    parser.add_argument("--stage", type=Path, default=Path("/home/mirnagroup/tactile-stage"))
-    parser.add_argument("--nas", type=Path, default=Path("/mnt/nas"))
-    parser.add_argument("--only", default="", help="只下载这一份，例如 tactile-video-pretrain-nc")
-    args = parser.parse_args()
-    only = args.only.strip()
-    hf_sets = HF_DATASETS
-    if only:
-        hf_sets = tuple(row for row in (*HF_DATASETS, *EXTRA_HF) if row[0] == only)
-        if not hf_sets:
-            raise SystemExit(f"未知数据集 {only}")
-    cfg = Settings(stage=args.stage, nas=args.nas)
-    cfg.stage.mkdir(parents=True, exist_ok=True)
-    ensure_uv_env(cfg.stage)
+def drain_jobs(cfg: Settings, pending: list[Job]) -> None:
     if not cfg.nas.is_dir():
         raise SystemExit(f"NAS 不可用: {cfg.nas}")
+    cfg.stage.mkdir(parents=True, exist_ok=True)
     pid_path = cfg.stage / "download.pid"
     if pid_path.exists():
         old = pid_path.read_text().strip()
         if old.isdigit() and Path(f"/proc/{old}").exists():
             raise SystemExit(f"已有下载进程 {old}")
     pid_path.write_text(str(os.getpid()))
-    done_path = cfg.stage / "done.jsonl"
-    done = load_done(done_path)
-    lock = threading.Lock()
-    log(f"已完成记录 {len(done)} 条，本机剩余 {shutil.disk_usage(cfg.stage).free / 1e9:.1f} GB")
-    choose_settings(cfg)
-    jobs: queue.PriorityQueue = queue.PriorityQueue()
-    seq = [0]
-    listing_errors: list[str] = []
+    try:
+        done_path = cfg.stage / "done.jsonl"
+        done = load_done(done_path)
+        lock = threading.Lock()
+        log(f"待处理 {len(pending)} 个文件，本机剩余 {shutil.disk_usage(cfg.stage).free / 1e9:.1f} GB")
+        jobs: queue.PriorityQueue = queue.PriorityQueue()
+        for index, job in enumerate(pending):
+            jobs.put((job.priority, index, job))
+        failures: list[str] = []
 
-    def list_all() -> None:
-        try:
-            enqueue_hf(cfg, jobs, seq, hf_sets)
-        except Exception as exc:  # noqa: BLE001
-            listing_errors.append(f"Hugging Face: {exc}")
-            log(f"Hugging Face 列表失败: {exc}")
-        if not only:
-            try:
-                enqueue_dataverse(jobs, seq)
-            except Exception as exc:  # noqa: BLE001
-                listing_errors.append(f"Dataverse: {exc}")
-                log(f"Dataverse 列表失败: {exc}")
+        def worker() -> None:
+            while True:
+                item = jobs.get()
+                if item is None or item[2] is None:
+                    jobs.task_done()
+                    return
+                _, _, job = item
+                try:
+                    run_job(cfg, job, done_path, done, lock)
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(f"{job.dataset}/{job.rel}: {exc}")
+                    log(f"放弃 {job.dataset}/{job.rel}: {exc}")
+                finally:
+                    jobs.task_done()
 
-    lister = threading.Thread(target=list_all, name="list")
-    lister.start()
-    drive_error: list[str] = []
+        threads = [threading.Thread(target=worker, name=f"dl-{i}") for i in range(cfg.file_workers)]
+        for thread in threads:
+            thread.start()
+        jobs.join()
+        for index, _ in enumerate(threads):
+            jobs.put((10**9, 10**12 + index, None))
+        for thread in threads:
+            thread.join()
+        if failures:
+            log(f"结束，但有 {len(failures)} 个文件失败")
+            raise SystemExit(1)
+        log(f"完成 {cfg.nas}")
+    finally:
+        if pid_path.exists() and pid_path.read_text().strip() == str(os.getpid()):
+            pid_path.unlink()
 
-    def drive() -> None:
-        if only:
-            return
-        try:
-            download_touch_and_go(cfg, done_path, done, lock)
-        except Exception as exc:  # noqa: BLE001
-            drive_error.append(str(exc))
-            log(f"Touch and Go 失败: {exc}")
 
-    drive_thread = threading.Thread(target=drive, name="touch-and-go")
-    drive_thread.start()
-    pending = 0
-    pending_lock = threading.Lock()
-    failures: list[str] = []
+def main() -> None:
+    from data_analysis.data_download.cli import main as download_main
 
-    def worker() -> None:
-        nonlocal pending
-        while True:
-            item = jobs.get()
-            if item is None or item[2] is None:
-                jobs.task_done()
-                return
-            _, _, job = item
-            with pending_lock:
-                pending += 1
-            try:
-                run_job(cfg, job, done_path, done, lock)
-            except Exception as exc:  # noqa: BLE001
-                failures.append(f"{job.dataset}/{job.rel}: {exc}")
-                log(f"放弃 {job.dataset}/{job.rel}: {exc}")
-            finally:
-                with pending_lock:
-                    pending -= 1
-                jobs.task_done()
-
-    threads = [threading.Thread(target=worker, name=f"dl-{i}") for i in range(cfg.file_workers)]
-    for thread in threads:
-        thread.start()
-    lister.join()
-    jobs.join()
-    for index, _ in enumerate(threads):
-        jobs.put((10**9, 10**12 + index, None))
-    for thread in threads:
-        thread.join()
-    drive_thread.join()
-    if listing_errors or failures or drive_error:
-        log(f"结束，但有失败项: 列表 {len(listing_errors)}，文件 {len(failures)}，Touch and Go {len(drive_error)}")
-        raise SystemExit(1)
-    log("全部数据集已传到 NAS")
+    download_main()
 
 
 if __name__ == "__main__":

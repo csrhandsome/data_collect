@@ -3,6 +3,7 @@
 import json
 import shutil
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -183,6 +184,49 @@ def test_dataset_scan_detects_added_and_moved_datasets(copy_dataset, tmp_path: P
         ]
         assert connection.get("/api/datasets/renamed_dataset/episodes/1").status_code == 200
         assert connection.get("/api/datasets/demo_v30").status_code == 404
+
+
+def test_grouped_datasets_with_same_name_use_distinct_ids(copy_dataset, tmp_path):
+    copy_dataset()
+    for source in ("collection", "inference"):
+        copy_dataset(destination=tmp_path / source)
+    with TestClient(create_app(tmp_path)) as client:
+        datasets = client.get("/api/datasets").json()["datasets"]
+        assert [item["id"] for item in datasets] == [
+            "collection/demo_v30", "demo_v30", "inference/demo_v30",
+        ]
+        assert len({item["name"] for item in datasets}) == 3
+        for source in ("collection", "inference"):
+            dataset_id = f"{source}/demo_v30"
+            # The frontend encodes the slash in API URLs.
+            url = f"/api/datasets/{quote(dataset_id, safe='')}"
+            assert client.get(url).json()["id"] == dataset_id
+            assert len(client.get(f"{url}/episodes").json()["episodes"]) == 3
+            prefix = f"{url}/episodes/1"
+            assert client.get(prefix).json()["dataset_id"] == dataset_id
+            assert client.get(f"{prefix}/ee").json()["dataset_id"] == dataset_id
+            assert client.get(f"{prefix}/series", params={"feature": "ee_pose"}).status_code == 200
+            video = client.get(f"{prefix}/video").json()
+            assert video["dataset_id"] == dataset_id
+            assert client.get(video["url"], headers={"Range": "bytes=0-31"}).status_code == 206
+            response = client.post(f"{prefix}/annotation", json={"success": source == "collection"})
+            assert response.status_code == 200
+        assert client.get("/api/datasets/collection%2Fdemo_v30/episodes/1").json()["success"] is True
+        assert client.get("/api/datasets/inference%2Fdemo_v30/episodes/1").json()["success"] is False
+        assert client.get("/api/datasets/demo_v30/episodes/1").json()["success"] is None
+
+
+def test_grouped_scan_rejects_symlinks_outside_data_root(copy_dataset, tmp_path):
+    root = tmp_path / "registered"
+    root.mkdir()
+    outside = copy_dataset(destination=tmp_path / "outside")
+    (root / "collection").symlink_to(outside.parent, target_is_directory=True)
+    (root / "inference").mkdir()
+    (root / "inference" / outside.name).symlink_to(outside, target_is_directory=True)
+    with TestClient(create_app(root)) as client:
+        assert client.get("/api/datasets").json() == {"datasets": []}
+        assert client.get("/api/datasets/collection%2Fdemo_v30").status_code == 404
+        assert client.get("/api/datasets/inference%2Fdemo_v30").status_code == 404
 
 
 def test_malformed_metadata_is_422_without_local_path(copy_dataset):

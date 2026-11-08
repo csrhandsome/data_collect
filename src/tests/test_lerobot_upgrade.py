@@ -26,7 +26,7 @@ def v3_collection(tmp_path):
     for index in range(3):
         config["dataset"]["instruction"] = f"Task {index}"
         run_collection(config, dry_run=True, max_steps=20)
-    return config, tmp_path / "franka_lerobot_upgrade"
+    return config, tmp_path / "collection" / "franka_lerobot_upgrade"
 
 
 def test_v3_deletion_rewrites_shared_data_and_sidecars(v3_collection):

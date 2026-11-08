@@ -10,10 +10,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from control.base_runner import BaseRunner
+from control.collection.pipeline import run_collection
 from control.direct.fake import FakeBackend
 from control.inference.loop import run_inference
 from replay.backend.main import create_app
 from replay.backend.operations import OperationManager
+from replay.scripts.read_dataset import read_dataset
 
 
 class FastPolicy:
@@ -49,6 +51,49 @@ def config_for(root, *, audio=False):
             "action_fps": 30, "model_horizon": 50, "execute_steps": 10,
         },
     }
+
+
+@pytest.mark.parametrize("audio", [False, True])
+def test_collection_and_inference_save_separate_datasets_and_resume(tmp_path, audio):
+    import shutil
+
+    cfg = config_for(tmp_path, audio=audio)
+    cfg["audio"]["vad_enabled"] = False
+    cfg["inference"]["enable_vr_takeover"] = True
+    name = "inference_test"
+    roots = {source: tmp_path / source / name for source in ("collection", "inference")}
+    for index in range(2):
+        run_collection(cfg, dry_run=True, max_steps=20)
+        if index == 0:
+            # A pre-existing flat dataset must stay readable and untouched.
+            legacy = tmp_path / name
+            shutil.copytree(roots["collection"], legacy)
+            original = {
+                path.relative_to(legacy): path.read_bytes()
+                for path in legacy.rglob("*") if path.is_file()
+            }
+        result = run_inference(cfg, dry_run=True, max_steps=20, policy=FastPolicy())
+        assert result["episode"]["dataset_id"] == f"inference/{name}"
+        assert result["episode"]["episode_index"] == index
+        for source, root in roots.items():
+            assert read_dataset(root)["total_episodes"] == index + 1
+            assert list((root / "data").rglob("*.parquet"))
+            assert list((root / "videos").rglob("*.mp4"))
+            folder = root / "audio" if audio else root
+            sync = json.loads((folder / f"episode_{index:06d}.sync.json").read_text())
+            assert sync["source"] == source
+            assert (root / sync["action_trace"]).is_file()
+            if audio:
+                assert (folder / f"episode_{index:06d}.wav").is_file()
+    assert {
+        path.relative_to(legacy): path.read_bytes()
+        for path in legacy.rglob("*") if path.is_file()
+    } == original
+    with TestClient(create_app(tmp_path)) as client:
+        datasets = client.get("/api/datasets").json()["datasets"]
+        assert {item["id"]: item["total_episodes"] for item in datasets} == {
+            name: 1, f"collection/{name}": 2, f"inference/{name}": 2,
+        }
 
 
 def test_vr_takeover_auto_records_actual_sources_and_resumes_policy(tmp_path, monkeypatch):

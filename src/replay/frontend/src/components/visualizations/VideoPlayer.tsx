@@ -78,8 +78,14 @@ export function VideoPlayer({
 
   function loadedMetadata() {
     const player = element.current
-    if (player) player.currentTime = clipTime
-    setReady(true)
+    if (player) player.currentTime = latestClipTime.current
+  }
+
+  function markReady() {
+    const player = element.current
+    // Metadata alone does not mean the frame at the episode offset is decoded.
+    if (player && !player.seeking && player.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA)
+      setReady(true)
   }
 
   function enforceBounds() {
@@ -115,10 +121,12 @@ export function VideoPlayer({
           playsInline
           preload="metadata"
           onLoadedMetadata={loadedMetadata}
+          onSeeked={markReady}
           onTimeUpdate={enforceBounds}
           onWaiting={() => setBuffering(true)}
           onPlaying={() => setBuffering(false)}
           onCanPlay={() => {
+            markReady()
             setBuffering(false)
             // Recover once after a real stall, rather than repeatedly seeking
             // during normal playback or while a seek is still decoding.

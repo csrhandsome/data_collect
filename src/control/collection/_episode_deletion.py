@@ -17,6 +17,7 @@ from typing import Any, Dict, List
 import pyarrow as pa
 
 from control.collection.deletion import EpisodeDeletionResult
+from replay.scripts.dataset_lock import dataset_lock_path
 
 logger = logging.getLogger(__name__)
 
@@ -274,8 +275,8 @@ def _delete_episode(
 ) -> EpisodeDeletionResult:
     if dry_run or not _is_lerobot_dataset_dir(dataset_dir):
         return _prepare_episode(dataset_dir, episode_index, dry_run=True)
-    # The persistent sibling lock serializes deletion transactions.
-    lock_path = dataset_dir.parent / f".{dataset_dir.name}.delete.lock"
+    # Share the persistent access lock with readers and compaction.
+    lock_path = dataset_lock_path(dataset_dir)
     with lock_path.open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

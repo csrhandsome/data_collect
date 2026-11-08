@@ -143,7 +143,7 @@ def test_selected_fields_are_saved_and_schema_changes_prevent_resume(tmp_path, s
     config["action"] = {key: save_actions for key in config["action"]}
     config["audio"].update(enabled=False, vad_enabled=False)
     run_collection(config, dry_run=True, max_steps=30)
-    root = tmp_path / "franka_lerobot_selected"
+    root = tmp_path / "collection" / "franka_lerobot_selected"
     info = json.loads((root / "meta/info.json").read_text())
     selected = {"observation.ee_position"} | (
         {"action.joint_position", "action.ee_pose", "action.gripper_position"}

@@ -7,7 +7,7 @@ from replay.backend.models import EETrajectory
 from replay.backend.registry import DatasetRegistry
 from replay.backend.services.get_ee import get_ee
 
-router = APIRouter(prefix="/datasets/{dataset_id}/episodes/{episode_index}", tags=["ee"])
+router = APIRouter(prefix="/datasets/{dataset_id:path}/episodes/{episode_index}", tags=["ee"])
 
 
 @router.get("/ee", response_model=EETrajectory)

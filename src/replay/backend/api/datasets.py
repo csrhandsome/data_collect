@@ -23,6 +23,6 @@ def latest_episode(registry: Registry) -> LatestEpisodeResponse:
     return get_latest_episode(registry)
 
 
-@router.get("/{dataset_id}", response_model=DatasetDetail)
+@router.get("/{dataset_id:path}", response_model=DatasetDetail)
 def dataset(dataset_id: str, registry: Registry) -> DatasetDetail:
     return get_dataset(registry, dataset_id)

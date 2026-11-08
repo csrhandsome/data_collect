@@ -8,7 +8,7 @@ from replay.backend.registry import DatasetRegistry
 from replay.backend.services.get_video import get_video
 from replay.backend.services.stream_video import stream_video
 
-router = APIRouter(prefix="/datasets/{dataset_id}/episodes/{episode_index}", tags=["video"])
+router = APIRouter(prefix="/datasets/{dataset_id:path}/episodes/{episode_index}", tags=["video"])
 Registry = Annotated[DatasetRegistry, Depends(get_registry)]
 EpisodeIndex = Annotated[int, Path(ge=0)]
 VideoFeature = Annotated[str, Query(min_length=1)]

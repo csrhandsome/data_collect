@@ -25,9 +25,9 @@ pnpm --dir src/replay/frontend dev --host 127.0.0.1
 
 ## 页面操作
 
-打开页面时自动扫描数据目录，左侧的数据集下拉框列出所有包含 `meta/info.json` 的直接子目录。默认目录为 `data/dataset/`，例如 `data/dataset/franka_lerobot_7_6_audio_v3_mp4/meta/info.json`。放入新数据集或采集结束后，点击「重新扫描」更新列表和片段信息，无需重启服务。再选择数据集和 episode，查看字段的类型、shape 和名称。
+打开页面时自动扫描数据目录，左侧的数据集下拉框列出包含 `meta/info.json` 的数据集。默认目录为 `data/dataset/`，同时识别 `collection/<数据集名>/`、`inference/<数据集名>/` 和已有的平铺数据集目录。两种来源下同名数据集分别显示来源前缀，独立选择和回放。放入新数据集或采集结束后，点击「重新扫描」更新列表和片段信息，无需重启服务。再选择数据集和 episode，查看字段的类型、shape 和名称。
 
-采集保存路径也默认为 `data/dataset/<数据集名称>/`，由 `config/train/panda.yaml` 的 `dataset.root` 配置；`openpi/franka_lerobot` 这样的 repo ID 只使用最后一段作为本地目录名称。回放目录由同一配置文件的 `replay.data_root` 配置，`REPLAY_DATA_ROOT` 可以覆盖它。已有 `data/openpi/` 数据已迁移到 `data/dataset/`。
+采集保存路径默认为 `data/dataset/collection/<数据集名称>/`，推理录制为 `data/dataset/inference/<数据集名称>/`，由 `config/train/panda.yaml` 的 `dataset.root` 配置共同根目录；`openpi/franka_lerobot` 这样的 repo ID 只使用最后一段作为数据集目录名称。两边的 episode 独立编号和续写，不再追加到已有平铺目录。回放目录由同一配置文件的 `replay.data_root` 配置，`REPLAY_DATA_ROOT` 可以覆盖它，也可指向单一来源目录或单个数据集。已有 `data/openpi/` 数据已迁移到 `data/dataset/`。
 
 每段保存后仍可立即回放和标注。本轮采集结束并关闭设备连接后，默认自动将已封口的文件合并为 LeRobot v3 分片：每路相机的 MP4 按 `meta/info.json` 中的 `video_files_size_in_mb`（默认 200 MB）合并，数值 Parquet 按 `data_files_size_in_mb`（默认 100 MB）合并，并同步更新 episode 的文件索引和视频起止时间。数值文件为每个 episode 保留独立行组，曲线接口只读取对应行组。episode 编号、成功/失败标注、保存时间、音频/VAD 和 100 Hz 轨迹保持不变；视频通过复制压缩包合并，不重新编码。结束后等待任务状态完成再关闭服务。`dataset.compact_on_stop: false` 可关闭自动合并；没有新增保存片段的会话不触发合并。
 
@@ -49,11 +49,11 @@ pnpm --dir src/replay/frontend dev --host 127.0.0.1
 统一真机回放入口（已移除三个重复的 `replay_openpi_*` 查看包装脚本及旧 `replay_openvla_hdf5.py`）：
 
 ```bash
-uv run python -m replay.scripts.replay_robot --dataset data/dataset/<数据集名称>
+uv run python -m replay.scripts.replay_robot --dataset data/dataset/collection/<数据集名称>
 # 模拟机械臂；不连接硬件、不改写数据
-uv run python -m replay.scripts.replay_robot --dataset data/dataset/<数据集名称> --dry-run
+uv run python -m replay.scripts.replay_robot --dataset data/dataset/collection/<数据集名称> --dry-run
 # 指定片段、降低回放速度
-uv run python -m replay.scripts.replay_robot --dataset data/dataset/<数据集名称> --episode-index 0 --speed 0.5
+uv run python -m replay.scripts.replay_robot --dataset data/dataset/collection/<数据集名称> --episode-index 0 --speed 0.5
 ```
 
 `WaitingState` 是通用黑白等待组件，支持紧凑布局、说明文字、计时及操作插槽；数据读取、提交和长任务共用它，系统开启减少动画时停止旋转。

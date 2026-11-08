@@ -64,12 +64,14 @@ def create_app(
     for router in (
         health.router,
         ros2_health.router,
-        datasets.router,
         episodes.router,
         ee.router,
         video.router,
         streams.router,
         operations.router,
+        # The dataset detail route accepts slashes; register it after episode
+        # routes so it cannot consume their suffixes as part of a dataset ID.
+        datasets.router,
     ):
         application.include_router(router, prefix="/api")
     if frontend_root is not None:

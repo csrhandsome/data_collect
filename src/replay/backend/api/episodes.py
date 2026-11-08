@@ -10,7 +10,7 @@ from replay.backend.services.annotate_episode import annotate_episode
 from replay.backend.services.get_dataset import get_dataset
 from replay.backend.services.get_episode import get_episode
 
-router = APIRouter(prefix="/datasets/{dataset_id}/episodes", tags=["episodes"])
+router = APIRouter(prefix="/datasets/{dataset_id:path}/episodes", tags=["episodes"])
 Registry = Annotated[DatasetRegistry, Depends(get_registry)]
 EpisodeIndex = Annotated[int, Path(ge=0)]
 

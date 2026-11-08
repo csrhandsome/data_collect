@@ -143,15 +143,15 @@ def test_annotation_waits_for_deletion(copy_dataset):
 
 
 def test_latest_episode_uses_publication_time_across_datasets(copy_dataset, tmp_path: Path):
-    first = copy_dataset()
-    second = copy_dataset("demo_v30")
+    first = copy_dataset(destination=tmp_path / "collection")
+    second = copy_dataset(destination=tmp_path / "inference")
     update_sync(first, 2, {"saved_at_ns": 100})
     update_sync(second, 0, {"saved_at_ns": 200})
     with TestClient(create_app(tmp_path)) as client:
         response = client.get("/api/datasets/latest-episode")
         assert response.status_code == 200
         assert response.json()["episode"] == {
-            "dataset_id": "demo_v30",
+            "dataset_id": "inference/demo_v30",
             "episode_index": 0,
             "saved_at_ns": "200",
         }

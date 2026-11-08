@@ -212,6 +212,24 @@ LeRobot 自动生成的 `timestamp`、`frame_index`、`episode_index`、`index`�
 
 ## 数据存储
 
+`dataset.root` 默认为 `data/dataset`，按运行来源分别保存完整数据集：
+
+```text
+data/dataset/collection/franka_lerobot_20261106/
+data/dataset/inference/franka_lerobot_20261106/
+```
+
+两边的 Parquet、视频、音频、动作 trace 和同步文件各自存放，episode 编号各自从 0 开始，
+同来源同日期再次运行时续写自己的数据集。推理中的人工接管仍归入 `inference`。
+已有平铺目录保持原样、仍可回放；新录制不会继续追加到这些可能混有两种来源的旧数据集。
+网页会同时扫描两种来源和已有平铺目录，并在新数据集名称前显示 `collection/` 或 `inference/`。
+
+读取、删除、合并及标注写入的锁集中存放在
+`data/dataset/lock/<collection 或 inference>/<数据集名>/`，包含 `access.lock` 和按需创建的
+`sync.lock`；自定义 `dataset.root` 时使用该根目录下的 `lock/`。已有平铺数据集的锁归入
+`collection`。锁文件在释放后保留供后续复用，不应在应用运行期间删除。
+从旧版切换时应先停止网页后端和采集／推理进程，再统一启动新版，避免新旧锁路径混用。
+
 采集、训练读取、回放、合并和删除统一使用 **LeRobot v3 + MP4**。相机字段固定为
 `dtype: video`，不再提供图像内嵌选项或旧格式迁移入口。视频参数在
 `config/train/panda.yaml` 的 `dataset.video_encoder` 配置，默认 H.264、CRF 18、GOP 2、fast。

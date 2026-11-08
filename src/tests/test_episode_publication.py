@@ -20,7 +20,8 @@ from replay.scripts.resolve_video import resolve_video
 
 
 @pytest.mark.parametrize("audio", [False, True])
-def test_publish_then_annotate_and_continue_recording(tmp_path, audio):
+@pytest.mark.parametrize("source", ["collection", "inference"])
+def test_publish_then_annotate_and_continue_recording(tmp_path, audio, source):
     config = {
         "dataset": {
             "repo_id": "local/publish",
@@ -32,8 +33,11 @@ def test_publish_then_annotate_and_continue_recording(tmp_path, audio):
         "camera": {"image_hw": 32, "fps": 30},
         "control": {"frequency_hz": 100},
     }
-    dataset, root = open_dataset(config)
-    recorder = EpisodeRecorder(dataset, root, config, SyntheticMicrophone({}) if audio else None)
+    dataset, root = open_dataset(config, source=source)
+    dataset_id = root.relative_to(tmp_path).as_posix()
+    recorder = EpisodeRecorder(
+        dataset, root, config, SyntheticMicrophone({}) if audio else None, source=source,
+    )
     backend = FakeBackend()
 
     def frame():
@@ -48,14 +52,17 @@ def test_publish_then_annotate_and_continue_recording(tmp_path, audio):
                 recorder.start()
                 frame()
                 frame()
-                recorder.finish(backend.snapshot(), publish=True)
+                recorder.finish(backend.snapshot(), publish=True, source=source)
                 assert recorder.writer is None
                 assert read_dataset(root)["total_episodes"] == index + 1
                 latest = client.get("/api/datasets/latest-episode").json()["episode"]
-                assert latest["dataset_id"] == root.name and latest["episode_index"] == index
-                prefix = f"/api/datasets/{root.name}/episodes/{index}"
+                assert latest["dataset_id"] == dataset_id and latest["episode_index"] == index
+                prefix = f"/api/datasets/{dataset_id}/episodes/{index}"
                 detail = client.get(prefix).json()
                 assert detail["success"] is None and detail["saved_at_ns"] == latest["saved_at_ns"]
+                if audio:
+                    assert client.get(f"{prefix}/audio").status_code == 200
+                    assert client.get(f"{prefix}/audio/file").content.startswith(b"RIFF")
                 assert (
                     client.post(f"{prefix}/annotation", json={"success": False}).status_code == 200
                 )
@@ -67,7 +74,7 @@ def test_publish_then_annotate_and_continue_recording(tmp_path, audio):
             )
             assert response.status_code == 200, response.text
             assert client.get(response.json()["url"]).headers["content-type"] == "video/mp4"
-            assert client.get(f"/api/datasets/{root.name}/episodes/0").json()["success"] is False
+            assert client.get(f"/api/datasets/{dataset_id}/episodes/0").json()["success"] is False
             recorder.finish(backend.snapshot(), save=False)
     finally:
         recorder.close()
@@ -109,7 +116,7 @@ def test_y_button_only_saves_and_publishes_unannotated_episode(tmp_path, monkeyp
     monkeypatch.setattr(EpisodeRecorder, "finish", check_finish)
     run_collection(config, dry_run=True, max_steps=40)
     assert observed == [0, 1]
-    root = tmp_path / "franka_lerobot_button_publish"
+    root = tmp_path / "collection" / "franka_lerobot_button_publish"
     assert len(list((root / "data").rglob("*.parquet"))) == (1 if compact else 2)
     assert len(list((root / "videos").rglob("*.mp4"))) == (2 if compact else 4)
     assert (resolve_video(root, 1, "observation.exterior_image")["start_time_s"] > 0) is compact

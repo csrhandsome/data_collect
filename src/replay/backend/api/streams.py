@@ -8,7 +8,7 @@ from replay.backend.dependencies import get_registry
 from replay.scripts.read_audio import read_audio, resolve_audio
 from replay.scripts.read_series import read_series
 
-router = APIRouter(prefix="/datasets/{dataset_id}/episodes/{episode_index}")
+router = APIRouter(prefix="/datasets/{dataset_id:path}/episodes/{episode_index}")
 
 
 @router.get("/series")

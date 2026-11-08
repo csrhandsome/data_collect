@@ -151,8 +151,8 @@ def _execute_inference(
             microphone = make_microphone(config, dry_run)
             if microphone is not None:
                 stack.callback(microphone.stop)
-            dataset, root = open_dataset(config)
-            recorder = EpisodeRecorder(dataset, root, config, microphone)
+            dataset, root = open_dataset(config, source="inference")
+            recorder = EpisodeRecorder(dataset, root, config, microphone, source="inference")
             stack.callback(recorder.close)
             recorder.start()
         arm.start_stream()
@@ -335,7 +335,7 @@ def _execute_inference(
                     ) / f"episode_{index:06d}.sync.json"
                     sync = json.loads(sidecar.read_text())
                     stats["episode"] = {
-                        "dataset_id": recorder.root.name,
+                        "dataset_id": f"inference/{recorder.root.name}",
                         "episode_index": index,
                         "saved_at_ns": str(sync["saved_at_ns"]),
                     }

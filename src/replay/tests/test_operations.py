@@ -282,9 +282,9 @@ def test_replay_prefers_trace_and_executes_gripper_with_fake_arm(copy_dataset):
         load_trajectory(root)
 
 
-@pytest.mark.parametrize("dataset_id", ["demo_v30"])
+@pytest.mark.parametrize("dataset_id", ["demo_v30", "collection/demo_v30", "inference/demo_v30"])
 def test_delete_api_runs_public_deleter_on_temporary_copy(copy_dataset, tmp_path, dataset_id):
-    root = copy_dataset(dataset_id)
+    copy_dataset(destination=(tmp_path / dataset_id).parent)
 
     class DeleteManager(OperationManager):
         def start(self, kind, command, **kwargs):
@@ -303,10 +303,10 @@ def test_delete_api_runs_public_deleter_on_temporary_copy(copy_dataset, tmp_path
     manager = DeleteManager()
     with TestClient(create_app(tmp_path, manager)) as client:
         response = client.post(
-            "/api/operations", json={"kind": "delete", "dataset_id": root.name, "episode_index": 1}
+            "/api/operations", json={"kind": "delete", "dataset_id": dataset_id, "episode_index": 1}
         )
         assert response.status_code == 202
         assert wait_finished(manager).state == "succeeded"
-        detail = client.get(f"/api/datasets/{root.name}").json()
+        detail = client.get(f"/api/datasets/{dataset_id}").json()
         assert detail["total_episodes"] == 2
-        assert client.get(f"/api/datasets/{root.name}/episodes/1").status_code == 200
+        assert client.get(f"/api/datasets/{dataset_id}/episodes/1").status_code == 200
