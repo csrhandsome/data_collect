@@ -29,11 +29,16 @@ def test_collection_instructions_match_save_discard_and_franka_controls():
             assert message["data"]["controller_hints"] == hints
 
 
-def test_dh5_hints_include_only_supported_step_controls():
+def test_dh5_hints_describe_proportional_speed_and_neutral():
     hints = build_controller_hints({"gripper": {"type": "dh5"}, "vr": {"long_press_s": 1}})
-    assert actions(hints, "right")["摇杆 ↑"] == "逐步闭合夹爪"
-    assert actions(hints, "right")["摇杆 ↓"] == "逐步张开夹爪"
+    assert actions(hints, "right")["摇杆 ↑"] == "闭合夹爪，推得越远越快"
+    assert actions(hints, "right")["摇杆 ↓"] == "张开夹爪，推得越远越快"
+    assert "停止开合" in actions(hints, "right")["摇杆回中"]
     assert "1 秒" in actions(hints, "left")["双食指扳机"]
+    reader = VRInputReader(controller_hints=hints)
+    with TestClient(reader._teleop.app) as client:
+        with client.websocket_connect("/ws") as ws:
+            assert ws.receive_json()["data"]["controller_hints"] == hints
 
 
 def test_disabled_reset_hints_describe_holding_position():

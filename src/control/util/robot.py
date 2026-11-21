@@ -1,6 +1,7 @@
 """Workflow reset helpers exclusively using the public arm API."""
 
 import logging
+import math
 import sys
 
 import numpy as np
@@ -30,6 +31,17 @@ def reset_robot(arm):
     arm.start_stream()
 
 
+DEFAULT_GRIPPER_AXIS_DEADZONE = 0.10
+
+
+def dh5_vr_position_step(axis, deadzone, levels):
+    """Return the signed increment in DH5 position units for one update."""
+    if not math.isfinite(axis) or not 0 <= deadzone < 1 or levels <= 1:
+        return 0
+    magnitude = max(0.0, (min(abs(axis), 1.0) - deadzone) / (1.0 - deadzone))
+    return round(math.copysign(magnitude * 1000 / (levels - 1), axis))
+
+
 def handle_gripper(arm, sample, state, now_ns, last_axis_ns, config, *, on_command=None):
     if arm.gripper_busy or not arm.get_capabilities().gripper:
         return False, last_axis_ns
@@ -38,18 +50,23 @@ def handle_gripper(arm, sample, state, now_ns, last_axis_ns, config, *, on_comma
     if sample.close or sample.open:
         ratio = float(sample.open)
     elif cfg.get("type") == "dh5":
+        deadzone = float(cfg.get("vr_axis_threshold", DEFAULT_GRIPPER_AXIS_DEADZONE))
+        gripper = getattr(arm, "gripper", None)
+        if gripper is not None and gripper.forward_vr(sample):
+            active = abs(sample.axis) > deadzone
+            if active and on_command is not None:
+                on_command(state.gripper.commanded_open_ratio)
+            return active, last_axis_ns
         levels = int(cfg.get("discrete_level_count", 28))
         interval_ns = round(float(cfg.get("vr_step_interval_s", 0.08)) * 1e9)
-        if (
-            abs(sample.axis) > cfg.get("vr_axis_threshold", 0.55)
-            and now_ns - last_axis_ns >= interval_ns
-        ):
-            ratio = float(
-                np.clip(
-                    state.gripper.commanded_open_ratio - np.sign(sample.axis) / (levels - 1), 0, 1
-                )
-            )
-            last_axis_ns = now_ns
+        if now_ns - last_axis_ns >= interval_ns:
+            step = dh5_vr_position_step(sample.axis, deadzone, levels)
+            if step:
+                current = state.gripper.commanded_open_ratio
+                target = min(1.0, max(0.0, current - step / 1000))
+                if target != current:
+                    ratio = target
+                    last_axis_ns = now_ns
     if ratio is None:
         return False, last_axis_ns
     arm.set_gripper(

@@ -14,6 +14,8 @@ from control.ros2.vr_connector import dumps_vr
 
 def main(argv=None):
     import rclpy
+    from rclpy._rclpy_pybind11 import RCLError
+    from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from rclpy.qos import QoSProfile, ReliabilityPolicy
     from std_msgs.msg import String
@@ -46,9 +48,14 @@ def main(argv=None):
     node.create_timer(0.01, publish)
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    except RCLError:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

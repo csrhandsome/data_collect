@@ -14,7 +14,7 @@ X (left controller button 4): discard the current episode and reset.
 Y (left controller button 5): save the current episode and reset.
 Left thumbstick click (button 3): enter the critical phase for this episode.
 A/B (right controller buttons 4/5): close/open gripper.
-Right thumbstick Y: DH5 gripper step axis (up=close, down=open).
+Right thumbstick Y: DH5 gripper speed axis (up=close, down=open).
 """
 
 import multiprocessing as mp

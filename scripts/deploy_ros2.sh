@@ -36,14 +36,17 @@ if ! command -v ros2 >/dev/null 2>&1; then
 fi
 printf 'Container environment detected; starting ROS 2 directly.\n'
 
+DATA_COLLECT_GRIPPER_TYPE=$(python -c 'from control.config import load_config; print(load_config().get("gripper", {}).get("type", "franka"))')
+export DATA_COLLECT_GRIPPER_TYPE
 cam_pid=""
+gripper_pid=""
 vr_pid=""
 monitor_pid=""
 arm_pid=""
 cleanup() {
   local status=$?
   trap - INT TERM EXIT
-  for pid in "$arm_pid" "$vr_pid" "$cam_pid" "$monitor_pid"; do
+  for pid in "$arm_pid" "$gripper_pid" "$vr_pid" "$cam_pid" "$monitor_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -- "-$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -62,6 +65,11 @@ setsid python -m control.ros2.vr_node &
 vr_pid=$!
 setsid bash "$root/src/env/cameras.sh" &
 cam_pid=$!
+
+if [[ "$DATA_COLLECT_GRIPPER_TYPE" == dh5 ]]; then
+  setsid python -m control.ros2.dh5_node &
+  gripper_pid=$!
+fi
 
 setsid bash "$root/src/env/bringup.sh" "$@" &
 arm_pid=$!

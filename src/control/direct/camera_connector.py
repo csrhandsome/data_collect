@@ -42,6 +42,7 @@ class RGBCameraConnector:
         fps: int = 30,
         backend: Optional[int] = None,
         convert_bgr_to_rgb: bool = True,
+        fourcc: str | None = None,
     ) -> None:
         self._device = device
         self._width = int(width)
@@ -49,6 +50,9 @@ class RGBCameraConnector:
         self._fps = int(fps)
         self._backend = backend
         self._convert_bgr_to_rgb = bool(convert_bgr_to_rgb)
+        if fourcc is not None and len(fourcc) != 4:
+            raise ValueError("Camera fourcc must have four characters")
+        self._fourcc = fourcc
 
         self._capture = None
         self._sensor_data = RGBCameraSensorData()
@@ -73,6 +77,8 @@ class RGBCameraConnector:
             capture.release()
             raise RuntimeError(f"Failed to open RGB camera: {self._device}")
 
+        if self._fourcc is not None:
+            capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self._fourcc))
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
         capture.set(cv2.CAP_PROP_FPS, self._fps)

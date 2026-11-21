@@ -38,12 +38,9 @@ def build_controller_hints(config):
             ]
         )
         if gripper_type == "dh5":
-            right.extend(
-                [
-                    {"button": "摇杆 ↑", "action": "逐步闭合夹爪"},
-                    {"button": "摇杆 ↓", "action": "逐步张开夹爪"},
-                ]
-            )
+            from teleop_xr.config import dh5_gripper_hints
+
+            right.extend(dh5_gripper_hints())
         if takeover:
             right.append({"button": "夹爪操作", "action": "仅人工接管时生效"})
 

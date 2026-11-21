@@ -52,7 +52,7 @@ class VRResampler:
             normalize_quat_xyzw([vr.quat_x, vr.quat_y, vr.quat_z, vr.quat_w]),
             bool(vr.arm_enabled and fresh),
             *edges,
-            float(vr.gripper_velocity_axis),
+            float(vr.gripper_velocity_axis) if fresh else 0.0,
             source_ns,
             int(vr.pose_seq),
             enter_critical_phase=enter_critical_phase,

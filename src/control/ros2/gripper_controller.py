@@ -1,7 +1,9 @@
-"""Franka ROS action clients and gripper state subscription; DH5 stays local."""
+"""ROS action clients and state subscriptions for the selected gripper."""
 
+import json
 import logging
 import threading
+import time
 
 import numpy as np
 
@@ -17,13 +19,12 @@ class Ros2GripperController:
         self._node = node
         self._source = source
         self._ratio, self._width = 1.0, None
-        self._local_gripper = None
+        self._dh5_frames = {}
+        self._dh5_ready = False
         self._clients = []
         self._reported_missing = False
 
     def get_state(self, *, busy=False):
-        if self._local_gripper is not None:
-            return self._local_gripper.get_state(busy=busy)
         kind = self.config.get("gripper", {}).get("type", "franka")
         if self._franka_without_publisher():
             self._note_missing()
@@ -31,8 +32,6 @@ class Ros2GripperController:
         return GripperState(kind, self._ratio, self._width, busy)
 
     def _franka_without_publisher(self):
-        if self._local_gripper is not None:
-            return False
         if self.config.get("gripper", {}).get("type", "franka") != "franka":
             return False
         subscription = getattr(self, "_gripper_sub", None)
@@ -50,12 +49,8 @@ class Ros2GripperController:
 
     def connect(self):
         kind = self.config.get("gripper", {}).get("type", "franka")
-        self._local_gripper = None
         if kind == "dh5":
-            from control.direct.grippers import create_gripper_backend
-
-            self._local_gripper = create_gripper_backend(self.config)
-            self._local_gripper.connect()
+            self._connect_dh5()
         if kind != "franka":
             return
         from franka_msgs.action import Grasp, Move
@@ -83,6 +78,63 @@ class Ros2GripperController:
         else:
             return False
 
+    def _connect_dh5(self):
+        from franka_msgs.action import Move
+        from rclpy.action import ActionClient
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import Image
+        from std_msgs.msg import String
+
+        self._dh5_move = ActionClient(self._node, Move, "/dh5/move")
+        self._clients.append(self._dh5_move)
+        self._action_types = {"move": Move}
+        self._dh5_message = String
+        self._dh5_vr = self._node.create_publisher(String, "/dh5/runner_vr_command", 1)
+        self._node.create_subscription(String, "/dh5/state", self._on_dh5_state, 1)
+        if self.config.get("tactile", {}).get("enabled", False):
+            for side in ("left", "right"):
+                self._node.create_subscription(
+                    Image, f"/dh5/{side}/image_raw",
+                    lambda msg, side=side: self._on_dh5_image(side, msg), qos_profile_sensor_data,
+                )
+
+    def _on_dh5_state(self, message):
+        try:
+            ratio = json.loads(message.data)["target_position"]
+        except (KeyError, ValueError, TypeError):
+            return
+        if isinstance(ratio, (float, int)) and 0 <= ratio <= 1000:
+            self._ratio = ratio / 1000
+            self._dh5_ready = True
+            if self._source is not None:
+                with self._source.condition:
+                    self._source.condition.notify_all()
+
+    def ready(self):
+        return self.config.get("gripper", {}).get("type") != "dh5" or self._dh5_ready
+
+    def _on_dh5_image(self, side, message):
+        from control.ros2.camera_connector import image_rgb
+
+        stamp = message.header.stamp
+        source_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+        if source_ns <= 0:
+            return
+        try:
+            frame = image_rgb(message)
+        except ValueError as exc:
+            logger.warning("Invalid DH5 %s image: %s", side, exc)
+            return
+        age = self._node.get_clock().now().nanoseconds - source_ns
+        self._dh5_frames[side] = frame, time.monotonic_ns() - age
+
+    def forward_vr(self, sample):
+        self._dh5_vr.publish(self._dh5_message(data=json.dumps({
+            "pose_monotonic_ns": sample.source_ns,
+            "pose_seq": sample.source_seq,
+            "gripper_velocity_axis": sample.axis,
+        })))
+
     def _wait_future(self, future):
         done = threading.Event()
         future.add_done_callback(lambda _: done.set())
@@ -91,15 +143,14 @@ class Ros2GripperController:
         return future.result()
 
     def command(self, ratio, *, speed, force):
-        if self._local_gripper is not None:
-            return self._local_gripper.command(ratio, speed=speed, force=force)
-        if self.config.get("gripper", {}).get("type", "franka") != "franka":
+        kind = self.config.get("gripper", {}).get("type", "franka")
+        if kind == "none":
             raise RuntimeError("Gripper is disabled")
         if self._franka_without_publisher():
             self._note_missing()
             return True
-        name = "move" if ratio >= 0.5 else "grasp"
-        client = self._actions[name]
+        name = "move" if kind == "dh5" or ratio >= 0.5 else "grasp"
+        client = self._dh5_move if kind == "dh5" else self._actions[name]
         if not client.wait_for_server(timeout_sec=float(self.cfg.get("connect_timeout_s", 10))):
             raise TimeoutError(f"Franka gripper {name} action unavailable")
         goal = self._action_types[name].Goal()
@@ -130,8 +181,8 @@ class Ros2GripperController:
     def stop(self):
         if self.config.get("gripper", {}).get("type", "franka") == "none":
             return
-        if self._local_gripper is not None:
-            return self._local_gripper.stop()
+        if self.config.get("gripper", {}).get("type") == "dh5":
+            raise NotImplementedError("DH5 driver has no confirmed stop command")
         if self._franka_without_publisher():
             self._note_missing()
             return
@@ -142,14 +193,16 @@ class Ros2GripperController:
             raise RuntimeError(result.message)
 
     def tactile_frames(self):
-        return self._local_gripper.tactile_frames() if self._local_gripper else (None,) * 4
+        left, left_ns = self._dh5_frames.get("left", (None, None))
+        right, right_ns = self._dh5_frames.get("right", (None, None))
+        return left, right, left_ns, right_ns
 
     def tactile_images(self):
-        return self._local_gripper.tactile_images() if self._local_gripper else (None, None)
+        left, right, _, _ = self.tactile_frames()
+        return left, right
 
     def close(self):
-        if self._local_gripper is not None:
-            self._local_gripper.close()
+        self._dh5_frames.clear()
         for client in self._clients:
             client.destroy()
         self._clients.clear()

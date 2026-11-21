@@ -12,6 +12,7 @@ import numpy as np
 import serial
 
 from control.direct.dual_camera_manager import DualRGBCameraManager
+from control.util.robot import DEFAULT_GRIPPER_AXIS_DEADZONE, dh5_vr_position_step
 
 
 class ControlRoot(object):
@@ -114,6 +115,13 @@ class ControlRoot(object):
                 raise RuntimeError(
                     f"Gripper returned Modbus exception frame: {back.hex(' ')}"
                 )
+            valid_crc = int.from_bytes(back[-2:], "little") == self.crc16(back[:-2])
+            if isSet:
+                matches_request = back == bytes(setValueCmd)
+            else:
+                matches_request = back[:3] == b"\x01\x03\x02"
+            if not valid_crc or not matches_request:
+                raise RuntimeError(f"Unexpected Modbus response: {back.hex(' ')}")
             if isSet:
                 value = int.from_bytes(back[4:6], byteorder="big", signed=True)
             else:
@@ -152,14 +160,16 @@ class DH5Gripper(object):
         camera_timeout_ms: int = 1000,
         camera_poll_interval_s: float = 0.01,
         discrete_level_count: int = 28,
-        vr_axis_threshold: float = 0.55,
+        vr_axis_threshold: float = DEFAULT_GRIPPER_AXIS_DEADZONE,
         vr_step_interval_s: float = 0.08,
         enable_cameras: bool = True,
+        right_camera=None,
+        left_camera=None,
     ):
         if int(discrete_level_count) <= 1:
             raise ValueError("discrete_level_count must be > 1")
-        if not 0.0 < float(vr_axis_threshold) <= 1.0:
-            raise ValueError("vr_axis_threshold must be in (0, 1]")
+        if not 0.0 <= float(vr_axis_threshold) < 1.0:
+            raise ValueError("vr_axis_threshold must be in [0, 1)")
         if float(vr_step_interval_s) <= 0.0:
             raise ValueError("vr_step_interval_s must be > 0")
 
@@ -169,11 +179,12 @@ class DH5Gripper(object):
         self._gripper_level = 0
         self._vr_axis_threshold = float(vr_axis_threshold)
         self._vr_step_interval_s = float(vr_step_interval_s)
-        self._last_gripper_step_time = 0.0
-        self._last_gripper_step_dir = 0
+        self._last_gripper_step_time = float("-inf")
         self.dual_camera_manager = DualRGBCameraManager(
             right_camera_device=right_camera_device,
             left_camera_device=left_camera_device,
+            right_camera=right_camera,
+            left_camera=left_camera,
             width=camera_width,
             height=camera_height,
             fps=camera_fps,
@@ -234,6 +245,7 @@ class DH5Gripper(object):
             self.Hand.clear_input_buffer()
         self._set_register(0x01, 0x03, value, is_read_serial=wait)
         self._position_command = int(value)
+        self._gripper_level = self._position_to_level(self._position_command)
 
     def set_velocity(self, value):
         isRange(value, 0, 1000)
@@ -258,6 +270,22 @@ class DH5Gripper(object):
     @property
     def initialization_status(self):
         return self._get_register(0x02, 0x00)
+
+    @property
+    def grip_status(self):
+        return self._get_register(0x02, 0x01)
+
+    @property
+    def actual_position(self):
+        position = self._get_register(0x02, 0x02)
+        isRange(position, 0, 1000)
+        return position
+
+    def sync_position_command(self, position):
+        """Seed relative joystick updates from a measured position without moving."""
+        isRange(position, 0, 1000)
+        self._position_command = int(position)
+        self._gripper_level = self._position_to_level(self._position_command)
 
     @property
     def rotate_angle(self):
@@ -298,11 +326,10 @@ class DH5Gripper(object):
         )
 
     def set_gripper_level(self, level: int, *, wait: bool = True) -> bool:
-        next_level = int(np.clip(level, 0, self.max_gripper_level))
-        if next_level == self._gripper_level:
+        target = self._level_to_position(level)
+        if target == self._position_command:
             return False
-        self.set_position(self._level_to_position(next_level), wait=wait)
-        self._gripper_level = next_level
+        self.set_position(target, wait=wait)
         return True
 
     def update_from_vr(
@@ -314,7 +341,6 @@ class DH5Gripper(object):
         now: Optional[float] = None,
         wait: bool = False,
     ) -> bool:
-        axis = float(getattr(vr_input, "gripper_velocity_axis", 0.0))
         threshold = (
             self._vr_axis_threshold if axis_threshold is None else float(axis_threshold)
         )
@@ -325,25 +351,21 @@ class DH5Gripper(object):
         )
         now = time.monotonic() if now is None else float(now)
 
-        if axis >= threshold:
-            step_dir = 1
-        elif axis <= -threshold:
-            step_dir = -1
-        else:
-            self._last_gripper_step_dir = 0
+        source_ns = int(getattr(vr_input, "pose_monotonic_ns", 0))
+        if source_ns <= 0 or not 0 <= now - source_ns / 1e9 < 0.5:
             return False
-
-        should_step = (
-            step_dir != self._last_gripper_step_dir
-            or self._last_gripper_step_time == 0.0
-            or (now - self._last_gripper_step_time) >= step_interval
+        if now - self._last_gripper_step_time < step_interval:
+            return False
+        step = dh5_vr_position_step(
+            vr_input.gripper_velocity_axis, threshold, self._gripper_level_count
         )
-        if not should_step:
+        target = min(1000, max(0, self._position_command + step))
+        if target == self._position_command:
             return False
 
+        self.set_position(target, wait=wait)
         self._last_gripper_step_time = now
-        self._last_gripper_step_dir = step_dir
-        return self.set_gripper_level(self._gripper_level + step_dir, wait=wait)
+        return True
 
     @property
     def gripper_open_ratio(self) -> np.ndarray:
@@ -416,13 +438,13 @@ def main():
         "--step-interval",
         type=float,
         default=0.08,
-        help="VR 档位步进最小间隔（秒）。摇杆持续推住时按该频率逐档变化。",
+        help="VR 夹爪目标的最小更新间隔（秒）。",
     )
     parser.add_argument(
         "--axis-threshold",
         type=float,
-        default=0.55,
-        help="VR 摇杆触发一步档位变化的阈值，绝对值需达到该值才会动作。",
+        default=DEFAULT_GRIPPER_AXIS_DEADZONE,
+        help="VR 摇杆中心死区，超出后按幅度调节开合速度。",
     )
     parser.add_argument(
         "--loop-hz",
@@ -455,19 +477,14 @@ def main():
             raise ValueError("--loop-hz must be > 0")
         if args.step_interval <= 0:
             raise ValueError("--step-interval must be > 0")
-        if not 0.0 < args.axis_threshold <= 1.0:
-            raise ValueError("--axis-threshold must be in (0, 1]")
+        if not 0.0 <= args.axis_threshold < 1.0:
+            raise ValueError("--axis-threshold must be in [0, 1)")
 
         vr = VRInputProcess()
         vr.start()
         print(
-            "[DHGripper][VR] 右手柄摇杆控制夹爪: 上=闭合一档, 下=打开一档, "
-            f"levels={gripper.gripper_level_count}, axis_threshold={args.axis_threshold:.2f}, "
-            f"step_interval={args.step_interval:.2f}s"
-        )
-        print(
-            "[DHGripper][VR] 当前使用 gripper_velocity_axis: "
-            "正值=闭合一档, 负值=打开一档"
+            "[DHGripper][VR] 右摇杆上推闭合、下推张开，推得越远越快。"
+            f" 死区={args.axis_threshold:.2f}，更新间隔={args.step_interval:.2f}s"
         )
 
         try:
@@ -483,7 +500,7 @@ def main():
                     vr_state,
                     axis_threshold=args.axis_threshold,
                     step_interval_s=args.step_interval,
-                    now=loop_start,
+                    now=time.monotonic(),
                     wait=False,
                 )
 
@@ -498,7 +515,6 @@ def main():
                         "[DHGripper][VR] "
                         f"axis={axis:+.3f}  "
                         f"right_stick=({vr_state.right_stick_x:+.3f}, {vr_state.right_stick_y:+.3f})  "
-                        f"level={gripper.gripper_level:02d}/{gripper.max_gripper_level:02d}  "
                         f"target_position={gripper.position_command:4d}",
                         end="\r",
                     )

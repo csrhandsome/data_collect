@@ -65,6 +65,9 @@ uv run pytest
 `vr.show_controller_hints: false` 可关闭提示。禁用录制或夹爪时，对应说明也会隐藏。
 关闭自动回位时（包括 ROS 后端默认设置），X/Y 操作后保持当前位置，手柄提示同步显示。
 
+DH5 的右摇杆上推闭合、下推张开，推得越远，目标位置变化越快。回到中心死区或输入过期后，
+夹爪只完成最近一次发出的短行程。可用 `gripper.vr_axis_threshold` 调整中心死区，默认 `0.10`。
+
 单独检查右摇杆数值时，在已加载 ROS2 环境的终端运行（VR 发布节点需已启动）：
 
 ```bash
@@ -120,6 +123,11 @@ Franka 保留原有行为：比例 ≥ 0.5 时按 `open_width_m × 比例` 移�
 命令的 `speed`、`force` 分别使用 m/s、N。DH5 将比例映射为 `round((1 - 比例) × 1000)` 的位置寄存器值，
 使用 YAML 的 `force`、`velocity` 原生参数和 `dh5.com` 串口配置；不把寄存器值换算成物理角度。
 DH5 的触觉相机仍由 `tactile.enabled` 控制，图像通过 `arm.gripper.get_tactile_images()` 读取。
+`robot.backend: ros2` 时，`deploy_ros2.sh` 根据 `gripper.type` 启动对应夹爪。选 DH5 时，
+由 `/dh5_gripper` 持有串口并发布 `/dh5/state`。启用触觉相机后，左右图像来自
+`/dh5/left/image_raw` 和 `/dh5/right/image_raw`，各自的设备类型与路径在 `tactile.left/right` 配置。
+正式采集由 runner 转发摇杆，可用 `bash scripts/control_dh5_vr.sh --monitor-only` 查看状态。
+独立调试时也可用 `bash scripts/control_dh5_vr.sh --monitor` 转发摇杆并记录反馈。
 `arm.gripper.stop()` 支持 Franka；DH5 驱动没有确认可用的停止命令，会抛出 `NotImplementedError`。
 旧的 `arm.set_gripper()`、`arm.gripper_open()` 等方法保留，转发到同一个夹爪对象。
 

@@ -21,6 +21,10 @@ def expected_topics(config):
         topics.append(relative(ros.get("robot_state_topic", "franka_robot_state_broadcaster/robot_state")))
         if config.get("gripper", {}).get("type", "franka") == "franka":
             topics.append(relative(ros.get("gripper_node", "panda_gripper") + "/joint_states"))
+        elif config.get("gripper", {}).get("type") == "dh5":
+            topics.append("/dh5/state")
+            if config.get("tactile", {}).get("enabled", False):
+                topics.extend(["/dh5/left/image_raw", "/dh5/right/image_raw"])
     for section in ("camera", "vr", "audio"):
         cfg = config.get(section, {})
         if cfg.get("backend", config.get("robot", {}).get("backend")) != "ros2":

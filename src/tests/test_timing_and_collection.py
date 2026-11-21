@@ -9,6 +9,7 @@ from control.collection.pipeline import run_collection
 from control.collection.vr import VRResampler
 from control.config import load_config, validate
 from control.recording_writer import FreshCameraPair
+from control.util.robot import handle_gripper
 from control.util.timing import FixedRate
 from replay.scripts.read_action_trace import read_action_trace
 from replay.scripts.read_audio import read_audio
@@ -44,7 +45,7 @@ def test_vr_edges_and_stale_input():
         arm_enabled=True,
         pose_monotonic_ns=100,
         pose_seq=1,
-        gripper_velocity_axis=0.0,
+        gripper_velocity_axis=0.8,
         y_pressed=True,
         x_pressed=False,
         gripper_open=False,
@@ -52,8 +53,40 @@ def test_vr_edges_and_stale_input():
     )
     resampler = VRResampler(0.5)
     assert resampler.sample(raw, 101).save
-    assert not resampler.sample(raw, 102).save
-    assert not resampler.sample(raw, 1_000_000_000).enabled
+    fresh = resampler.sample(raw, 102)
+    assert not fresh.save
+    assert fresh.axis == 0.8
+    stale = resampler.sample(raw, 1_000_000_000)
+    assert not stale.enabled
+    assert stale.axis == 0.0
+
+
+@pytest.mark.parametrize(
+    "axis,current,expected",
+    [(0.1, 0.5, None), (0.55, 0.5, 0.481), (1.0, 0.5, 0.463),
+     (-1.0, 0.5, 0.537), (1.0, 0.01, 0.0), (1.0, 0.0, None)],
+)
+def test_dh5_joystick_speed(axis, current, expected):
+    commands = []
+    arm = SimpleNamespace(
+        gripper_busy=False,
+        get_capabilities=lambda: SimpleNamespace(gripper=True),
+        set_gripper=lambda ratio, **kwargs: commands.append(ratio),
+    )
+    sample = SimpleNamespace(axis=axis, close=False, open=False)
+    state = SimpleNamespace(gripper=SimpleNamespace(commanded_open_ratio=current))
+    config = {"gripper": {"type": "dh5"}}
+    now_ns = 100_000_000
+    moved, last_axis_ns = handle_gripper(arm, sample, state, now_ns, 0, config)
+    if expected is None:
+        assert not moved
+        assert not commands
+    else:
+        assert moved
+        assert commands == pytest.approx([expected])
+        assert handle_gripper(arm, sample, state, now_ns + 1, last_axis_ns, config) == (
+            False, last_axis_ns
+        )
 
 
 @pytest.mark.parametrize(

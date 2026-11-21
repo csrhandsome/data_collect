@@ -1,5 +1,6 @@
 """Panda bringup: FER driver, state broadcaster, external Cartesian impedance."""
 
+import os
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
@@ -32,6 +33,9 @@ def spawn(context):
         raise RuntimeError(f"{config_path} must set robot_type panda for this driver")
     robot_ip = robot["robot_ip"]
     load_gripper = robot.get("load_gripper", "true")
+    kind = os.environ.get("DATA_COLLECT_GRIPPER_TYPE")
+    if kind is not None:
+        load_gripper = "true" if kind == "franka" else "false"
     if robot.get("use_fake_hardware", "false").lower() == "true":
         raise RuntimeError("This Panda launch does not start fake hardware")
     share = Path(get_package_share_directory("panda_cartesian_controller"))

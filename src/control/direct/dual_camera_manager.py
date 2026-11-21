@@ -293,7 +293,7 @@ class DualRealsenseManager:
 
 class DualRGBCameraManager:
     """
-    双普通 RGB 相机管理器，底层使用 OpenCV VideoCapture。
+    Manage two color streams from injected USB or RealSense connectors.
 
     相机配置：
     - right_camera_device: 右侧相机
@@ -309,6 +309,8 @@ class DualRGBCameraManager:
         height: int = 480,
         fps: int = 30,
         backend: Optional[int] = None,
+        right_camera: RGBCameraConnector | RealSenseConnector | None = None,
+        left_camera: RGBCameraConnector | RealSenseConnector | None = None,
         background_poll: bool = False,
         background_poll_interval_s: float = 0.01,
         background_timeout_ms: int = 1000,
@@ -318,7 +320,7 @@ class DualRGBCameraManager:
         print(
             f"[DualRGBCameraManager] 初始化外部相机 (device: {right_camera_device})..."
         )
-        self.external_camera = RGBCameraConnector(
+        self.external_camera = right_camera if right_camera is not None else RGBCameraConnector(
             device=right_camera_device,
             width=width,
             height=height,
@@ -329,7 +331,7 @@ class DualRGBCameraManager:
         print(
             f"[DualRGBCameraManager] 初始化腕部相机 (device: {left_camera_device})..."
         )
-        self.wrist_camera = RGBCameraConnector(
+        self.wrist_camera = left_camera if left_camera is not None else RGBCameraConnector(
             device=left_camera_device,
             width=width,
             height=height,
@@ -343,7 +345,7 @@ class DualRGBCameraManager:
         self._background_timeout_ms = int(background_timeout_ms)
         self._image_lock = threading.Lock()
         self._background_stop_event = threading.Event()
-        self._background_thread: Optional[threading.Thread] = None
+        self._background_threads: list[threading.Thread] = []
         self._background_error: Optional[Exception] = None
         self._external_ok = False
         self._wrist_ok = False
@@ -386,33 +388,34 @@ class DualRGBCameraManager:
         self._cache_images(external_ok, wrist_ok, external_ns, wrist_ns)
         return external_ok, wrist_ok
 
-    def _background_worker(self) -> None:
-        try:
-            self._connect_cameras()
-        except Exception as exc:
-            self._background_error = exc
-            return
-
+    def _background_worker(self, camera, prefix) -> None:
         while not self._background_stop_event.is_set():
             try:
-                self._update_once(timeout_ms=self._background_timeout_ms)
-                self._background_error = None
+                ok = camera.update(timeout=self._background_timeout_ms)
+                with self._image_lock:
+                    setattr(self, f"_{prefix}_ok", ok)
+                    if ok:
+                        setattr(self, f"_{prefix}_img", camera.img)
+                        setattr(self, f"_{prefix}_ns", time.monotonic_ns())
             except Exception as exc:
                 self._background_error = exc
-            if self._background_stop_event.wait(self._background_poll_interval_s):
-                break
+                with self._image_lock:
+                    setattr(self, f"_{prefix}_ok", False)
+                self._background_stop_event.wait(0.5)
+            self._background_stop_event.wait(self._background_poll_interval_s)
 
     def _start_background_thread(self) -> None:
-        if self._background_thread is not None and self._background_thread.is_alive():
+        if self._background_threads:
             return
 
         self._background_stop_event.clear()
-        self._background_thread = threading.Thread(
-            target=self._background_worker,
-            name="dual-rgb-camera-manager",
-            daemon=True,
-        )
-        self._background_thread.start()
+        for camera, prefix in ((self.external_camera, "external"), (self.wrist_camera, "wrist")):
+            worker = threading.Thread(
+                target=self._background_worker, args=(camera, prefix),
+                name=f"camera-{prefix}", daemon=True,
+            )
+            self._background_threads.append(worker)
+            worker.start()
 
     def connect(self) -> "DualRGBCameraManager":
         if self._background_poll:
@@ -450,14 +453,16 @@ class DualRGBCameraManager:
     def close(self) -> None:
         print("[DualRGBCameraManager] 关闭相机...")
         self._background_stop_event.set()
-        if self._background_thread is not None:
-            self._background_thread.join(
-                timeout=max(self._background_timeout_ms / 1000.0, 1.0)
-            )
-            self._background_thread = None
+        for worker in self._background_threads:
+            worker.join(timeout=max(self._background_timeout_ms / 1000.0, 1.0))
+        self._background_threads.clear()
         self.external_camera.close()
         self.wrist_camera.close()
         self._connected = False
+        with self._image_lock:
+            self._external_ok = self._wrist_ok = False
+            self._external_img = self._wrist_img = None
+            self._external_ns = self._wrist_ns = None
 
     def __enter__(self) -> "DualRGBCameraManager":
         return self.connect()

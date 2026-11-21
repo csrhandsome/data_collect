@@ -130,6 +130,8 @@ def validate(config):
         raise ValueError("Video recording requires an integer camera.fps with this LeRobot version")
     if config.get("gripper", {}).get("type", "franka") not in ("franka", "dh5", "none"):
         raise ValueError("gripper.type must be franka, dh5 or none")
+    if config.get("gripper", {}).get("type") == "dh5":
+        positive_rate(config["gripper"].get("open_width_m", 0.05), "gripper.open_width_m")
     for section, key, default in [
         ("control", "frequency_hz", 100),
         ("camera", "fps", 30),

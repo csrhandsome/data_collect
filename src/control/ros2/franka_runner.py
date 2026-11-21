@@ -62,7 +62,8 @@ class Ros2Backend:
         try:
             self._source.start(self._setup)
             self._source.wait(
-                lambda: self._state is not None, float(self.cfg.get("connect_timeout_s", 10))
+                lambda: self._state is not None and self.gripper.ready(),
+                float(self.cfg.get("connect_timeout_s", 10)),
             )
             self.snapshot()
         except BaseException:
@@ -239,6 +240,9 @@ class Ros2Backend:
 
     def tactile_frames(self):
         return self.gripper.tactile_frames()
+
+    def forward_gripper_vr(self, sample):
+        self.gripper.forward_vr(sample)
 
     def tactile_images(self):
         return self.gripper.tactile_images()

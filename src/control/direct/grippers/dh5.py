@@ -9,15 +9,37 @@ class DH5GripperBackend(GripperBackend):
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         self.enable_cameras = config.get("tactile", {}).get("enabled", False)
+        self.tactile = config.get("tactile", {})
 
     def connect(self) -> None:
         from control.direct.soft_gripper_control import DH5Gripper
 
         if self.device is None:
             try:
-                self.device = DH5Gripper(
-                    **self.config.get("dh5", {}), enable_cameras=self.enable_cameras
-                )
+                options = dict(self.config.get("dh5", {}))
+                if self.enable_cameras:
+                    from control.direct.camera_connector import (
+                        RealSenseConnector,
+                        RGBCameraConnector,
+                    )
+
+                    for side in ("left", "right"):
+                        if side not in self.tactile:
+                            continue
+                        camera = dict(self.tactile[side])
+                        kind = camera.pop("type", "rgb")
+                        camera.setdefault("fps", options.get("camera_fps", 30))
+                        camera.setdefault("width", options.get("camera_width", 640))
+                        camera.setdefault("height", options.get("camera_height", 480))
+                        if kind == "realsense":
+                            camera["enable_depth"] = False
+                            connector = RealSenseConnector(**camera)
+                        elif kind == "rgb":
+                            connector = RGBCameraConnector(**camera)
+                        else:
+                            raise ValueError(f"Unknown tactile.{side}.type: {kind}")
+                        options[f"{side}_camera"] = connector
+                self.device = DH5Gripper(**options, enable_cameras=self.enable_cameras)
                 self.device.set_force(int(self.config.get("force", 50)))
                 self.device.set_velocity(int(self.config.get("velocity", 100)))
                 self.commanded_open_ratio = 1.0
@@ -34,7 +56,8 @@ class DH5GripperBackend(GripperBackend):
 
     def command(self, ratio: float, *, speed: float, force: float) -> bool:
         self.require_connected()
-        self.device.set_position(round((1 - ratio) * 1000), wait=True)
+        position = ratio if self.config.get("open_position_high", False) else 1 - ratio
+        self.device.set_position(round(position * 1000), wait=True)
         self.commanded_open_ratio = ratio
         return True
 

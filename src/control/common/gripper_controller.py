@@ -40,6 +40,14 @@ class GripperController:
     def get_state(self) -> GripperState:
         return self._arm.get_state().gripper
 
+    def forward_vr(self, sample) -> bool:
+        """Send a DH5 joystick sample to the ROS hardware owner, when available."""
+        forward = getattr(self._arm._backend, "forward_gripper_vr", None)
+        if self.kind != "dh5" or forward is None:
+            return False
+        forward(sample)
+        return True
+
     def set_open_ratio(
         self,
         open_ratio: float,
