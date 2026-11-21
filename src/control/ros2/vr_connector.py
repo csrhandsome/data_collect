@@ -5,10 +5,13 @@ matching the ``latest`` / ``stop`` surface used by collection.
 """
 
 import json
+import logging
 import time
 from types import SimpleNamespace
 
 from control.ros2.base_node import Ros2Node
+
+logger = logging.getLogger(__name__)
 
 _FIELDS = (
     "arm_enabled",
@@ -59,6 +62,7 @@ class Ros2VR(Ros2Node):
         ros = cfg.get("ros2", {})
         self._topic = ros.get("topic", "/vr/input")
         self._sample = None
+        self._last_missing_error_ns = 0
         self._stale_after_s = float(cfg.get("stale_after_s", 0.5))
         super().__init__(
             "vr", config.get("ros2", {}).get("namespace", ""),
@@ -74,7 +78,14 @@ class Ros2VR(Ros2Node):
         try:
             self._sample = None
             super().start()
-            self._source.wait(lambda: self._sample is not None, self._timeout)
+            try:
+                self._source.wait(lambda: self._sample is not None, self._timeout)
+            except TimeoutError:
+                logger.error(
+                    "VR topic %s unavailable after %.1fs; continuing with idle fallback",
+                    self._topic,
+                    self._timeout,
+                )
         except BaseException:
             self.stop()
             raise
@@ -109,7 +120,34 @@ class Ros2VR(Ros2Node):
         with self._source.condition:
             self._source.check()
             if self._sample is None:
-                raise TimeoutError("No VR sample has been received")
+                now = time.monotonic_ns()
+                if now - self._last_missing_error_ns >= 2_000_000_000:
+                    self._last_missing_error_ns = now
+                    logger.error("No VR sample received on %s; continuing with idle fallback", self._topic)
+                return SimpleNamespace(
+                    arm_enabled=False,
+                    pos_x=0.0,
+                    pos_y=0.0,
+                    pos_z=0.0,
+                    quat_x=0.0,
+                    quat_y=0.0,
+                    quat_z=0.0,
+                    quat_w=1.0,
+                    x_pressed=False,
+                    y_pressed=False,
+                    save_pressed=False,
+                    gripper_close=False,
+                    gripper_open=False,
+                    right_stick_x=0.0,
+                    right_stick_y=0.0,
+                    gripper_velocity_axis=0.0,
+                    timestamp=0.0,
+                    pose_seq=0,
+                    critical_pressed=False,
+                    pose_monotonic_ns=0,
+                    raw_position=None,
+                    raw_quaternion_xyzw=None,
+                )
             return self._sample
 
     @property

@@ -194,3 +194,103 @@ def test_trace_uses_accepted_gripper_target_and_actual_controller(tmp_path):
         assert [row["intervention_flag"] for row in rows] == [False, True, False]
     finally:
         recorder.close()
+
+
+def test_start_backups_existing_trace_and_audio_with_copy_suffixes(tmp_path):
+    config = {
+        "dataset": {
+            "repo_id": "local/recording",
+            "date": "backup_copy",
+            "root": str(tmp_path),
+            "instruction": "Move",
+            "action_space": "ee",
+        },
+        "camera": {"image_hw": 32, "fps": 30},
+        "control": {"frequency_hz": 100},
+    }
+    dataset, root = open_dataset(config)
+    audio_dir = root / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    trace_file = root / "episode_000000.actions.jsonl"
+    audio_file = audio_dir / "episode_000000.wav"
+
+    for expected_suffix in ("_copy", "_copy_1", "_copy_2"):
+        trace_file.write_text(f"stale{expected_suffix}\n", encoding="utf-8")
+        audio_file.write_bytes(f"wav{expected_suffix}".encode("utf-8"))
+        recorder = EpisodeRecorder(dataset, root, config, SyntheticMicrophone({}))
+        try:
+            recorder.start()
+            assert (root / f"episode_000000{expected_suffix}.actions.jsonl").read_text(
+                encoding="utf-8"
+            ) == f"stale{expected_suffix}\n"
+            assert (audio_dir / f"episode_000000{expected_suffix}.wav").read_bytes() == (
+                f"wav{expected_suffix}".encode("utf-8")
+            )
+            assert recorder.trace_path == trace_file
+            assert recorder.audio_path == audio_file
+        finally:
+            recorder.close()
+            trace_file.unlink(missing_ok=True)
+            audio_file.unlink(missing_ok=True)
+
+
+def test_missing_optional_sensors_record_placeholders_and_missing_metadata(tmp_path):
+    from control.types import CameraPair, GripperState, RobotState
+
+    config = {
+        "dataset": {
+            "repo_id": "local/recording",
+            "date": "missing_sensors",
+            "root": str(tmp_path),
+            "instruction": "Move",
+            "action_space": "ee",
+        },
+        "camera": {"image_hw": 16, "fps": 30},
+        "control": {"frequency_hz": 100},
+        "tactile": {"enabled": True},
+        "observation": {"ee_wrench": True},
+    }
+    dataset, root = open_dataset(config)
+    recorder = EpisodeRecorder(dataset, root, config)
+    state = RobotState(
+        joint_positions=np.zeros(7),
+        joint_velocities=np.zeros(7),
+        ee_position=np.array([0.4, 0.0, 0.3]),
+        ee_quaternion_xyzw=np.array([0.0, 0.0, 0.0, 1.0]),
+        end_effector_pose=np.eye(4),
+        gripper=GripperState("franka", 1.0, 0.05),
+        sampled_monotonic_ns=100,
+        ee_wrench=None,
+    )
+    pair = CameraPair(
+        front=np.full((16, 16, 3), 120, dtype=np.uint8),
+        wrist=np.zeros((16, 16, 3), dtype=np.uint8),
+        front_ns=100,
+        wrist_ns=100,
+        front_sensor_timestamp=0.1,
+        wrist_sensor_timestamp=0.0,
+        front_valid=True,
+        wrist_valid=False,
+    )
+    try:
+        recorder.start()
+        recorder.frame(state, pair, tactile=(None, None))
+        recorder.finish(state, save=True)
+        sync_path, = root.glob("episode_*.sync.json")
+        sync = json.loads(sync_path.read_text())
+        rec = sync["frame_records"][0]
+        assert rec["wrist_camera_valid"] is False
+        assert rec["ee_wrench"] is None
+        assert rec["missing_sensors"] == [
+            "ee_wrench",
+            "wrist_camera",
+            "observation.gripper_image_left",
+            "observation.gripper_image_right",
+        ]
+    finally:
+        recorder.close()
+    dataset.finalize()
+    row = dataset[0]
+    assert np.isnan(row["observation.ee_wrench"].numpy()).all()
+    assert np.all(row["observation.wrist_image_left"].numpy() == 0)
+    assert np.all(row["observation.gripper_image_left"].numpy() == 0)

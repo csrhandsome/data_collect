@@ -22,6 +22,21 @@ replay_stop() {
   for replay_pid in "$replay_runner_pid" "$replay_web_pid"; do
     if [[ -n "$replay_pid" ]]; then
       kill -s INT -- "-$replay_pid" 2>/dev/null || true
+      for _ in {1..10}; do
+        kill -0 "$replay_pid" 2>/dev/null || break
+        sleep 0.1
+      done
+      if [[ "$replay_pid" == "$replay_runner_pid" ]] && kill -0 "$replay_pid" 2>/dev/null; then
+        # docker compose run -T does not reliably forward SIGINT to the container.
+        docker kill -s INT data-collect-runner >/dev/null 2>&1 || true
+        for _ in {1..100}; do
+          kill -0 "$replay_pid" 2>/dev/null || break
+          sleep 0.1
+        done
+        if kill -0 "$replay_pid" 2>/dev/null; then
+          docker stop -t 5 data-collect-runner >/dev/null 2>&1 || true
+        fi
+      fi
       wait "$replay_pid" 2>/dev/null || true
     fi
   done

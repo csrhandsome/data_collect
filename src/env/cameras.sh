@@ -22,9 +22,21 @@ launch_one() {
     publish_tf:=false
 }
 
+wrist_loop() {
+  while true; do
+    if launch_one wrist 825412070487; then
+      status=0
+    else
+      status=$?
+    fi
+    echo "[cameras.sh] ERROR: wrist camera exited (status=$status); continuing without wrist camera and retrying in 2s" >&2
+    sleep 2
+  done
+}
+
 launch_one external 825412070292 &
 external_pid=$!
-launch_one wrist 825412070487 &
+wrist_loop &
 wrist_pid=$!
-trap 'kill "$external_pid" "$wrist_pid" 2>/dev/null || true' INT TERM
-wait "$external_pid" "$wrist_pid"
+trap 'kill "$external_pid" "$wrist_pid" 2>/dev/null || true' INT TERM EXIT
+wait "$external_pid"

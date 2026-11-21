@@ -1,5 +1,6 @@
 """Subscribe to two raw Image streams and expose the common camera-pair API."""
 
+import logging
 import time
 
 import numpy as np
@@ -7,6 +8,8 @@ import numpy as np
 from control.ros2.base_node import Ros2Node
 from control.types import CameraPair
 from control.util.img_util import center_crop_and_resize_rgb_uint8
+
+logger = logging.getLogger(__name__)
 
 
 def image_rgb(message):
@@ -41,6 +44,7 @@ class Ros2Cameras(Ros2Node[CameraPair]):
         self._raw = {}
         self._cache = {}
         self._counts = {"front": 0, "wrist": 0}
+        self._last_wrist_error_ns = 0
         self._expected_hz = float(cfg.get("fps", 30))
         super().__init__(
             "camera", config.get("ros2", {}).get("namespace", ""), background=False,
@@ -99,10 +103,23 @@ class Ros2Cameras(Ros2Node[CameraPair]):
         self._raw[key] = packet
 
     def _ready(self):
-        if len(self._raw) != 2:
+        if "front" not in self._raw:
             return False
         now = time.monotonic_ns()
-        return max(now - self._raw["front"][5], now - self._raw["wrist"][5]) <= self._max_age * 1e9
+        return now - self._raw["front"][5] <= self._max_age * 1e9
+
+    def _wrist_fresh(self, now):
+        packet = self._raw.get("wrist")
+        return packet is not None and (now - packet[5]) <= self._max_age * 1e9
+
+    def _log_wrist_error(self, now):
+        if now - self._last_wrist_error_ns < 2_000_000_000:
+            return
+        self._last_wrist_error_ns = now
+        logger.error(
+            "Wrist camera missing or stale; continuing with black placeholder frame (counts=%s)",
+            dict(self._counts),
+        )
 
     def _resized(self, key):
         data, height, width, step, encoding, capture_ns, source_ns = self._raw[key]
@@ -140,8 +157,19 @@ class Ros2Cameras(Ros2Node[CameraPair]):
                 )
             self._source.poll(min(0.05, remaining))
         front = self._resized("front")
-        wrist = self._resized("wrist")
-        return CameraPair(front[0], wrist[0], front[1], wrist[1], front[2] / 1e9, wrist[2] / 1e9)
+        now = time.monotonic_ns()
+        if self._wrist_fresh(now):
+            wrist = self._resized("wrist")
+            return CameraPair(
+                front[0], wrist[0], front[1], wrist[1], front[2] / 1e9, wrist[2] / 1e9,
+                front_valid=True, wrist_valid=True,
+            )
+        self._log_wrist_error(now)
+        black = np.zeros((self._hw, self._hw, 3), dtype=np.uint8)
+        return CameraPair(
+            front[0], black, front[1], front[1], front[2] / 1e9, 0.0,
+            front_valid=True, wrist_valid=False,
+        )
 
     def get_frames(self):
         return self.read()

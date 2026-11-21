@@ -2,6 +2,8 @@
 # Both joint and EE labels are saved when enabled; dataset.action_space is an episode annotation.
 # Credentials: FRANKA_USERNAME / FRANKA_PASSWORD. force: gripper.type=dh5, tactile.enabled=true.
 extends: ../dataset/panda.yaml
+observation:
+  wrist_image_left: false  # 暂不使用腕部相机，不记录到数据集
 dataset:
   repo_id: openpi/franka_lerobot
   date: "today"  # 加载时写成当天本地日期，例如 20261031。
@@ -19,13 +21,13 @@ dataset:
 robot:
   backend: ros2  # panda / ros2；采集和推理共用此选择。
   start_joint_position:
-  - 0.00388
-  - -0.45916
-  - -0.15237
-  - -2.47266
-  - -0.06778
-  - 1.96442
-  - 0.70214
+  - 0.25753
+  - -0.55242
+  - -0.24454
+  - -2.19276
+  - -0.09549
+  - 1.65677
+  - -1.42518
   hostname: 192.168.1.100
   username: 'BionicDL-Franka'
   password: 'Design@2018'
@@ -60,7 +62,8 @@ control:
   mode: ee
   frequency_hz: 100.0
   ee_filter_coeff: 0.35
-  ee_translational_stiffness: 600.0
+  # 原值 600.0；调低至 300.0 以降低接触桌面/物体时的接触力，减少触发 Reflex
+  ee_translational_stiffness: 300.0
   ee_rotational_stiffness: 30.0
   ee_nullspace_stiffness: 0.5
   max_target_translation_m: 0.15
@@ -87,21 +90,24 @@ camera:
     wrist_image_topic: /camera/wrist/color/image_raw
     max_pair_skew_s: 0.1
 gripper:
-  type: franka  # franka / dh5 / none; exposed through arm.gripper.
+  type: dh5  # franka / dh5 / none; exposed through arm.gripper.
   open_width_m: 0.05  # Franka full-open target width in metres.
   force: 50  # Franka grasp force (N); DH5 native force setting (20..100).
   velocity: 100  # DH5 native velocity setting (0..1000).
   vr_axis_threshold: 0.10  # DH5 stick deadzone. Outside it, deflection scales travel speed.
   vr_step_interval_s: 0.08  # DH5 minimum interval between joystick position updates.
   dh5:
+    # 5090 上 FTDI 串口对应 /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A984CEPU-if00-port0 -> /dev/ttyUSB0
     com: /dev/ttyUSB0
-    right_camera_device: 1
-    left_camera_device: 2
+    # 5090 上 /dev/video0~5、10~15 为 RealSense D435，DH5 触觉相机为 /dev/video6 和 /dev/video8
+    right_camera_device: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:5.3.2:1.0-video-index0
+    left_camera_device: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:5.3.3:1.0-video-index0
     camera_fps: 30
 tactile:
-  enabled: false
+  enabled: true
   # 左右相机可分别指定普通 USB RGB 或 RealSense。留空沿用 gripper.dh5 的设备号。
-  # left: {type: rgb, fourcc: MJPG, device: /dev/v4l/by-path/<left-camera>-video-index0}
+  right: {type: rgb, fourcc: MJPG, device: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:5.3.2:1.0-video-index0}
+  left: {type: rgb, fourcc: MJPG, device: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:5.3.3:1.0-video-index0}
   # right: {type: realsense, serial: '<camera-serial>'}
 audio:
   # backend 默认随 robot.backend；可显式设为 direct，继续使用本地声卡。

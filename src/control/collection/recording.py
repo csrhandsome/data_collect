@@ -25,6 +25,22 @@ class JsonlSink:
         self.file.write(json.dumps(frame, separators=(",", ":")) + "\n")
 
 
+def _backup_existing_path(path: Path) -> Path | None:
+    """Move an existing file aside using _copy, _copy_1, _copy_2 suffixes."""
+    if not path.exists():
+        return None
+    stem, dot, rest = path.name.partition(".")
+    suffix = f"{dot}{rest}"
+    candidate = path.with_name(f"{stem}_copy{suffix}")
+    copy_index = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{stem}_copy_{copy_index}{suffix}")
+        copy_index += 1
+    path.rename(candidate)
+    logger.warning("Existing file %s moved to %s", path, candidate)
+    return candidate
+
+
 class EpisodeRecorder:
     def __init__(self, dataset, root, config, microphone=None, *, source="collection"):
         self.dataset, self.root, self.config = dataset, Path(root), config
@@ -48,6 +64,14 @@ class EpisodeRecorder:
         self._closed = False
         self.critical_phase_start_ns = None
         self.control_events = []
+        self._last_error_ns = {}
+
+    def _error_throttled(self, key, message, *args):
+        now = time.monotonic_ns()
+        if now - self._last_error_ns.get(key, 0) < 2_000_000_000:
+            return
+        self._last_error_ns[key] = now
+        logger.error(message, *args)
 
     def check(self):
         for writer in (self.writer, self.trace_writer):
@@ -72,6 +96,7 @@ class EpisodeRecorder:
         self.trace_count = self.unique_vr = 0
         self.last_vr_seq = None
         self.trace_path = self.root / f"episode_{self.index:06d}.actions.jsonl"
+        _backup_existing_path(self.trace_path)
         self.trace_sink = JsonlSink(self.trace_path)
         self.trace_writer = AsyncDatasetFrames(self.trace_sink, max_pending=1000)
         self.records = []
@@ -80,10 +105,7 @@ class EpisodeRecorder:
         self.audio_path = None
         if self.microphone is not None:
             self.audio_path = self.root / "audio" / f"episode_{self.index:06d}.wav"
-            if self.audio_path.exists():
-                self.trace_writer.close()
-                self.trace_sink.file.close()
-                raise FileExistsError(self.audio_path)
+            _backup_existing_path(self.audio_path)
             self.microphone.default_output_path = self.audio_path
             if not self.microphone.start_recording():
                 self.trace_writer.close()
@@ -161,7 +183,11 @@ class EpisodeRecorder:
             "vr_arm_enabled": vr.enabled,
         }
         if "observation.ee_wrench" in self.feature_keys:
-            record["ee_wrench"] = self._wrench(state).tolist()
+            if state.ee_wrench is None:
+                self._error_throttled("ee_wrench", "observation.ee_wrench enabled but unavailable; recording NaN")
+                record["ee_wrench"] = None
+            else:
+                record["ee_wrench"] = state.ee_wrench.tolist()
         self.trace_writer.submit(record)
         self.trace_count += 1
 
@@ -181,12 +207,20 @@ class EpisodeRecorder:
             ),
             "task": self.config["dataset"]["instruction"],
         }
+        missing_sensors = []
         if "observation.ee_wrench" in self.feature_keys:
-            frame["observation.ee_wrench"] = self._wrench(state).astype(np.float32)
+            if state.ee_wrench is None:
+                self._error_throttled("ee_wrench", "observation.ee_wrench enabled but unavailable; recording NaN")
+                frame["observation.ee_wrench"] = np.full((6,), np.nan, dtype=np.float32)
+                missing_sensors.append("ee_wrench")
+            else:
+                frame["observation.ee_wrench"] = state.ee_wrench.astype(np.float32)
         if "observation.exterior_image" in self.feature_keys:
             frame["observation.exterior_image"] = pair.front.copy()
         if "observation.wrist_image_left" in self.feature_keys:
             frame["observation.wrist_image_left"] = pair.wrist.copy()
+            if not getattr(pair, "wrist_valid", True):
+                missing_sensors.append("wrist_camera")
         tactile_keys = self.feature_keys & {
             "observation.gripper_image_left",
             "observation.gripper_image_right",
@@ -202,7 +236,10 @@ class EpisodeRecorder:
                 if key not in tactile_keys:
                     continue
                 if image is None:
-                    raise RuntimeError(f"Configured tactile image is unavailable: {key}")
+                    self._error_throttled(key, "Configured tactile image unavailable: %s; using black placeholder", key)
+                    frame[key] = np.zeros((hw, hw, 3), dtype=np.uint8)
+                    missing_sensors.append(key)
+                    continue
                 frame[key] = center_crop_and_resize_rgb_uint8(
                     image, out_hw=hw, crop_scale=float(self.config["camera"].get("crop_scale", 0.9))
                 )
@@ -213,13 +250,20 @@ class EpisodeRecorder:
             "wrist_host_capture_monotonic_ns": pair.wrist_ns,
             "external_camera_timestamp": pair.front_sensor_timestamp,
             "wrist_camera_timestamp": pair.wrist_sensor_timestamp,
+            "wrist_camera_valid": getattr(pair, "wrist_valid", True),
             "joint_position": state.joint_positions.tolist(),
             "ee_position": state.ee_position.tolist(),
             "ee_orientation_xyzw": state.ee_quaternion_xyzw.tolist(),
             "gripper_position": state.gripper.commanded_open_ratio,
         }
+        if missing_sensors:
+            record["missing_sensors"] = missing_sensors
         if "observation.ee_wrench" in self.feature_keys:
-            record["ee_wrench"] = self._wrench(state).tolist()
+            if state.ee_wrench is None:
+                self._error_throttled("ee_wrench", "observation.ee_wrench enabled but unavailable; recording NaN")
+                record["ee_wrench"] = None
+            else:
+                record["ee_wrench"] = state.ee_wrench.tolist()
         self.records.append(record)
         self.pending = (
             {

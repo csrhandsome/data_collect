@@ -73,4 +73,6 @@ fi
 
 setsid bash "$root/src/env/bringup.sh" "$@" &
 arm_pid=$!
-wait "$arm_pid"
+# Exit if either the arm bringup or the external camera stream exits;
+# optional nodes (VR, DH5 gripper, diagnostics) warn without stopping deploy_ros2.
+wait -n "$arm_pid" "$cam_pid"

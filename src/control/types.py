@@ -210,3 +210,5 @@ class CameraPair:
     wrist_ns: int
     front_sensor_timestamp: float
     wrist_sensor_timestamp: float
+    front_valid: bool = True
+    wrist_valid: bool = True

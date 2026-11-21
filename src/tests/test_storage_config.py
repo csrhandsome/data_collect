@@ -41,9 +41,11 @@ def test_storage_inheritance_and_partial_override(tmp_path, monkeypatch):
         )
     )
     monkeypatch.chdir(tmp_path)
+    parent = load_config(panda_path)
     config = load_config(custom_path)
     assert config["observation"]["exterior_image"] is False
-    assert config["observation"]["wrist_image_left"] is True
+    assert config["observation"]["wrist_image_left"] is parent["observation"]["wrist_image_left"]
+    assert config["observation"]["joint_position"] is True
     assert {f"{group}.{key}" for group in ("observation", "action") for key in config[group]} == {
         "observation.exterior_image",
         "observation.wrist_image_left",
@@ -93,6 +95,7 @@ def test_invalid_storage_selection_is_rejected(group, fields):
 
 def test_unavailable_storage_selection_is_rejected():
     config = load_config()
+    config["tactile"]["enabled"] = False
     for group in ("observation", "action"):
         config[group] = {key: key.startswith("gripper_image") for key in config[group]}
     with pytest.raises(ValueError, match="available field"):

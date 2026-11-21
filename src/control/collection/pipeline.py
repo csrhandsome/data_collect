@@ -134,7 +134,12 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                         command_submitted_ns=target.submitted_monotonic_ns,
                     )
                     if pair is not None:
-                        if now - min(pair.front_ns, pair.wrist_ns) > int(
+                        stale_ns = (
+                            pair.front_ns
+                            if not getattr(pair, "wrist_valid", True)
+                            else min(pair.front_ns, pair.wrist_ns)
+                        )
+                        if now - stale_ns > int(
                             config["camera"].get("max_age_s", 0.2) * 1e9
                         ):
                             raise RuntimeError("Camera frame is stale")

@@ -208,3 +208,36 @@ def test_audio_loss_rejects_save_and_discards_staged_wav(sensor_peer, tmp_path):
         assert microphone._temp is None and not microphone.is_recording
     finally:
         microphone.stop()
+
+
+def test_ros2_cameras_tolerates_missing_wrist_but_requires_external():
+    from control.ros2.camera_connector import Ros2Cameras
+
+    cam = Ros2Cameras.__new__(Ros2Cameras)
+    cam._max_age = 0.2
+    cam._crop = 1.0
+    cam._hw = 16
+    cam._raw = {}
+    cam._cache = {}
+    cam._counts = {"front": 0, "wrist": 0}
+    cam._last_wrist_error_ns = 0
+    cam._source = SimpleNamespace(poll=lambda *_: None)
+
+    now = time.monotonic_ns()
+    payload = np.full((16, 16, 3), 80, dtype=np.uint8).tobytes()
+    cam._raw["front"] = (payload, 16, 16, 48, "rgb8", now, 1_000_000_000)
+
+    assert cam._ready()
+    pair = cam.read()
+    assert pair.front_valid is True
+    assert pair.wrist_valid is False
+    assert pair.front.shape == pair.wrist.shape == (16, 16, 3)
+    assert np.all(pair.wrist == 0)
+    assert pair.wrist_ns == pair.front_ns
+
+    cam._raw.clear()
+    cam._raw["wrist"] = (payload, 16, 16, 48, "rgb8", now, 1_000_000_000)
+    assert not cam._ready()
+    cam._max_age = 0.01
+    with pytest.raises(TimeoutError):
+        cam.read()
