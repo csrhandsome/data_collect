@@ -5,7 +5,9 @@ inference:
   port: 8001
   action_fps: 30.0
   model_horizon: 50          # 必须等于策略服务元数据里的 action_horizon
-  execute_steps: 10          # 1..model_horizon；只执行返回 chunk 的前这么多步，并按这个间隔重规划
+  execute_steps: 10          # 1..model_horizon；只执行返回 chunk 的前这么多步，synchronous 模式下按这个间隔重规划
+  execution_mode: synchronous  # synchronous（定时串行触发）| asynchronous（拿到响应立刻触发下一次，重合部分插值）
+  blend_duration_s: 0.08     # asynchronous 模式下新旧 chunk 重合切换时的插值融合时长（秒）
   action_space: ee
   max_steps: 0
   move_to_start: false

@@ -78,11 +78,13 @@ class AsyncEpisodeRecorder:
             kwargs.setdefault("trace_sample_ns", time.monotonic_ns())
             self._submit("trace", state, sample, position.copy(), quaternion.copy(), **kwargs)
 
-    def frame(self, state, pair, tactile=(None, None)):
+    def frame(self, state, pair, tactile=(None, None), **kwargs):
         if self.active and self._gate.accept(pair.front_ns, pair.wrist_ns):
             pair = replace(pair, front=pair.front.copy(), wrist=pair.wrist.copy())
             tactile = tuple(image.copy() if image is not None else None for image in tactile)
-            self._submit("frame", state, pair, tactile)
+            if "target_ee_pose" in kwargs and hasattr(kwargs["target_ee_pose"], "copy"):
+                kwargs["target_ee_pose"] = kwargs["target_ee_pose"].copy()
+            self._submit("frame", state, pair, tactile, **kwargs)
 
     def finish(self, state, **kwargs):
         if not self.active:

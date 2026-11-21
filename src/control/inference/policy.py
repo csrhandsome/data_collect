@@ -5,6 +5,29 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from control.util.pose import (
+    matrix_to_rpy,
+    quat_xyzw_to_matrix,
+    rpy_to_quat_xyzw,
+    slerp_quat_xyzw,
+)
+
+
+def interpolate_action(a, b, alpha, action_space="ee"):
+    """Interpolate two action vectors; EE orientation uses shortest-arc SLERP."""
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    if alpha <= 0.0:
+        return a.copy()
+    if alpha >= 1.0:
+        return b.copy()
+    if action_space == "ee" and len(a) >= 6:
+        out = (1.0 - alpha) * a + alpha * b
+        qa = rpy_to_quat_xyzw(a[3:6])
+        qb = rpy_to_quat_xyzw(b[3:6])
+        out[3:6] = matrix_to_rpy(quat_xyzw_to_matrix(slerp_quat_xyzw(qa, qb, alpha)))
+        return out
+    return (1.0 - alpha) * a + alpha * b
+
 
 @dataclass(frozen=True)
 class ActionPlan:
@@ -15,12 +38,14 @@ class ActionPlan:
     step_id: int | None = None
     actor_version: int | str | None = None
 
-    def at(self, now_ns, fps):
+    def at(self, now_ns, fps, *, interpolate=False, action_space="ee"):
         index = (now_ns - self.observation_ns) * fps / 1e9 - 1
         if index < 0 or index >= len(self.actions):
             return None, int(np.floor(index))
         i = int(index)
-        return self.actions[i].copy(), i
+        if not interpolate or i + 1 >= len(self.actions):
+            return self.actions[i].copy(), i
+        return interpolate_action(self.actions[i], self.actions[i + 1], index - i, action_space), i
 
 
 def validate_metadata(metadata, config):

@@ -12,6 +12,7 @@ import numpy as np
 from control.collection.dataset import open_dataset
 from control.collection.schema import features
 from control.recording_writer import AsyncDatasetFrames, FreshCameraPair
+from control.types import EEPose
 from control.util.lerobot_util import _discard_unsaved_episode
 
 logger = logging.getLogger(__name__)
@@ -191,10 +192,14 @@ class EpisodeRecorder:
         self.trace_writer.submit(record)
         self.trace_count += 1
 
-    def frame(self, state, pair, tactile=(None, None)):
+    def frame(self, state, pair, tactile=(None, None), *, target_ee_pose=None, target_gripper_position=None):
         if not self.active or not self.gate.accept(pair.front_ns, pair.wrist_ns):
             return
-        self._complete(state)
+        self._complete(
+            state,
+            target_ee_pose=target_ee_pose,
+            target_gripper_position=target_gripper_position,
+        )
         hw = int(self.config["camera"].get("image_hw", 224))
         if pair.front.shape != (hw, hw, 3) or pair.wrist.shape != (hw, hw, 3):
             raise ValueError("Camera frame shape disagrees with configured schema")
@@ -280,24 +285,35 @@ class EpisodeRecorder:
             raise RuntimeError("observation.ee_wrench enabled but ROS 2 wrench feedback is unavailable")
         return state.ee_wrench
 
-    def _complete(self, state, terminal=False):
+    def _complete(self, state, terminal=False, *, target_ee_pose=None, target_gripper_position=None):
         if self.pending is None:
             return
+        if target_ee_pose is None:
+            ee_pose_vector = state.ee_pose.vector
+        elif isinstance(target_ee_pose, EEPose):
+            ee_pose_vector = target_ee_pose.vector
+        else:
+            ee_pose_vector = EEPose.from_vector(target_ee_pose).vector
+        gripper_target = (
+            state.gripper.commanded_open_ratio
+            if target_gripper_position is None
+            else float(target_gripper_position)
+        )
+        if not np.isfinite(gripper_target) or not 0 <= gripper_target <= 1:
+            raise ValueError("Action gripper target must be finite in 0..1")
         frame, record = self.pending
         for key, value in {
             "action.joint_position": state.joint_positions.astype(np.float32),
-            "action.ee_pose": state.ee_pose.vector,
-            "action.gripper_position": np.array(
-                [state.gripper.commanded_open_ratio], dtype=np.float32
-            ),
+            "action.ee_pose": ee_pose_vector,
+            "action.gripper_position": np.array([gripper_target], dtype=np.float32),
         }.items():
             if key in self.feature_keys:
                 frame[key] = value
         record.update(
             {
                 "action_joint_position": state.joint_positions.tolist(),
-                "action_ee_pose": state.ee_pose.vector.tolist(),
-                "action_gripper_position": state.gripper.commanded_open_ratio,
+                "action_ee_pose": ee_pose_vector.tolist(),
+                "action_gripper_position": gripper_target,
                 "action_sample_monotonic_ns": state.sampled_monotonic_ns,
                 "terminal_action": terminal,
             }
@@ -305,14 +321,30 @@ class EpisodeRecorder:
         self.writer.submit(frame)
         self.pending = None
 
-    def finish(self, state, *, save=True, success=None, publish=False, source="collection", stopped_ns=None):
+    def finish(
+        self,
+        state,
+        *,
+        save=True,
+        success=None,
+        publish=False,
+        source="collection",
+        stopped_ns=None,
+        target_ee_pose=None,
+        target_gripper_position=None,
+    ):
         if not self.active:
             return
         started = time.perf_counter()
         now = time.monotonic_ns() if stopped_ns is None else stopped_ns
         logger.info("Episode %s: %s requested, %s frames", self.index,
                     "save" if save else "discard", len(self.records))
-        self._complete(state, terminal=True)
+        self._complete(
+            state,
+            terminal=True,
+            target_ee_pose=target_ee_pose,
+            target_gripper_position=target_gripper_position,
+        )
         self.writer.drain()
         self.trace_writer.close()
         self.trace_sink.file.close()
@@ -336,8 +368,8 @@ class EpisodeRecorder:
             "control_mode": "ee",
             "action_space": self.config["dataset"]["action_space"],
             "action_target_offset_frames": 1,
-            "action_semantics": "next_camera_observation_measured_state",
-            "terminal_action_semantics": "final_measured_state",
+            "action_semantics": "next_camera_observation_target_command",
+            "terminal_action_semantics": "final_target_command",
             "control_frequency": self.config["control"]["frequency_hz"],
             "camera_fps": self.config["camera"]["fps"],
             "episode_start_monotonic_ns": self.started_ns,

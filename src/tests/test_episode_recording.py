@@ -294,3 +294,72 @@ def test_missing_optional_sensors_record_placeholders_and_missing_metadata(tmp_p
     assert np.isnan(row["observation.ee_wrench"].numpy()).all()
     assert np.all(row["observation.wrist_image_left"].numpy() == 0)
     assert np.all(row["observation.gripper_image_left"].numpy() == 0)
+
+
+def test_recorder_saves_target_command_as_action_and_measured_state_as_observation(tmp_path):
+    from control.types import EEPose
+
+    config = {
+        "dataset": {
+            "repo_id": "local/recording",
+            "date": "command_actions",
+            "root": str(tmp_path),
+            "instruction": "Push",
+            "action_space": "ee",
+        },
+        "camera": {"image_hw": 16, "fps": 30},
+        "control": {"frequency_hz": 100},
+    }
+    dataset, root = open_dataset(config)
+    recorder = EpisodeRecorder(dataset, root, config)
+    backend = FakeBackend()
+    image = np.zeros((16, 16, 3), dtype=np.uint8)
+    states = []
+    targets = []
+    grippers = [0.8, 0.4, 0.1]
+    try:
+        recorder.start()
+        for index in range(2):
+            backend.position[0] = 0.4 + index * 0.05
+            state = backend.snapshot()
+            states.append(state)
+            target_pose = EEPose(
+                np.array([0.45 + index * 0.05, 0.0, 0.3], dtype=np.float64),
+                np.zeros(3, dtype=np.float64),
+            )
+            targets.append(target_pose)
+            ns = state.sampled_monotonic_ns + index
+            recorder.frame(
+                state,
+                CameraPair(image, image, ns, ns, 0, 0),
+                target_ee_pose=target_pose,
+                target_gripper_position=grippers[index],
+            )
+        end_target = EEPose(
+            np.array([0.55, 0.0, 0.3], dtype=np.float64),
+            np.zeros(3, dtype=np.float64),
+        )
+        targets.append(end_target)
+        recorder.finish(
+            backend.snapshot(),
+            save=True,
+            target_ee_pose=end_target,
+            target_gripper_position=grippers[2],
+        )
+        recorder.finalize()
+    finally:
+        recorder.close()
+
+    rows = episode_dataframe(episode_paths(root)[0], 0)
+    sync = json.loads((root / "episode_000000.sync.json").read_text())
+    assert sync["action_semantics"] == "next_camera_observation_target_command"
+    assert sync["terminal_action_semantics"] == "final_target_command"
+    np.testing.assert_allclose(np.stack(rows["observation.ee_pose"]), [s.ee_pose.vector for s in states], atol=1e-6)
+    np.testing.assert_allclose(np.stack(rows["action.ee_pose"]), [targets[1].vector, targets[2].vector], atol=1e-6)
+    np.testing.assert_allclose(np.asarray(rows["action.gripper_position"], dtype=np.float32).reshape(-1), [0.4, 0.1], atol=1e-6)
+    np.testing.assert_allclose(
+        [rec["action_ee_pose"] for rec in sync["frame_records"]],
+        [targets[1].vector, targets[2].vector],
+        atol=1e-6,
+    )
+    np.testing.assert_allclose([rec["action_gripper_position"] for rec in sync["frame_records"]], [0.4, 0.1], atol=1e-6)

@@ -17,7 +17,7 @@ from control.control_diagnostics import ControlDiagnostics
 from control.reactive_desk_client import ScenePublisher
 from control.ros2.bridge import Ros2Publisher
 from control.runners import create_runner
-from control.types import EETargetLimitError
+from control.types import EEPose, EETargetLimitError
 from control.util.pose import quat_angle_xyzw
 from control.util.robot import finish_stream, handle_gripper, reset_robot
 from control.util.timing import FixedRate
@@ -68,6 +68,11 @@ def run_collection(config, *, dry_run=False, max_steps=0):
         mapper = EEMapper(config.get("vr", {}))
         state = arm.read()
         mapper.reset(state)
+        target_gripper = state.gripper.commanded_open_ratio
+
+        def _on_gripper_command(ratio):
+            nonlocal target_gripper
+            target_gripper = float(ratio)
         if diagnostics.enabled:
             diagnostics.event("stream_start", hold_position=state.ee_position.tolist())
         rate = FixedRate(config["control"]["frequency_hz"])
@@ -118,7 +123,8 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                     command_sent = True
                     if not mapper.waiting_for_release:
                         gripper_changed, last_axis_ns = handle_gripper(
-                            arm, sample, state, now, last_axis_ns, config
+                            arm, sample, state, now, last_axis_ns, config,
+                            on_command=_on_gripper_command,
                         )
                         changed = changed or gripper_changed
                 diagnostics.mark("command_and_gripper")
@@ -129,9 +135,14 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                     if changed and not recorder.active:
                         recorder.start()
                     target = arm.get_ee_target()
+                    target_ee_pose = (
+                        EEPose.from_position_quat(target.ee_position, target.ee_quaternion_xyzw)
+                        if target is not None else None
+                    )
                     recorder.trace(
                         state, sample, position, quaternion,
-                        command_submitted_ns=target.submitted_monotonic_ns,
+                        target_gripper_position=target_gripper,
+                        command_submitted_ns=target.submitted_monotonic_ns if target is not None else None,
                     )
                     if pair is not None:
                         stale_ns = (
@@ -149,6 +160,8 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                             arm.get_tactile_images()
                             if config.get("tactile", {}).get("enabled", False)
                             else (None, None),
+                            target_ee_pose=target_ee_pose,
+                            target_gripper_position=target_gripper,
                         )
                     expired = (
                         recorder.active
@@ -160,6 +173,8 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                             arm.read(),
                             save=not sample.discard,
                             publish=True,
+                            target_ee_pose=target_ee_pose,
+                            target_gripper_position=target_gripper,
                         )
                         reset_requested = True
                 diagnostics.mark("recording_and_camera")
@@ -175,6 +190,7 @@ def run_collection(config, *, dry_run=False, max_steps=0):
                 if reset_requested:
                     reset_robot(arm)
                     state = arm.read()
+                    target_gripper = state.gripper.commanded_open_ratio
                     mapper.suspend_until_release(state)
                     if diagnostics.enabled:
                         diagnostics.event("stream_reset", hold_position=state.ee_position.tolist())
@@ -194,9 +210,20 @@ def run_collection(config, *, dry_run=False, max_steps=0):
             raise
         finally:
             diagnostics.event("loop_end", ticks=steps, overruns=rate.overruns, failed=failed)
+            end_target = arm.get_ee_target() if recorder is not None else None
             finish_stream(arm)
             if recorder is not None:
-                recorder.finish(arm.read(), save=not failed, publish=True)
+                end_state = arm.read()
+                recorder.finish(
+                    end_state,
+                    save=not failed,
+                    publish=True,
+                    target_ee_pose=(
+                        EEPose.from_position_quat(end_target.ee_position, end_target.ee_quaternion_xyzw)
+                        if end_target is not None else None
+                    ),
+                    target_gripper_position=target_gripper,
+                )
         logger.info("Acquisition finished: %s ticks, %s overruns", steps, rate.overruns)
     if (recorder is not None
             and recorder.dataset.meta.total_episodes > initial_episodes

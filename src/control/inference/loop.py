@@ -14,7 +14,12 @@ from control.collection.devices import make_cameras, make_microphone, make_vr
 from control.collection.recording import EpisodeRecorder
 from control.collection.vr import EEMapper, ResampledVR, VRResampler
 from control.inference.fingers import FingerImages
-from control.inference.policy import PolicyWorker, build_observation, validate_metadata
+from control.inference.policy import (
+    PolicyWorker,
+    build_observation,
+    interpolate_action,
+    validate_metadata,
+)
 from control.recording_writer import FreshCameraPair
 from control.ros2.bridge import Ros2Publisher
 from control.runners import create_runner
@@ -162,6 +167,8 @@ def _execute_inference(
         rate = FixedRate(config["control"]["frequency_hz"])
         gate = FreshCameraPair()
         plan = None
+        prev_plan = None
+        plan_switch_ns = 0
         steps = 0
         last_request_ns = 0
         takeover = False
@@ -172,6 +179,8 @@ def _execute_inference(
         target_gripper = arm.read().gripper.commanded_open_ratio
         control_source = "BASE"
         policy_step_id = actor_version = None
+        async_mode = cfg.get("execution_mode", "synchronous") == "asynchronous"
+        blend_duration_ns = round(float(cfg.get("blend_duration_s", 0.08)) * 1e9)
 
         def remember_gripper(ratio):
             nonlocal target_gripper
@@ -210,6 +219,7 @@ def _execute_inference(
                 if enabled != takeover:
                     worker.invalidate()
                     plan = None
+                    prev_plan = None
                     mapper.reset()
                     takeover = enabled
                     if recorder is not None:
@@ -238,10 +248,47 @@ def _execute_inference(
                 else:
                     result = worker.take()
                     if result is not None:
+                        if async_mode and plan is not None and blend_duration_ns > 0:
+                            prev_plan = plan
+                            plan_switch_ns = now
+                        else:
+                            prev_plan = None
                         plan = result
-                    action, _ = plan.at(now, cfg["action_fps"]) if plan else (None, 0)
+                    action, _ = (
+                        plan.at(
+                            now,
+                            cfg["action_fps"],
+                            interpolate=async_mode,
+                            action_space=cfg["action_space"],
+                        )
+                        if plan
+                        else (None, 0)
+                    )
                     if plan and now - plan.observation_ns > cfg.get("max_plan_age_s", 0.6) * 1e9:
                         action = None
+                        prev_plan = None
+                    elif (
+                        async_mode
+                        and action is not None
+                        and prev_plan is not None
+                        and blend_duration_ns > 0
+                        and now < plan_switch_ns + blend_duration_ns
+                    ):
+                        prev_action, _ = prev_plan.at(
+                            now,
+                            cfg["action_fps"],
+                            interpolate=True,
+                            action_space=cfg["action_space"],
+                        )
+                        if prev_action is not None:
+                            alpha = (now - plan_switch_ns) / blend_duration_ns
+                            action = interpolate_action(
+                                prev_action, action, alpha, cfg["action_space"]
+                            )
+                        else:
+                            prev_plan = None
+                    elif prev_plan is not None and now >= plan_switch_ns + blend_duration_ns:
+                        prev_plan = None
                     if not arm.gripper_busy:
                         if action is None:
                             arm.hold()
@@ -272,7 +319,7 @@ def _execute_inference(
                                 if abs(ratio - state.gripper.commanded_open_ratio) > 0.05:
                                     arm.set_gripper(ratio, wait=False)
                                     remember_gripper(ratio)
-                    if now - last_request_ns >= horizon_ns and gate.accept(
+                    if (async_mode or now - last_request_ns >= horizon_ns) and gate.accept(
                         pair.front_ns, pair.wrist_ns
                     ):
                         observation = build_observation(
@@ -299,6 +346,10 @@ def _execute_inference(
                             target=(target.ee_position, target.ee_quaternion_xyzw) if target else None,
                             cameras=pair)
                 if recorder is not None:
+                    target_ee_pose = (
+                        EEPose.from_position_quat(target.ee_position, target.ee_quaternion_xyzw)
+                        if target is not None else None
+                    )
                     recorder.trace(
                         state, sample, target.ee_position, target.ee_quaternion_xyzw,
                         control_source=control_source,
@@ -313,6 +364,8 @@ def _execute_inference(
                         arm.get_tactile_images()
                         if config.get("tactile", {}).get("enabled", False)
                         else (None, None),
+                        target_ee_pose=target_ee_pose,
+                        target_gripper_position=target_gripper,
                     )
                 steps += 1
         except KeyboardInterrupt:
@@ -322,12 +375,18 @@ def _execute_inference(
             raise
         finally:
             stats.update(ticks=steps, requests=requests, overruns=rate.overruns)
+            end_target = arm.get_ee_target() if recorder is not None else None
             finish_stream(arm)
             if recorder is not None:
                 index = recorder.index
                 recorder.finish(
                     arm.read(), save=not failed and not discard_requested,
                     publish=True, source="inference",
+                    target_ee_pose=(
+                        EEPose.from_position_quat(end_target.ee_position, end_target.ee_quaternion_xyzw)
+                        if end_target is not None else None
+                    ),
+                    target_gripper_position=target_gripper,
                 )
                 if not failed and not discard_requested and recorder.dataset.meta.total_episodes > index:
                     sidecar = (

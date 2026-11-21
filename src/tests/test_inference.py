@@ -273,3 +273,81 @@ def test_finger_history_rejects_duplicate_and_stale_frames():
         history.capture(arm)
     assert history.request_fields(clock[0] / 1e9) is not None
     assert history.request_fields(clock[0] / 1e9 + 0.3) is None
+
+
+def test_execution_mode_config_validation():
+    from control.config import validate
+
+    cfg = copy.deepcopy(load_config(INFERENCE_CONFIG))
+    for mode in ("synchronous", "asynchronous"):
+        cfg["inference"]["execution_mode"] = mode
+        validate(cfg)
+    cfg["inference"]["execution_mode"] = "invalid"
+    with pytest.raises(ValueError, match="execution_mode"):
+        validate(cfg)
+    cfg["inference"]["execution_mode"] = "asynchronous"
+    cfg["inference"]["blend_duration_s"] = -0.1
+    with pytest.raises(ValueError, match="blend_duration_s"):
+        validate(cfg)
+
+
+def test_action_plan_interpolation_ee_and_joint():
+    actions = np.array(
+        [
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [1.0, 2.0, 3.0, 0.0, 0.0, 1.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    plan = ActionPlan(0, actions, np.zeros(6))
+    # At 30 fps: step 0 is at 33.333ms, step 1 is at 66.667ms; midpoint is 50ms.
+    mid_ee, idx = plan.at(50_000_000, 30.0, interpolate=True, action_space="ee")
+    assert idx == 0
+    np.testing.assert_allclose(mid_ee[:3], [0.5, 1.0, 1.5], atol=1e-6)
+    np.testing.assert_allclose(mid_ee[3:6], [0.0, 0.0, 0.5], atol=1e-6)
+    np.testing.assert_allclose(mid_ee[6], 0.5, atol=1e-6)
+
+    mid_joint, _ = plan.at(50_000_000, 30.0, interpolate=True, action_space="joint")
+    np.testing.assert_allclose(mid_joint, 0.5 * (actions[0] + actions[1]), atol=1e-6)
+
+
+def test_asynchronous_mode_requeues_immediately_and_blends(monkeypatch):
+    from control.direct.fake import FakeBackend
+
+    class FastAsyncPolicy(SlowPolicy):
+        def infer(self, obs):
+            self.calls += 1
+            self.observation_times.append(float(obs["monotonic_ts"]))
+            time.sleep(0.05)
+            pose = obs["observation.ee_pose"].copy()
+            # Alternate small offset between chunks after the first plan to exercise overlap blending.
+            if self.calls >= 7 and self.calls % 2 == 1:
+                pose[0] += 0.01
+            return {"actions": np.tile(np.r_[pose, 1.0], (50, 1))}
+
+    cfg = copy.deepcopy(load_config(INFERENCE_CONFIG))
+    cfg["observation"]["wrist_image_left"] = True
+    cfg["control"]["frequency_hz"] = 100.0
+    cfg["inference"]["execution_mode"] = "asynchronous"
+    cfg["inference"]["blend_duration_s"] = 0.08
+    cfg["inference"]["execute_steps"] = 10
+
+    backend = FakeBackend()
+    ee_x = []
+    orig_target = backend.target
+
+    def record_target(position, quaternion, nullspace):
+        ee_x.append(float(position[0]))
+        return orig_target(position, quaternion, nullspace)
+
+    backend.target = record_target
+    monkeypatch.setattr("control.direct.fake.FakeBackend", lambda: backend)
+    policy = FastAsyncPolicy()
+    stats = run_inference(cfg, dry_run=True, max_steps=60, policy=policy)
+    assert stats["ticks"] == 60
+    # Over ~0.6s with 0.05s inference time, asynchronous mode submits >5 requests
+    # (vs <=3 in synchronous mode with execute_steps=10 @ 30 Hz).
+    assert stats["requests"] >= 5
+    # Targets sent to the backend should not jump by the full 0.01m chunk delta in one 10ms tick.
+    assert len(ee_x) > 10
+    assert np.max(np.abs(np.diff(ee_x))) < 0.008

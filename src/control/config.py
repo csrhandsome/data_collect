@@ -159,6 +159,17 @@ def validate(config):
             raise ValueError(
                 "inference.action_horizon and replan_every_steps were replaced by model_horizon and execute_steps"
             )
+        execution_mode = inference.get("execution_mode", "synchronous")
+        if execution_mode not in ("synchronous", "asynchronous"):
+            raise ValueError("inference.execution_mode must be synchronous or asynchronous")
+        blend_duration_s = inference.get("blend_duration_s", 0.08)
+        if (
+            isinstance(blend_duration_s, bool)
+            or not isinstance(blend_duration_s, (int, float))
+            or not math.isfinite(blend_duration_s)
+            or blend_duration_s < 0
+        ):
+            raise ValueError("inference.blend_duration_s must be a finite nonnegative number")
     if float(control.get("frequency_hz", 100)) < float(config.get("camera", {}).get("fps", 30)):
         raise ValueError("Control rate must not be lower than camera rate")
     if (
